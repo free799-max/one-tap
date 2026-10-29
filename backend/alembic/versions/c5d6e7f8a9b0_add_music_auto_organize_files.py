@@ -4,7 +4,7 @@ Revision ID: c5d6e7f8a9b0
 Revises: b4c5d6e7f8a9
 Create Date: 2026-10-24 12:00:00.000000
 
-音乐自动化在 NasDeck 内直接调用 Music Tag Web 完成刮削与整理，
+音乐自动化在 OneTap 内直接调用 Music Tag Web 完成刮削与整理，
 本表记录每个源文件的处理状态，供自动调度去重、失败退避与界面展示。
 """
 from typing import Sequence, Union

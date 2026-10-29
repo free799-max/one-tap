@@ -1,10 +1,10 @@
 ---
 name: release
-description: 为 NasDeck 发布新版本：按提交记录自动递增语义化版本、生成 CHANGELOG、打 v* 标签并推送，触发 GitLab CI 构建推送 Harbor 镜像。用于「发布版本」「打 tag」「升级版本号」「出镜像」「release」等场景。
+description: 为 OneTap 发布新版本：按提交记录自动递增语义化版本、生成 CHANGELOG、打 v* 标签并推送，触发 GitLab CI 构建推送 Harbor 镜像。用于「发布版本」「打 tag」「升级版本号」「出镜像」「release」等场景。
 argument-hint: "[major|minor|patch] [--dry-run]"
 ---
 
-# NasDeck 版本发布
+# OneTap 版本发布
 
 一句话：`scripts/release.sh --dry-run` 看版本号和发布说明 → 确认后 `scripts/release.sh` 完成提交、打标签、推送。只有推送 v* 标签才会触发 GitLab CI，分支推送不构建。
 
@@ -42,29 +42,41 @@ scripts/release.sh --dry-run
 scripts/release.sh minor --dry-run
 ```
 
-3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag、推送 main 与标签）：
+3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag，并按远端发布不同内容）：
 
 ```bash
 scripts/release.sh
 ```
 
-脚本默认推送到 `origin`（GitHub）和 `gitlab`（触发 CI）；只推其中一个时用 `RELEASE_REMOTES="gitlab" scripts/release.sh`。
+脚本默认发布到两个远端：
+
+- `origin`（GitHub，`git@github.com:free799-max/one-tap.git`）：只把 `frontend/` 的内容作为独立快照推到 `main`，不包含后端、其他目录、完整项目历史或版本标签。
+- `gitlab`：推送完整 `main` 与版本标签，标签触发 CI。
+
+只推其中一个时用 `RELEASE_REMOTES="gitlab" scripts/release.sh` 或 `RELEASE_REMOTES="origin" scripts/release.sh`。单独补推 GitHub 前端：
+
+```bash
+scripts/push-frontend.sh HEAD
+```
+
+该命令以 GitHub 前端仓库现有 `main` 为父提交做普通快进推送，不 force push；前端无变化时直接退出。
 
 4. 验证：
 
 ```bash
 git tag -n1 --sort=-v:refname | head -3
 git ls-remote --tags gitlab | tail -5          # 标签已到 GitLab
+git ls-remote origin refs/heads/main           # 前端快照已到 GitHub
 ```
 
-流水线在 `https://git.cacty.top/nas/nas-deck/-/pipelines`，只有 tag 流水线：`app-image` 以
-`harbor.cacty.top/library/nas-deck-base` 为基础镜像（由 `docker/base.Dockerfile` 手动构建，流水线不构建），
-推送 `harbor.cacty.top/library/nas-deck:<tag>`，正式版本同时打 `v主.次`、`v主`、`latest`。
+流水线在 `https://git.cacty.top/nas/one-tap/-/pipelines`，只有 tag 流水线：`app-image` 以
+`harbor.cacty.top/library/onetap-base` 为基础镜像（由 `docker/base.Dockerfile` 手动构建，流水线不构建），
+推送 `harbor.cacty.top/library/onetap:<tag>`，正式版本同时打 `v主.次`、`v主`、`latest`。
 部署侧按标签升级：
 
 ```bash
-APP_IMAGE=harbor.cacty.top/library/nas-deck:v1.2.3 docker compose pull app
-APP_IMAGE=harbor.cacty.top/library/nas-deck:v1.2.3 docker compose up -d app
+APP_IMAGE=harbor.cacty.top/library/onetap:v1.2.3 docker compose pull app
+APP_IMAGE=harbor.cacty.top/library/onetap:v1.2.3 docker compose up -d app
 ```
 
 ## 失败处理
@@ -73,7 +85,7 @@ APP_IMAGE=harbor.cacty.top/library/nas-deck:v1.2.3 docker compose up -d app
 
 ```bash
 git push gitlab HEAD:main && git push gitlab vX.Y.Z
-git push origin HEAD:main && git push origin vX.Y.Z
+scripts/push-frontend.sh HEAD
 ```
 
 - 需要交互输入 HTTPS 密码时：`GIT_TERMINAL_PROMPT=1 scripts/release.sh`。
@@ -85,4 +97,5 @@ git push origin HEAD:main && git push origin vX.Y.Z
 - 工作区必须干净；脚本会拒绝脏工作区和非 `main` 分支。
 - 版本号只增不减，不修改已推送的标签和历史。
 - 不改 `CHANGELOG.md` 里已有版本的条目。
+- 不要执行 `git push origin HEAD:main` 或向 `origin` 推版本标签；GitHub 只能走 `scripts/push-frontend.sh`。
 - 不读、不打印 `.env` 与任何密钥。

@@ -42,7 +42,7 @@ _CHANGELOG = (
     "新增可选组件 AdGuard Home（网络优化），各组件固定稳定版本："
     "MoviePilot v3.1.9、qBittorrent 5.3.0、Jellyfin 12.3、Emby 4.10.2.0、"
     "AdGuard Home v0.107.79。部署后可在 AdGuard 的 DNS 重写中维护 "
-    "TMDB、PT 站点等域名解析，NasDeck「系统设置 → Hosts 优选」可手动或"
+    "TMDB、PT 站点等域名解析，OneTap「系统设置 → Hosts 优选」可手动或"
     "定时更新这些重写。"
 )
 

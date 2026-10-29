@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
-COMPOSE_PROJECT_LABEL = "nasdeck.compose.project"
+COMPOSE_PROJECT_LABEL = "onetap.compose.project"
 """Compose 项目标签键，用于标识容器归属。"""
 
 

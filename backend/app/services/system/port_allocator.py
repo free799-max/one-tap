@@ -61,7 +61,7 @@ def get_reserved_ports() -> set[int]:
 def _parse_proc_net_tcp(path: str) -> set[int]:
     """读取 /proc/net/tcp 或 /proc/net/tcp6，提取处于 LISTEN 状态的本地端口。
 
-    当 NasDeck 以 host network 模式运行时，读取到的是宿主机的监听端口；
+    当 OneTap 以 host network 模式运行时，读取到的是宿主机的监听端口；
     普通容器模式下读取的是容器自身命名空间内的端口，作为兜底信息使用。
     """
     listening: set[int] = set()

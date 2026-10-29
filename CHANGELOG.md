@@ -68,7 +68,7 @@
 - 优化侧边栏布局与 TopBar 交互，修复 Docker 构建配置
 - enhance Docker management and frontend UI
 - implement unified StandardResponse API format
-- NasDeck 初始提交
+- OneTap 初始提交
 
 ### 修复
 

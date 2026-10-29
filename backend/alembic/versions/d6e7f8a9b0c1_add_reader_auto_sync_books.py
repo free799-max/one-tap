@@ -4,7 +4,7 @@ Revision ID: d6e7f8a9b0c1
 Revises: c5d6e7f8a9b0
 Create Date: 2026-10-24 14:00:00.000000
 
-Reader 书架自动导出不再依赖改造镜像，改由 NasDeck 后端定时执行。
+Reader 书架自动导出不再依赖改造镜像，改由 OneTap 后端定时执行。
 本表记录每本书的导出状态、章节数与失败重试次数。
 """
 from typing import Sequence, Union

@@ -470,7 +470,7 @@ async def test_jellyfin_inspect_reports_stale_api_key_as_fixable(monkeypatch):
     assert "账号密码" in items["auth"].message
     assert items["credentials"].status == "ok"
     # 校验登录必须使用独立设备，避免顶掉已保存的 API Token
-    assert 'DeviceId="nasdeck-inspect"' in state["login_headers"][0]
+    assert 'DeviceId="onetap-inspect"' in state["login_headers"][0]
 
 
 @pytest.mark.asyncio
@@ -499,7 +499,7 @@ async def test_jellyfin_fix_refreshes_api_key_via_password(monkeypatch):
     assert saved["provisioned"] is True
     wire.assert_awaited_once()
     # 保存 Token 的登录使用持久化设备，而不是检测设备
-    assert 'DeviceId="nasdeck"' in state["login_headers"][-1]
+    assert 'DeviceId="onetap"' in state["login_headers"][-1]
 
 
 @pytest.mark.asyncio

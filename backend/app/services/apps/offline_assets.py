@@ -77,7 +77,7 @@ MOVIEPILOT = OfflineAssetsProfile(
             size="约 697 MB",
         ),
     ),
-    marker="/opt/venv/.nasdeck-assets",
+    marker="/opt/venv/.onetap-assets",
     revision="1",
 )
 

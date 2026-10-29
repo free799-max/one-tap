@@ -1,14 +1,14 @@
-# NasDeck 生产部署：一个应用容器（React + FastAPI + Nginx）+ 一个 PostgreSQL 容器。
+# OneTap 生产部署：一个应用容器（React + FastAPI + Nginx）+ 一个 PostgreSQL 容器。
 # 使用前复制 .env.example 为 .env，并填写 POSTGRES_PASSWORD、SECRET_KEY。
-name: nas-deck
+name: ${COMPOSE_PROJECT_NAME:-onetap}
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: "${POSTGRES_DB:-nasdeck}"
-      POSTGRES_USER: "${POSTGRES_USER:-nasdeck}"
+      POSTGRES_DB: "${POSTGRES_DB:-onetap}"
+      POSTGRES_USER: "${POSTGRES_USER:-onetap}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?请先在 .env 中填写 POSTGRES_PASSWORD}"
       TZ: "${TZ:-Asia/Shanghai}"
     volumes:
@@ -21,7 +21,7 @@ services:
       start_period: 10s
 
   app:
-    image: "${APP_IMAGE:-nas-deck:local}"
+    image: "${APP_IMAGE:-onetap:local}"
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,7 +40,7 @@ services:
       # 容器内固定值，与数据卷挂载点对应
       DATA_ROOT: /data
       # 由数据库变量拼接，避免在 .env 中重复维护连接串
-      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-nasdeck}:${POSTGRES_PASSWORD:?请先在 .env 中填写 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-nasdeck}"
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-onetap}:${POSTGRES_PASSWORD:?请先在 .env 中填写 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-onetap}"
     volumes:
       # 应用数据：Compose 工作区、图标等
       - "${DATA_DIR:-./data}:/data"

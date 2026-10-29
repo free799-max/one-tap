@@ -150,19 +150,19 @@ async def test_komga_provision_claims_server_and_creates_api_key(monkeypatch):
         if path == "/api/v1/claim" and request.method == "GET":
             return httpx.Response(200, json={"isClaimed": claimed["value"]})
         if path == "/api/v1/claim" and request.method == "POST":
-            assert request.headers["X-Komga-Email"] == "admin@nasdeck.local"
+            assert request.headers["X-Komga-Email"] == "admin@onetap.local"
             assert request.headers["X-Komga-Password"] == "secret"
             claimed["value"] = True
             return httpx.Response(200, json={})
         if path == "/api/v2/users/me" and request.method == "GET":
             assert request.headers.get("Authorization", "").startswith("Basic ")
-            return httpx.Response(200, json={"email": "admin@nasdeck.local"})
+            return httpx.Response(200, json={"email": "admin@onetap.local"})
         if path == "/api/v2/users/me/api-keys" and request.method == "GET":
             return httpx.Response(200, json=[])
         if path == "/api/v2/users/me/api-keys" and request.method == "POST":
-            assert json.loads(request.content) == {"comment": "nasdeck"}
+            assert json.loads(request.content) == {"comment": "onetap"}
             return httpx.Response(
-                200, json={"key": "komga-key", "comment": "nasdeck"}
+                200, json={"key": "komga-key", "comment": "onetap"}
             )
         return httpx.Response(404)
 
@@ -176,7 +176,7 @@ async def test_komga_provision_claims_server_and_creates_api_key(monkeypatch):
 
     assert result.ok is True
     assert result.api_key == "komga-key"
-    assert result.username == "admin@nasdeck.local"
+    assert result.username == "admin@onetap.local"
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 发布新版本：按提交记录递增语义化版本，写 CHANGELOG、打 v* 标签并推送。
+# GitLab 接收完整项目与标签；GitHub 只接收 frontend/ 独立快照。
 # 推送标签会触发 GitLab CI（.gitlab-ci.yml 只响应 tag），构建并推送 Harbor 镜像。
 set -euo pipefail
 
@@ -53,9 +54,9 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 git config user.name >/dev/null 2>&1 && git config user.email >/dev/null 2>&1 \
   || die "未配置 git user.name / user.email"
 
-# 拉取远端标签，便于判断是否已有发布；拉取失败不阻断本地发布
+# 只从完整项目远端拉取标签；GitHub 前端仓库不作为版本来源
 for remote in $REMOTES; do
-  if git remote get-url "$remote" >/dev/null 2>&1; then
+  if [ "$remote" != "origin" ] && git remote get-url "$remote" >/dev/null 2>&1; then
     git fetch --tags --quiet "$remote" >/dev/null 2>&1 || true
   fi
 done
@@ -187,17 +188,33 @@ git add CHANGELOG.md
 git commit -m "chore(release): $NEW_TAG" >/dev/null
 
 {
-  printf 'NasDeck %s\n\n' "$NEW_TAG"
+  printf 'OneTap %s\n\n' "$NEW_TAG"
   cat "$NOTES"
 } > "$TMP_DIR/tag-message"
 git tag -a "$NEW_TAG" -F "$TMP_DIR/tag-message"
 
 echo "已提交并打标签 $NEW_TAG"
 
+manual_push_command() {
+  if [ "$1" = "origin" ]; then
+    echo "  scripts/push-frontend.sh HEAD"
+  else
+    echo "  git push $1 HEAD:$BRANCH && git push $1 $NEW_TAG"
+  fi
+}
+
+push_remote() {
+  if [ "$1" = "origin" ]; then
+    scripts/push-frontend.sh HEAD
+  else
+    git push "$1" "HEAD:$BRANCH" && git push "$1" "$NEW_TAG"
+  fi
+}
+
 if [ "$PUSH" -eq 0 ]; then
   echo "已按 --no-push 跳过推送；需要时执行："
   for remote in $REMOTES; do
-    echo "  git push $remote HEAD:$BRANCH && git push $remote $NEW_TAG"
+    manual_push_command "$remote"
   done
   exit 0
 fi
@@ -208,12 +225,16 @@ for remote in $REMOTES; do
     echo "跳过不存在的远端：$remote" >&2
     continue
   fi
-  if git push "$remote" "HEAD:$BRANCH" && git push "$remote" "$NEW_TAG"; then
-    echo "已推送：$remote"
+  if push_remote "$remote"; then
+    if [ "$remote" = "origin" ]; then
+      echo "已推送：$remote（仅 frontend/，不推标签）"
+    else
+      echo "已推送：$remote（完整项目与标签）"
+    fi
   else
     PUSH_FAILED=1
     echo "推送 $remote 失败。修复凭据后执行：" >&2
-    echo "  git push $remote HEAD:$BRANCH && git push $remote $NEW_TAG" >&2
+    manual_push_command "$remote" >&2
   fi
 done
 
@@ -221,5 +242,5 @@ done
 
 echo
 echo "版本：$NEW_TAG"
-echo "镜像：harbor.cacty.top/library/nas-deck:$NEW_TAG（稳定版另打 latest、v主.次、v主）"
-echo "流水线：https://git.cacty.top/nas/nas-deck/-/pipelines"
+echo "镜像：harbor.cacty.top/library/onetap:$NEW_TAG（稳定版另打 latest、v主.次、v主）"
+echo "流水线：https://git.cacty.top/nas/one-tap/-/pipelines"

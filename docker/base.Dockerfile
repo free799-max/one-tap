@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 #
-# NasDeck 基础镜像：系统依赖、Docker CLI 与 Python 依赖。
-# 只在本地手动构建并推送，GitLab CI 不构建它，只把 nas-deck-base 当作 FROM 基础镜像。
+# OneTap 基础镜像：系统依赖、Docker CLI 与 Python 依赖。
+# 只在本地手动构建并推送，GitLab CI 不构建它，只把 onetap-base 当作 FROM 基础镜像。
 #
 # 在仓库根目录执行：
-#   docker build -f docker/base.Dockerfile -t harbor.cacty.top/library/nas-deck-base:latest .
-#   docker push harbor.cacty.top/library/nas-deck-base:latest
+#   docker build -f docker/base.Dockerfile -t harbor.cacty.top/library/onetap-base:latest .
+#   docker push harbor.cacty.top/library/onetap-base:latest
 #
 # 系统包或 backend/requirements.txt 变化后重新执行上面两条。
 

@@ -1,4 +1,4 @@
-"""NasDeck 内音乐自动整理（Music Tag Web）测试。"""
+"""OneTap 内音乐自动整理（Music Tag Web）测试。"""
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace

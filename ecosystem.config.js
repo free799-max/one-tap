@@ -3,7 +3,7 @@
 module.exports = {
   apps: [
     {
-      name: "nas-deck-backend",
+      name: "onetap-backend",
       cwd: __dirname,
       script: "./start-backend.sh",
       autorestart: true,
@@ -11,7 +11,7 @@ module.exports = {
       min_uptime: "10s",
     },
     {
-      name: "nas-deck-frontend",
+      name: "onetap-frontend",
       cwd: `${__dirname}/frontend`,
       // 依赖 PATH 中的 pnpm（请先安装 Node.js 20+ 与 pnpm）
       script: "pnpm",

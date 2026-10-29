@@ -186,7 +186,7 @@ export function HostsOptimizerTab() {
           Hosts 优选
         </CardTitle>
         <CardDescription className="text-xs">
-          NasDeck 后端直连 AdGuard Home 管理地址，通过 DNS 重写把指定域名解析到实测最快的
+          OneTap 后端直连 AdGuard Home 管理地址，通过 DNS 重写把指定域名解析到实测最快的
           IP。
         </CardDescription>
       </CardHeader>

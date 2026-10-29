@@ -256,7 +256,7 @@ class ErmaoClient:
         data = payload.get("data")
         return bool(data.get("initialized")) if isinstance(data, dict) else False
 
-    async def setup(self, email: str, password: str, name: str = "NasDeck") -> None:
+    async def setup(self, email: str, password: str, name: str = "OneTap") -> None:
         """首次初始化管理员账号。"""
         await self._json(
             "POST",

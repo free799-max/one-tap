@@ -93,7 +93,7 @@ async def read_marker(container: str, marker: str) -> dict | None:
     注意不能用 ``docker cp ... -``：该形式输出的是 tar 归档而不是
     原始文件内容，因此先复制到临时目录再读取。
     """
-    with tempfile.TemporaryDirectory(prefix="nasdeck-marker-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="onetap-marker-") as tmp:
         dest = Path(tmp) / "marker"
         code, _, _ = await _docker_exec(
             "cp", f"{container}:{marker}", str(dest), timeout=30
@@ -159,7 +159,7 @@ async def _write_marker(
         "app": profile.app_name,
         "copied_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
-    fd, tmp_path = tempfile.mkstemp(prefix="nasdeck-assets-", suffix=".json")
+    fd, tmp_path = tempfile.mkstemp(prefix="onetap-assets-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False)

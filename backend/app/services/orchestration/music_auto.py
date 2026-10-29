@@ -1,6 +1,6 @@
 """音乐自动整理服务。
 
-在 NasDeck 内直接调用 Music Tag Web 的网页端接口完成「自动刮削 + 整理」，
+在 OneTap 内直接调用 Music Tag Web 的网页端接口完成「自动刮削 + 整理」，
 不再依赖改造后的镜像：目录与运行参数保存在实例组
 ``app_configs["music-tag-web"]["auto_organize"]`` 中，由本服务定时调度，
 也可在自动化页面手动触发。

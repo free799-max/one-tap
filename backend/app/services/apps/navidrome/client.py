@@ -187,7 +187,7 @@ class NavidromeClient(AppClient):
                         "t": token,
                         "s": salt,
                         "v": "1.16.1",
-                        "c": "nasdeck",
+                        "c": "onetap",
                         "f": "json",
                     },
                 )

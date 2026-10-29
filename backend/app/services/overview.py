@@ -124,7 +124,7 @@ def resolve_app_url(
     """解析应用访问地址。
 
     显式配置的 url 最优先；其次按当前请求的主机名和端口自动生成，
-    这样从不同地址访问 NasDeck 时都能得到可达的跳转链接。
+    这样从不同地址访问 OneTap 时都能得到可达的跳转链接。
     """
     config = instance.config or {}
 
@@ -260,7 +260,7 @@ def _load_docker_snapshot_sync() -> DockerSnapshot:
             status = _container_status(state)
             labels = (attrs.get("Config") or {}).get("Labels") or {}
             project_name = labels.get("com.docker.compose.project") or labels.get(
-                "nasdeck.compose.project"
+                "onetap.compose.project"
             )
             if project_name:
                 # 一个项目可能有多个容器，只要有一个在运行就视为运行中
@@ -499,7 +499,7 @@ def _collect_container_info(container) -> dict:
     network_settings = attrs.get("NetworkSettings") or {}
     labels = config.get("Labels") or {}
     project_name = labels.get("com.docker.compose.project") or labels.get(
-        "nasdeck.compose.project"
+        "onetap.compose.project"
     )
 
     image = config.get("Image")

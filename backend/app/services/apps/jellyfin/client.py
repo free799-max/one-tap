@@ -199,15 +199,15 @@ class JellyfinClient(JellyfinInspectionMixin, AppClient):
 
     # Jellyfin/Emby 统一要求的设备信息头（持久化 Token 使用该设备）
     _AUTHORIZATION_HEADER = (
-        'MediaBrowser Client="NasDeck", Device="NAS", DeviceId="nasdeck", Version="1.0.0"'
+        'MediaBrowser Client="OneTap", Device="NAS", DeviceId="onetap", Version="1.0.0"'
     )
     # 持久化 Token 使用的设备号
-    _API_DEVICE_ID = "nasdeck"
+    _API_DEVICE_ID = "onetap"
     # 仅用于校验账号密码的独立设备号：Jellyfin 12 中同设备重新登录会顶掉旧 Token，
     # 校验必须使用不同设备，避免把已保存的 API Token 挤下线
-    _INSPECT_DEVICE_ID = "nasdeck-inspect"
+    _INSPECT_DEVICE_ID = "onetap-inspect"
     # 手动“验证认证”使用的独立设备号（校验后不保存 Token）
-    _VERIFY_DEVICE_ID = "nasdeck-verify"
+    _VERIFY_DEVICE_ID = "onetap-verify"
 
     async def verify_auth(self, config: dict) -> AuthVerifyResult:
         """校验 Jellyfin 访问地址与认证配置。"""

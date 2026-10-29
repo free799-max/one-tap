@@ -11,19 +11,19 @@
 免费 V1 版同样允许调用；后台刮削配置接口（``/apimt/sys/background_scrape_configs/``）
 才受 V1 限制。
 
-默认从 NasDeck 数据库读取 music-tag-web / navidrome 的地址与账号密码，
+默认从 OneTap 数据库读取 music-tag-web / navidrome 的地址与账号密码，
 也可以通过环境变量覆盖。建议用 cron 每 5 分钟触发一次，脚本自带文件锁，
 上一轮没跑完时下一轮会直接退出。
 
 环境变量:
-    NASDECK_DATABASE_URL   NasDeck 数据库，默认 postgresql://nasdeck:nasdeck@localhost:5432/nasdeck
+    ONETAP_DATABASE_URL   OneTap 数据库，默认 postgresql://onetap:onetap@localhost:5432/onetap
     MUSIC_DOWNLOAD_DIR     宿主机下载目录，默认 /opt/data/data1/music-auto/downloads
     MUSIC_LIBRARY_DIR      宿主机音乐库目录（仅用于日志），默认 /opt/data/data1/music-auto/library
     MTW_DOWNLOAD_DIR       下载目录在 Music Tag Web 容器内的路径，默认 /app/media/downloads
     MTW_LIBRARY_DIR        音乐库在 Music Tag Web 容器内的路径，默认 /app/media/music
     MTW_URL / MTW_USERNAME / MTW_PASSWORD      直接指定 Music Tag Web 连接信息
     ND_URL / ND_USERNAME / ND_PASSWORD         直接指定 Navidrome 连接信息
-    MTW_STATE              状态文件，默认 ~/.local/state/nasdeck/music-auto.json
+    MTW_STATE              状态文件，默认 ~/.local/state/onetap/music-auto.json
     MTW_MIN_AGE            文件至少静置多少秒才处理，默认 120
 """
 
@@ -81,7 +81,7 @@ TIDY_DIRS = [
     {"value": "album", "value2": ""},
 ]
 
-DEFAULT_DSN = "postgresql://nasdeck:nasdeck@localhost:5432/nasdeck"
+DEFAULT_DSN = "postgresql://onetap:onetap@localhost:5432/onetap"
 AUDIT_POLL_INTERVAL = 2.0
 SCRAPE_TIMEOUT = 600.0
 TIDY_TIMEOUT = 120.0
@@ -115,7 +115,7 @@ def _iso(value: datetime) -> str:
 
 
 def _loads_maybe_double(value: Any) -> Any:
-    """NasDeck 的 app_configs 可能是 JSON 字符串，也可能被转义了两次。"""
+    """OneTap 的 app_configs 可能是 JSON 字符串，也可能被转义了两次。"""
     for _ in range(2):
         if isinstance(value, str):
             value = json.loads(value)
@@ -127,7 +127,7 @@ def _loads_maybe_double(value: Any) -> Any:
 async def _load_config_from_db() -> dict[str, Any]:
     import asyncpg  # 延迟导入，--help / 纯环境变量模式不需要它
 
-    dsn = os.environ.get("NASDECK_DATABASE_URL", DEFAULT_DSN).replace(
+    dsn = os.environ.get("ONETAP_DATABASE_URL", DEFAULT_DSN).replace(
         "postgresql+asyncpg://", "postgresql://"
     )
     conn = await asyncpg.connect(dsn)
@@ -139,7 +139,7 @@ async def _load_config_from_db() -> dict[str, Any]:
     finally:
         await conn.close()
     if not row:
-        raise RuntimeError("NasDeck 数据库中没有找到 music-auto 编排实例")
+        raise RuntimeError("OneTap 数据库中没有找到 music-auto 编排实例")
     configs = _loads_maybe_double(row["app_configs"])
     if not isinstance(configs, dict):
         raise RuntimeError("music-auto 的 app_configs 格式不正确")
@@ -165,15 +165,16 @@ async def load_settings(args: argparse.Namespace) -> Settings:
     if mtw is None:
         raise RuntimeError(
             "缺少 Music Tag Web 连接信息：请设置 MTW_URL/MTW_USERNAME/MTW_PASSWORD，"
-            "或确认 NasDeck 中 music-auto 已完成自动装配"
+            "或确认 OneTap 中 music-auto 已完成自动装配"
         )
     navidrome = endpoint("navidrome", "ND")
 
-    state_path = Path(
-        os.environ.get("MTW_STATE", "~/.local/state/nasdeck/music-auto.json")
-    ).expanduser()
     if args.state:
         state_path = Path(args.state).expanduser()
+    else:
+        state_path = Path(
+            os.environ.get("MTW_STATE", "~/.local/state/onetap/music-auto.json")
+        ).expanduser()
 
     return Settings(
         mtw=mtw,
@@ -427,7 +428,7 @@ class Navidrome:
             "t": payload.get("subsonicToken", ""),
             "s": payload.get("subsonicSalt", ""),
             "v": "1.16.1",
-            "c": "nasdeck-music-auto",
+            "c": "onetap-music-auto",
             "f": "json",
         }
         resp = self.client.get("/rest/startScan", params=params)

@@ -26,7 +26,7 @@ class KomgaClient(AppClient):
     TIMEOUT = 10.0
     PROVISION_TIMEOUT = 300.0
     supports_provision = True
-    API_KEY_COMMENT = "nasdeck"
+    API_KEY_COMMENT = "onetap"
 
     async def provision(
         self,
@@ -192,7 +192,7 @@ class KomgaClient(AppClient):
             return [""]
         if "@" in raw:
             return [raw]
-        return [f"{raw}@nasdeck.local", raw]
+        return [f"{raw}@onetap.local", raw]
 
     async def _auth_ok(
         self,

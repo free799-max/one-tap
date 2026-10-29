@@ -1,6 +1,6 @@
 """Reader 书架自动同步服务。
 
-把原先集成在 ``free5104/reader`` 镜像里的 Book Bridge 逻辑搬到 NasDeck：
+把原先集成在 ``free5104/reader`` 镜像里的 Book Bridge 逻辑搬到 OneTap：
 
 1. 读取 Reader 书架，补缓存缺失章节；
 2. 导出 EPUB、修复 XML 后写入二毛书库目录；

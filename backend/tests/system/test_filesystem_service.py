@@ -116,7 +116,7 @@ class TestFilesystemService:
 
         with pytest.raises(APIException):
             service.create_directory(
-                "/etc/nasdeck-test-dir",
+                "/etc/onetap-test-dir",
                 root_paths=[str(tmp_path)],
             )
 

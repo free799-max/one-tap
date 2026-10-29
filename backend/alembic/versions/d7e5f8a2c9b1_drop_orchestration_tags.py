@@ -1,6 +1,6 @@
 """drop orchestration tags
 
-方案标签已由管理端移除，NasDeck 不再接收或展示，删除该列。
+方案标签已由管理端移除，OneTap 不再接收或展示，删除该列。
 
 Revision ID: d7e5f8a2c9b1
 Revises: b3e4f5a6c7d8

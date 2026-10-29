@@ -1,4 +1,4 @@
-"""NasDeck 内 Reader 书架自动同步测试。"""
+"""OneTap 内 Reader 书架自动同步测试。"""
 
 import zipfile
 from unittest.mock import AsyncMock

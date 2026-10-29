@@ -50,7 +50,7 @@ DEVICE = {
 @pytest.fixture(autouse=True)
 def license_settings(monkeypatch):
     monkeypatch.setattr(settings, "LICENSE_PUBLIC_KEY", PUBLIC_PEM)
-    monkeypatch.setattr(settings, "LICENSE_ISSUER", "nas-deck-manage")
+    monkeypatch.setattr(settings, "LICENSE_ISSUER", "onetap-manage")
     monkeypatch.setattr(settings, "MANAGE_BASE_URL", "https://manage.example")
 
     async def device_fingerprint(installation_id):
@@ -74,8 +74,8 @@ def certificate(
 
     now = datetime.now(timezone.utc)
     claims = {
-        "iss": "nas-deck-manage",
-        "aud": "nas-deck",
+        "iss": "onetap-manage",
+        "aud": "onetap",
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
         "installation_id_hash": hashlib.sha256(installation_id.encode()).hexdigest(),
@@ -206,7 +206,7 @@ def test_certificate_validation_rejects_invalid_claims(token, reason):
 
 def test_certificate_validation_accepts_valid_ed25519_jwt():
     payload = validate_certificate(certificate(), INSTALLATION_ID, PUBLIC_PEM, "key-1")
-    assert payload["iss"] == "nas-deck-manage"
+    assert payload["iss"] == "onetap-manage"
     assert payload["perpetual"] is True
 
 

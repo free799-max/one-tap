@@ -594,7 +594,7 @@ class JellyfinInspectionMixin:
     def _device_header(device_id: str) -> str:
         """构造不含 Token 的设备信息头（登录/校验用）。"""
         return (
-            'MediaBrowser Client="NasDeck", Device="NAS", '
+            'MediaBrowser Client="OneTap", Device="NAS", '
             f'DeviceId="{device_id}", Version="1.0.0"'
         )
 
