@@ -156,8 +156,9 @@ def validate_certificate(
             or not hmac.compare_digest(certificate_fingerprint, hardware_fingerprint)
         ):
             raise LicenseCertificateError("device_mismatch", expires_at)
-    if payload.get("perpetual") is not True:
-        raise LicenseCertificateError("not_perpetual", expires_at)
+    # 永久授权与临时授权都接受，临时授权按 exp 到期
+    if payload.get("perpetual") is not True and payload.get("temporary") is not True:
+        raise LicenseCertificateError("invalid_license_type", expires_at)
     return payload
 
 
@@ -422,6 +423,7 @@ class LicensingService:
             "valid": False,
             "status": "inactive",
             "perpetual": False,
+            "temporary_months": None,
             "license_id": state.license_id,
             "activation_id": state.activation_id,
             "license_key": state.license_key if include_license_key else None,
@@ -451,6 +453,10 @@ class LicensingService:
         result["valid"] = True
         result["status"] = "active"
         result["perpetual"] = payload.get("perpetual") is True
+        months = payload.get("temporary_months")
+        result["temporary_months"] = (
+            months if isinstance(months, int) and not isinstance(months, bool) else None
+        )
         result["expires_at"] = datetime.fromtimestamp(payload["exp"], timezone.utc)
         return result
 

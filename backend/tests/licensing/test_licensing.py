@@ -137,6 +137,7 @@ async def test_status_is_redacted_and_available_to_regular_user(client):
         "valid",
         "status",
         "perpetual",
+        "temporary_months",
         "license_id",
         "activation_id",
         "license_key",
@@ -195,7 +196,7 @@ async def test_unlicensed_orchestration_write_returns_403_but_get_is_available(c
         (certificate(installation_id="another-device"), "device_mismatch"),
         (certificate(iss="other"), "invalid_issuer"),
         (certificate(aud="other"), "invalid_audience"),
-        (certificate(perpetual=False), "not_perpetual"),
+        (certificate(perpetual=False), "invalid_license_type"),
     ],
 )
 def test_certificate_validation_rejects_invalid_claims(token, reason):
@@ -208,6 +209,17 @@ def test_certificate_validation_accepts_valid_ed25519_jwt():
     payload = validate_certificate(certificate(), INSTALLATION_ID, PUBLIC_PEM, "key-1")
     assert payload["iss"] == "onetap-manage"
     assert payload["perpetual"] is True
+
+
+def test_certificate_validation_accepts_temporary_license():
+    payload = validate_certificate(
+        certificate(perpetual=False, temporary=True, temporary_months=12),
+        INSTALLATION_ID,
+        PUBLIC_PEM,
+        "key-1",
+    )
+    assert payload["temporary"] is True
+    assert payload["temporary_months"] == 12
 
 
 def test_certificate_hardware_fingerprint_is_enforced_when_present():
@@ -267,6 +279,40 @@ async def test_docker_certificate_is_invalid_during_installation_fallback(client
         break
 
 
+async def test_status_reports_temporary_license_months(client, monkeypatch):
+    """临时授权会带上剩余月数，前端据此展示授权时长。"""
+    token = await register(client, "admin")
+    await client.get("/api/license/status", headers=auth(token))
+    state = await get_state(client)
+    post = AsyncMock(
+        return_value={
+            "certificate": certificate(
+                state.installation_id,
+                license_id=101,
+                activation_id=202,
+                perpetual=False,
+                temporary=True,
+                temporary_months=2,
+            ),
+            "refresh_token": "refresh-token",
+            "license_id": 101,
+            "activation_id": 202,
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=60),
+        }
+    )
+    monkeypatch.setattr(licensing_service, "_post", post)
+    activated = await client.post(
+        "/api/license/activate",
+        headers=auth(token),
+        json={"license_key": "license-key"},
+    )
+    assert activated.status_code == 200
+    data = activated.json()["data"]
+    assert data["valid"] is True
+    assert data["perpetual"] is False
+    assert data["temporary_months"] == 2
+
+
 async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
     token = await register(client, "admin")
     await client.get("/api/license/status", headers=auth(token))
@@ -300,6 +346,7 @@ async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
     key_status = await client.get("/api/license/status", headers=auth(token))
     assert key_status.json()["data"]["license_key"] == "license-key"
     assert key_status.json()["data"]["perpetual"] is True
+    assert key_status.json()["data"]["temporary_months"] is None
     post.assert_awaited_with(
         "activate",
         {

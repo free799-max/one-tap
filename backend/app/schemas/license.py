@@ -15,6 +15,9 @@ class LicenseStatusResponse(BaseModel):
     valid: bool
     status: str
     perpetual: bool = Field(False, description="是否为永久授权")
+    temporary_months: int | None = Field(
+        None, description="临时授权剩余月数，永久授权为 None"
+    )
     license_id: str | None = None
     activation_id: str | None = None
     license_key: str | None = Field(None, description="授权码，仅管理员可见")

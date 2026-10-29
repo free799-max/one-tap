@@ -222,6 +222,10 @@ export function LicenseTab() {
                     <InfinityIcon className="h-3.5 w-3.5" aria-hidden="true" />
                     永久
                   </span>
+                ) : license.temporary_months ? (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-sm font-semibold text-amber-700 dark:text-amber-400">
+                    临时 {license.temporary_months} 个月
+                  </span>
                 ) : (
                   <span className="text-base text-foreground">-</span>
                 )}
