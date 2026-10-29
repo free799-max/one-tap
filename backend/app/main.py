@@ -1,4 +1,4 @@
-"""NasDeck 应用入口模块。
+"""OneTap 应用入口模块。
 
 负责创建 FastAPI 应用实例、注册中间件和路由、
 管理应用生命周期（数据库初始化、插件发现、定时调度）。
@@ -87,7 +87,9 @@ async def lifespan(app: FastAPI):
     # 目录同步：配置管理端地址后，启动时同步一次并按间隔循环同步，
     # 失败仅告警不阻断启动；服务关闭时取消后台同步任务
     sync_task = None
-    if settings.MANAGE_BASE_URL:
+    from app.services.manage_client import manage_base_urls
+
+    if manage_base_urls():
         from app.services import catalog_sync
 
         async def _sync_catalog(stage: str) -> None:

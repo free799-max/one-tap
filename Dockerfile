@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 #
-# 应用镜像：NasDeck 基础镜像 + 后端代码 + 前端产物。
+# 应用镜像：OneTap 基础镜像 + 后端代码 + 前端产物。
 # 基础镜像由 docker/base.Dockerfile 手动构建并推送到 Harbor，
 # 这里只拉取使用；系统依赖或 Python 依赖变化时重建基础镜像，不要在本文件里装。
 
 # 基础镜像（手动构建推送，见 docker/base.Dockerfile）
-ARG BASE_IMAGE=harbor.cacty.top/library/nas-deck-base:latest
+ARG BASE_IMAGE=harbor.cacty.top/library/onetap-base:latest
 # 前端构建镜像，取自 Harbor 的 baseimg 镜像，不访问 docker.io
 ARG NODE_IMAGE=harbor.cacty.top/baseimg/node:22-alpine
 
@@ -24,8 +24,8 @@ RUN pnpm run build
 FROM ${BASE_IMAGE} AS runtime
 
 # 应用市场管理端地址：构建期写入镜像作为默认值，运行时由 .env 覆盖。
-# CI 通过 --build-arg 传入，未传时使用生产地址。
-ARG MANAGE_BASE_URL=https://deck-m.freeapps.uk
+# CI 通过 --build-arg 传入，未传时使用生产地址；逗号分隔的多个地址按顺序重试。
+ARG MANAGE_BASE_URL=https://m.one-tap.vip,https://m.one-tab.vip
 ENV MANAGE_BASE_URL=${MANAGE_BASE_URL}
 
 # 只复制运行时文件，避免把本地的 backend/data、测试和虚拟环境带进镜像
@@ -34,10 +34,10 @@ COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./
 COPY --from=frontend-build /build/dist /usr/share/nginx/html
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY docker/entrypoint.sh /usr/local/bin/nas-deck-entrypoint
-RUN chmod +x /usr/local/bin/nas-deck-entrypoint \
+COPY docker/entrypoint.sh /usr/local/bin/onetap-entrypoint
+RUN chmod +x /usr/local/bin/onetap-entrypoint \
     && mkdir -p /data
 
 EXPOSE 80
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/local/bin/nas-deck-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/onetap-entrypoint"]

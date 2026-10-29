@@ -24,10 +24,15 @@ from app.core.exceptions import APIException
 from app.database import async_session
 from app.models.license import LicenseState
 from app.services.licensing.device import get_device_fingerprint
+from app.services.manage_client import (
+    ManageRequestError,
+    manage_base_urls,
+    with_manage_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
-AUDIENCE = "nas-deck"
+AUDIENCE = "onetap"
 
 
 class LicenseCertificateError(ValueError):
@@ -170,10 +175,10 @@ class LicensingService:
             await db.flush()
         return state
 
-    def _url(self, path: str) -> str:
-        if not settings.MANAGE_BASE_URL.strip():
+    def _path(self, path: str) -> str:
+        if not manage_base_urls():
             raise APIException("未配置授权管理端地址", 503)
-        return f"{settings.MANAGE_BASE_URL.rstrip('/')}/api/public/licenses/{path}"
+        return f"/api/public/licenses/{path}"
 
     @staticmethod
     def _error_message(response: httpx.Response) -> str:
@@ -204,12 +209,15 @@ class LicensingService:
         return data
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        license_path = self._path(path)
         try:
             async with httpx.AsyncClient(timeout=settings.LICENSE_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.post(self._url(path), json=body)
+                response, _ = await with_manage_fallback(
+                    lambda base_url: client.post(f"{base_url}{license_path}", json=body)
+                )
         except APIException:
             raise
-        except (httpx.HTTPError, OSError) as exc:
+        except (ManageRequestError, httpx.HTTPError, OSError) as exc:
             raise APIException("无法连接授权管理端", 502) from exc
         if response.is_error:
             status = response.status_code if 400 <= response.status_code < 500 else 502
@@ -217,12 +225,15 @@ class LicensingService:
         return self._response_data(response)
 
     async def _fetch_public_key(self, db: AsyncSession, state: LicenseState) -> tuple[str, str | None]:
+        license_path = self._path("public-key")
         try:
             async with httpx.AsyncClient(timeout=settings.LICENSE_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.get(self._url("public-key"))
+                response, _ = await with_manage_fallback(
+                    lambda base_url: client.get(f"{base_url}{license_path}")
+                )
         except APIException:
             raise
-        except (httpx.HTTPError, OSError) as exc:
+        except (ManageRequestError, httpx.HTTPError, OSError) as exc:
             raise APIException("无法获取授权公钥", 502) from exc
         if response.is_error:
             raise APIException(f"获取授权公钥失败：{self._error_message(response)}", 502)

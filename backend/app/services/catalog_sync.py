@@ -1,6 +1,6 @@
 """应用与编排方案目录同步服务。
 
-定时从配套管理端（nas-deck-manage）拉取应用市场与自动化方案数据，
+定时从配套管理端（onetap-manage）拉取应用市场与自动化方案数据，
 upsert 到本地 ``apps`` / ``app_orchestrations`` 表作为只读缓存：管理端
 下架（远端不再返回）的应用会删除本地非内置、未部署的缓存；方案不会
 因远端缺失而删除，而是通过 ``is_listed`` 从目录隐藏，重新下发时恢复；
@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import delete, func, select, update
 
-from app.config import settings
 from app.core.exceptions import APIException
 from app.database import async_session
 from app.models.app_store import App
@@ -27,6 +26,7 @@ from app.models.orchestration import (
     OrchestrationUpdateEvent,
 )
 from app.services.app_store.app_validator import validate_app_definition
+from app.services.manage_client import manage_base_urls, with_manage_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -128,13 +128,13 @@ async def sync_categories() -> dict:
     """
     global categories
 
-    base_url = settings.MANAGE_BASE_URL.rstrip("/")
-    if not base_url:
+    if not manage_base_urls():
         return {"skipped": True}
 
-    url = f"{base_url}/api/public/categories"
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        resp = await client.get(url)
+        resp, _ = await with_manage_fallback(
+            lambda base_url: client.get(f"{base_url}/api/public/categories")
+        )
         resp.raise_for_status()
         items = _extract_items(resp.json())
 
@@ -161,13 +161,13 @@ async def sync_apps() -> dict:
 
     MANAGE_BASE_URL 未配置时直接跳过。
     """
-    base_url = settings.MANAGE_BASE_URL.rstrip("/")
-    if not base_url:
+    if not manage_base_urls():
         return {"skipped": True}
 
-    url = f"{base_url}/api/public/apps"
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        resp = await client.get(url)
+        resp, base_url = await with_manage_fallback(
+            lambda url: client.get(f"{url}/api/public/apps")
+        )
         resp.raise_for_status()
         items = _extract_items(resp.json())
 
@@ -352,14 +352,14 @@ async def sync_orchestrations(mode: str = "auto") -> dict:
     """
     global last_sync_at, last_error, last_result
 
-    base_url = settings.MANAGE_BASE_URL.rstrip("/")
-    if not base_url:
+    if not manage_base_urls():
         return {"skipped": True}
 
-    url = f"{base_url}/api/public/automations"
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            resp = await client.get(url)
+            resp, _ = await with_manage_fallback(
+                lambda base_url: client.get(f"{base_url}/api/public/automations")
+            )
             resp.raise_for_status()
             items = _extract_items(resp.json())
 

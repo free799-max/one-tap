@@ -18,6 +18,7 @@ from app.models.orchestration import (
     OrchestrationUpdateEvent,
 )
 from app.services import catalog_sync
+from app.services.manage_client import ManageRequestError
 
 
 def _make_app_item(slug: str, **overrides) -> dict:
@@ -427,7 +428,7 @@ async def test_sync_network_error_records_last_error(sync_db, monkeypatch):
     """网络异常时记录 last_error 并重新抛出。"""
     _patch_http(monkeypatch, exc=httpx.ConnectError("connection refused"))
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(ManageRequestError):
         await catalog_sync.sync_orchestrations()
 
     assert catalog_sync.last_error is not None
@@ -650,7 +651,7 @@ async def test_sync_failure_writes_failed_event(sync_db, monkeypatch):
     """同步失败时记录一条 failed 事件后重新抛出。"""
     _patch_http(monkeypatch, exc=httpx.ConnectError("connection refused"))
 
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(ManageRequestError):
         await catalog_sync.sync_orchestrations(mode="manual")
 
     events = await _get_events(sync_db)

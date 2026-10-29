@@ -12,8 +12,12 @@ from typing import Any
 
 import httpx
 
-from app.config import settings
 from app.core.exceptions import APIException
+from app.services.manage_client import (
+    ManageRequestError,
+    manage_base_urls,
+    with_manage_fallback,
+)
 from app.services.system.config_service import normalize_docker_registry_mirrors
 
 MANAGE_REQUEST_TIMEOUT = 10.0
@@ -32,18 +36,20 @@ class RegistryMirrorService:
         ``MANAGE_BASE_URL`` 未配置时返回 ``configured=False``，由前端提示；
         管理端请求失败或响应格式异常时抛出 502。
         """
-        base_url = settings.MANAGE_BASE_URL.rstrip("/")
-        if not base_url:
+        if not manage_base_urls():
             return {"configured": False, "mirrors": []}
 
-        url = f"{base_url}/api/public/mirrors"
         try:
             async with httpx.AsyncClient(
                 timeout=MANAGE_REQUEST_TIMEOUT, follow_redirects=True
             ) as client:
-                resp = await client.get(url)
+                resp, _ = await with_manage_fallback(
+                    lambda url: client.get(f"{url}/api/public/mirrors")
+                )
                 resp.raise_for_status()
                 payload = resp.json()
+        except ManageRequestError as exc:
+            raise APIException(f"从管理端获取镜像加速地址失败：{exc}", 502) from exc
         except httpx.HTTPError as exc:
             raise APIException(f"从管理端获取镜像加速地址失败：{exc}", 502) from exc
         except ValueError as exc:
@@ -111,7 +117,7 @@ class RegistryMirrorService:
         """请求镜像根地址并记录可用性、状态码与耗时。"""
         started = time.perf_counter()
         try:
-            resp = await client.get(url, headers={"User-Agent": "nas-deck"})
+            resp = await client.get(url, headers={"User-Agent": "onetap"})
             latency_ms = int((time.perf_counter() - started) * 1000)
             ok = resp.status_code < 500
             return {

@@ -16,10 +16,10 @@ DEFAULT_SECRET_KEY = "change-me-in-production"
 class Settings(BaseSettings):
     """全局应用配置。"""
 
-    APP_NAME: str = "NasDeck"
+    APP_NAME: str = "OneTap"
     """应用名称。"""
 
-    DATABASE_URL: str = "postgresql+asyncpg://nasdeck:nasdeck@localhost:5434/nasdeck"
+    DATABASE_URL: str = "postgresql+asyncpg://onetap:onetap@localhost:5434/onetap"
     """数据库连接字符串，默认使用本机 Docker PostgreSQL 异步驱动。"""
 
     SECRET_KEY: str = DEFAULT_SECRET_KEY
@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     """图标文件存储目录，默认为 DATA_ROOT/app-icons，可单独覆盖。"""
 
     MANAGE_BASE_URL: str = ""
-    """配套管理端（nas-deck-manage）基础地址，留空表示禁用应用与编排方案同步。"""
+    """配套管理端（onetap-manage）基础地址，留空表示禁用应用与编排方案同步。
+    支持逗号分隔的多个地址，前一个不可用时自动重试下一个。"""
 
     MANAGE_SYNC_INTERVAL_MINUTES: int = 30
     """从管理端定时同步应用与编排方案的间隔（分钟）。"""
@@ -55,7 +56,7 @@ class Settings(BaseSettings):
     LICENSE_PUBLIC_KEY: str = ""
     """授权证书 Ed25519 公钥（PEM）；配置后不再从管理端获取。"""
 
-    LICENSE_ISSUER: str = "nas-deck-manage"
+    LICENSE_ISSUER: str = "onetap-manage"
     """授权证书签发方，需与管理端 LICENSE_ISSUER 一致。"""
 
     LICENSE_REFRESH_INTERVAL_HOURS: float = 24

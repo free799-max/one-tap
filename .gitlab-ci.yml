@@ -1,9 +1,9 @@
-# 推送 v* 版本标签时构建并推送 NasDeck 镜像到 Harbor。
+# 推送 v* 版本标签时构建并推送 OneTap 镜像到 Harbor。
 #
 # 触发方式：只在推送 v主.次.修订 标签时运行（由 scripts/release.sh 生成并推送），
 # 分支推送、合并请求、手动运行都不会触发，避免每次提交都重新构建。
 #
-# 基础镜像 harbor.cacty.top/library/nas-deck-base 由 docker/base.Dockerfile 手动
+# 基础镜像 harbor.cacty.top/library/onetap-base 由 docker/base.Dockerfile 手动
 # 构建并推送，流水线只拉取使用，不构建它。
 #
 # 目标 Runner 使用 shell executor（在宿主机上直接执行），所以这里不声明
@@ -21,11 +21,12 @@ stages:
 variables:
   HARBOR_REGISTRY: harbor.cacty.top
   HARBOR_PROJECT: library
-  APP_IMAGE_NAME: nas-deck
-  BASE_IMAGE: harbor.cacty.top/library/nas-deck-base:latest
+  APP_IMAGE_NAME: onetap
+  BASE_IMAGE: harbor.cacty.top/library/onetap-base:latest
   NODE_IMAGE: harbor.cacty.top/baseimg/node:22-alpine
   # 构建期写入镜像默认值；运行时 .env 中的同名变量会覆盖它
-  MANAGE_BASE_URL: https://deck-m.freeapps.uk
+  # 逗号分隔多个地址，前一个不可用时后端自动重试下一个
+  MANAGE_BASE_URL: https://m.one-tap.vip,https://m.one-tab.vip
   # NAS 为 ARM 时改为 linux/arm64
   PLATFORMS: linux/amd64
 
@@ -57,13 +58,13 @@ app-image:
         TAGS="$TAGS --tag $APP_REF:v$MAJOR.$MINOR --tag $APP_REF:v$MAJOR --tag $APP_REF:latest"
       fi
       echo "本次构建标签：$TAGS"
-      docker buildx create --use --name nasdeck --driver docker-container >/dev/null 2>&1 || docker buildx use nasdeck
+      docker buildx create --use --name onetap --driver docker-container >/dev/null 2>&1 || docker buildx use onetap
       docker buildx build \
         --platform "$PLATFORMS" \
         --build-arg "BASE_IMAGE=$BASE_IMAGE" \
         --build-arg "NODE_IMAGE=$NODE_IMAGE" \
         --build-arg "MANAGE_BASE_URL=$MANAGE_BASE_URL" \
-        --label "org.opencontainers.image.title=NasDeck" \
+        --label "org.opencontainers.image.title=OneTap" \
         --label "org.opencontainers.image.version=$TAG" \
         --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
         --cache-from "type=registry,ref=$APP_REF:buildcache" \

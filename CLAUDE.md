@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-NasDeck — NAS 管理平台，提供 Docker 容器/镜像/Compose Stack 管理、应用商店（内置 NAS 应用模板）和看板视图。前后端分离，后端为 FastAPI + SQLAlchemy 异步服务。
+OneTap — NAS 管理平台，提供 Docker 容器/镜像/Compose Stack 管理、应用商店（内置 NAS 应用模板）和看板视图。前后端分离，后端为 FastAPI + SQLAlchemy 异步服务。
 
 ## 开发命令
 
@@ -12,7 +12,7 @@ NasDeck — NAS 管理平台，提供 Docker 容器/镜像/Compose Stack 管理�
 
 ```bash
 # 启动 PostgreSQL（如未运行）
-docker run -d --name nasdeck-db -e POSTGRES_USER=nasdeck -e POSTGRES_PASSWORD=nasdeck -e POSTGRES_DB=nasdeck -p 5434:5432 postgres:16-alpine
+docker run -d --name onetap-db -e POSTGRES_USER=onetap -e POSTGRES_PASSWORD=onetap -e POSTGRES_DB=onetap -p 5434:5432 postgres:16-alpine
 
 # 启动开发服务器
 cd backend
@@ -50,7 +50,7 @@ docker compose logs -f app     # 查看应用、迁移与定时任务日志
 
 生产环境只有 `app` 与 `postgres` 两个容器；`app` 内的 Nginx 对外监听 80，FastAPI 只监听容器内回环地址 5001，前端与 API 使用同一端口。
 
-镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z`、打标签并推送到 `origin` 与 `gitlab`（`--dry-run` 只预览）。基础镜像 `harbor.cacty.top/library/nas-deck-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `nas-deck:<tag>`（正式版本另打 `v主.次`、`v主`、`latest`）。`MANAGE_BASE_URL` 在构建期写入镜像（默认 `https://deck-m.freeapps.uk`），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
+镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）只接收 `frontend/` 的独立快照，不接收其他目录或标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`（正式版本另打 `v主.次`、`v主`、`latest`）。`MANAGE_BASE_URL` 在构建期写入镜像（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
 
 ## 架构
 
@@ -162,7 +162,7 @@ DockerComposeProject 1--1 DockerComposeStack
 ```
 
 - `DockerComposeProject` 是独立实体，不依赖插件实例；其当前激活版本通过 `DockerComposeVersion.is_current` 标识。
-- Compose 运行时文件写入 `COMPOSE_WORKSPACE_DIR`（默认 `./data/compose`），并自动注入 `nasdeck.compose.project` 标签用于归属识别。
+- Compose 运行时文件写入 `COMPOSE_WORKSPACE_DIR`（默认 `./data/compose`），并自动注入 `onetap.compose.project` 标签用于归属识别。
 
 ## 存储目录约定
 
@@ -214,7 +214,7 @@ DockerComposeProject 1--1 DockerComposeStack
 - MoviePilot 这类应用启动时需要额外的插件依赖和浏览器内核，离线档案由客户端维护在 `services/apps/offline_assets.py`，管理端的应用模板保持官方原样，不再携带资源镜像/挂载信息。
 - 写盘时（`ComposeService._write_compose_file`）给匹配的服务注入固定镜像与离线环境变量（关闭程序/资源包/内核自动更新），因此实际落盘的 compose 与模板会略有差异。
 - 服务启动后 `_copy_offline_assets` 把资源镜像目录 `docker cp` 进容器：先从资源镜像解包到宿主机缓存 `<DATA_ROOT>/offline-assets/<镜像>`（docker 不支持容器间直接 cp，缓存按镜像复用），再 `docker cp` 进容器；拷贝期间先 `docker stop`，完成后 `docker start`。
-- 完成标记写在容器可写层 `/opt/venv/.nasdeck-assets`，标记一致则跳过。容器重建后标记丢失，会随下一次 `up` 自动重拷（命中本地缓存，不再解包镜像）。
+- 完成标记写在容器可写层 `/opt/venv/.onetap-assets`，标记一致则跳过。容器重建后标记丢失，会随下一次 `up` 自动重拷（命中本地缓存，不再解包镜像）。
 - 拷贝失败不阻断部署，只在进度里提示；用户可在应用详情页手动重试。
 - 前端入口：自动化实例详情 → MoviePilot → 集成 → 「离线数据」卡片；接口为 `GET/POST /api/orchestrations/instances/{id}/apps/{app}/assets[/copy]`，拷贝走后台任务并通过部署任务 SSE 展示进度。
 
@@ -230,11 +230,11 @@ DockerComposeProject 1--1 DockerComposeStack
 
 ## 应用市场数据同步
 
-- 应用定义由配套管理端（nas-deck-manage）维护，本仓库**不再提供应用创建/编辑/删除/图标上传**。原 `POST/PUT/DELETE /api/apps`、`POST /api/apps/preview-template`、`POST/GET /api/apps/{name}/icon` 接口与前端 `/appstore/create`、`/appstore/:name/edit` 页面均已移除。
-- 管理端地址、同步间隔与启动同步通过 `.env` 的 `MANAGE_BASE_URL` / `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 注入：后端启动时与每 30 分钟从 `GET {MANAGE_BASE_URL}/api/public/apps` 拉取已发布应用，upsert 到本地 `apps` 表作为只读缓存（实现见 `services/catalog_sync.py` 的 `sync_apps`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
+- 应用定义由配套管理端（onetap-manage）维护，本仓库**不再提供应用创建/编辑/删除/图标上传**。原 `POST/PUT/DELETE /api/apps`、`POST /api/apps/preview-template`、`POST/GET /api/apps/{name}/icon` 接口与前端 `/appstore/create`、`/appstore/:name/edit` 页面均已移除。
+- 管理端地址、同步间隔与启动同步通过 `.env` 的 `MANAGE_BASE_URL` / `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 注入：`MANAGE_BASE_URL` 支持逗号分隔的多个地址，请求失败按顺序重试下一个并记住最近成功地址（见 `services/manage_client.py`）。后端启动时与每 30 分钟从 `GET {MANAGE_BASE_URL}/api/public/apps` 拉取已发布应用，upsert 到本地 `apps` 表作为只读缓存（实现见 `services/catalog_sync.py` 的 `sync_apps`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
 - 只同步带 `compose_template` 且通过模板 / Schema 校验的条目，校验失败仅告警跳过；管理端下架（远端不再返回）的应用会删除本地缓存，但只删非内置且没有部署实例的记录，远端返回空列表时不做清理；`is_builtin` 等本地字段保持不变。
 - 分类为自由字符串，展示名称与排序由管理端 `backend/app/core/categories.py` 统一维护，经 `GET /api/public/categories` 下发；本仓库启动/定时同步到进程内缓存，前端通过 `GET /api/apps/categories` 获取（`frontend/src/lib/categories.ts` 仅保留查表辅助，不再内置映射），未配置 `MANAGE_BASE_URL` 时回退显示原始分类值。
-- 应用定义与应用目录 JSON 已整体迁移到管理端仓库：数据文件在 `nas-deck-manage/backend/app/data/apps/`，由管理端启动种子与 `scripts/import_apps.py` 导入；本仓库不再保留应用导入脚本。
+- 应用定义与应用目录 JSON 已整体迁移到管理端仓库：数据文件在 `onetap-manage/backend/app/data/apps/`，由管理端启动种子与 `scripts/import_apps.py` 导入；本仓库不再保留应用导入脚本。
 
 ## Hosts 优选（AdGuard）
 
@@ -298,8 +298,8 @@ DockerComposeProject 1--1 DockerComposeStack
 ### 漫画自动化（Comic Auto + Komga/Kavita）
 
 - 编排模板为 `comics-stack`（`category=漫画`），组合为 `comic-auto`（必选）+ `komga` / `kavita`（可选，`group=阅读器`）。分组名由管理端填写、原样展示，不再做英文映射。
-- 应用数据由配套管理端（nas-deck-manage）下发并缓存到本地 `apps` 表；图标在 `frontend/public/icons/apps/<name>.svg`。
-- 应用与编排模板数据均由配套管理端（nas-deck-manage）下发：后端通过 `.env` 的 `MANAGE_BASE_URL` 获取地址，定时从 `GET {MANAGE_BASE_URL}/api/public/apps` 与 `GET {MANAGE_BASE_URL}/api/public/automations` 拉取并 upsert 到本地 `apps` / `app_orchestrations` 表作为只读缓存（实现见 `services/catalog_sync.py`）。
+- 应用数据由配套管理端（onetap-manage）下发并缓存到本地 `apps` 表；图标在 `frontend/public/icons/apps/<name>.svg`。
+- 应用与编排模板数据均由配套管理端（onetap-manage）下发：后端通过 `.env` 的 `MANAGE_BASE_URL` 获取地址，定时从 `GET {MANAGE_BASE_URL}/api/public/apps` 与 `GET {MANAGE_BASE_URL}/api/public/automations` 拉取并 upsert 到本地 `apps` / `app_orchestrations` 表作为只读缓存（实现见 `services/catalog_sync.py`）。
 - 编排模板按管理端 `/api/public/automations` 返回数组的位置持久化 `sort_order`，仅调整顺序也会同步；列表 API 按 `sort_order, id` 返回。分类统一使用管理端填写的中文值，同版本分类变化也会同步。远端缺失的模板保留记录但标记 `is_listed=false`，从目录隐藏且重新下发时恢复，实例详情仍可按名称读取。侧边栏与自动化分类卡片按组合分类首次出现的顺序动态生成，展示元数据集中在 `frontend/src/lib/automation-categories.ts`，不再由前端固定分类列表决定入口。
 - 共享存储：`comics` 宿主机目录统一挂载到各容器 `/mnt/media`；Comic Auto 下载目录 `/mnt/media/down` 与 Komga / Kavita 媒体库目录一致，缓存目录 `/mnt/media/cache`，新章节下载后可直接被媒体库扫描入库。
 - 账号自动配置：Comic Auto 通过 `/api/v1/app/init/setup/` 创建管理员；Komga 通过 `/api/v1/claim` claim 服务器并创建 API Key；Kavita 通过 `/api/Account/register` 注册首个管理员，登录接口返回 API Key。
@@ -313,7 +313,7 @@ DockerComposeProject 1--1 DockerComposeStack
 - 账号自动配置：Navidrome 首次启动没有管理员，`NavidromeClient` 通过 `POST /auth/createAdmin` 创建；已有管理员时登录后用 `PUT /api/user/{id}` 同步统一密码。
 - 目录自动配置：从实例组 `shared_config.volumes` 的容器挂载路径推导 music-dl 下载目录（优先 `/app/media/downloads`，其次 `/mnt/music/downloads`），登录后通过 `POST /music/settings` 写入 `downloadDir`，结果落库 `group.app_configs['music-dl']['download_dir']`，前端概览页展示。Music Tag Web 与 Navidrome 的曲库目录由共享卷和 `ND_MUSICFOLDER` 提供，无需额外写入应用设置。
 - 认证检测：`MusicDLClient` / `MusicTagWebClient` / `NavidromeClient` 均使用账号密码登录校验，不支持 API Key。
-- 自动刮削/整理（集成在 NasDeck 内）：免费版 V1 不开放后台刮削配置接口（`/apimt/sys/background_scrape_configs/` 返回 403），但网页端单次操作使用的 `/apimt/batch_auto_update_id3/` 与 `/apimt/tidy_folder/` 可用。实现在 `services/orchestration/music_auto.py`，通过 `MusicTagWebSession` 调用这两个接口，整理后可选触发 Navidrome `startScan`；不修改应用镜像。
+- 自动刮削/整理（集成在 OneTap 内）：免费版 V1 不开放后台刮削配置接口（`/apimt/sys/background_scrape_configs/` 返回 403），但网页端单次操作使用的 `/apimt/batch_auto_update_id3/` 与 `/apimt/tidy_folder/` 可用。实现在 `services/orchestration/music_auto.py`，通过 `MusicTagWebSession` 调用这两个接口，整理后可选触发 Navidrome `startScan`；不修改应用镜像。
   - 配置保存在 `group.app_configs['music-tag-web']['auto_organize']`（目录、间隔、音乐源、写入字段、目录层级等），由 `main.py` lifespan 启动的后台调度器按间隔执行，也可从自动化页手动触发。
   - 目录默认从应用实例的真实挂载推导（优先 `/app/media/downloads` 与 `/app/media/music`），在 `AppConfigPanel` 的「自动整理」Tab 中编辑。
   - 文件处理状态与失败退避存于 `music_auto_organize_files` 表；接口为 `GET/PUT /api/orchestrations/instances/{id}/apps/music-tag-web/auto-organize` 与 `POST .../auto-organize/run`。
@@ -323,7 +323,7 @@ DockerComposeProject 1--1 DockerComposeStack
 ### 书籍自动化（Reader + 二毛读书）
 
 - 编排模板为 `book-auto`（`category=书籍`），组合为 `reader`（书源/书架）+ `ermao-library`（书库）。
-- 自动同步（集成在 NasDeck 内）：原先由 `nas-deck-manage/apps/reader/3.2.14` 镜像内置的 Book Bridge 移植到后端，不再需要构建/推送改造镜像。实现在 `services/orchestration/reader_auto.py`：
+- 自动同步（集成在 OneTap 内）：原先由 `onetap-manage/apps/reader/3.2.14` 镜像内置的 Book Bridge 移植到后端，不再需要构建/推送改造镜像。实现在 `services/orchestration/reader_auto.py`：
   - `ReaderSession` 调用 Reader 的 `/reader3/getShelfBookWithCacheInfo`、`getChapterList`、`getBookContent`、`exportBook`，补齐缺失章节后导出 EPUB；
   - `ErmaoClient` 负责二毛的初始化、登录、书库列表/创建、`/api/libraries/{id}/scan` 与导入任务轮询；
   - `fix_epub`（`services/apps/reader/epub.py`）转义裸 `&`、剔除非法 XML 控制字符，并按 `mimetype` 首条且 STORED 重新打包。
@@ -347,7 +347,7 @@ DockerComposeProject 1--1 DockerComposeStack
 
 - **注释语言**：中文（docstring + `#` 行内注释）
 - **Python 环境**：开发环境使用 `backend/.venv/bin/python`（Linux）或 `backend/.venv/Scripts/python.exe`（Windows）；运行命令需设置 `PYTHONPATH=./app`
-- **数据库**：PostgreSQL + asyncpg 异步驱动，默认 `DATABASE_URL=postgresql+asyncpg://nasdeck:nasdeck@localhost:5434/nasdeck`（见 `.env`）；测试使用内存 SQLite（`sqlite+aiosqlite:///:memory:`），不影响开发库。
+- **数据库**：PostgreSQL + asyncpg 异步驱动，默认 `DATABASE_URL=postgresql+asyncpg://onetap:onetap@localhost:5434/onetap`（见 `.env`）；测试使用内存 SQLite（`sqlite+aiosqlite:///:memory:`），不影响开发库。
   - **改表结构 / 新增表**：写 Alembic migration，然后执行 `alembic upgrade head`。
   - **修改数据**（如应用商店默认配置、内置应用模板、实例配置）：直接改数据库或写初始化/修复脚本，**不要生成 Alembic migration**。
 - **认证**：JWT Bearer token（HS256），**第一个**注册用户自动成为 `admin`，后续注册用户为普通 `user`；token 有效期 24 小时
