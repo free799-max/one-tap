@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Kavita">
+  <defs>
+    <linearGradient id="kbg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0EA5E9"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#kbg)"/>
+  <path d="M15 21.5c5.3-2.2 10.1-2.2 15 0v24.8c-4.9-2.3-9.7-2.3-15 0V21.5Z" fill="#FFFFFF"/>
+  <path d="M49 21.5c-5.3-2.2-10.1-2.2-15 0v24.8c4.9-2.3 9.7-2.3 15 0V21.5Z" fill="#E6F7FF"/>
+  <path d="M32 21.5v24.8" stroke="#94D9F5" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M20 28h6M20 33.5h6M38 28h6M38 33.5h6" stroke="#0F766E" stroke-width="2" stroke-linecap="round" opacity=".55"/>
+</svg>

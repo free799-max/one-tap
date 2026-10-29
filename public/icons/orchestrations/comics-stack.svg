@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Comics Automation">
+  <defs>
+    <linearGradient id="cbg" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C3AED"/>
+      <stop offset=".55" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="16" fill="url(#cbg)"/>
+  <rect x="15" y="29" width="24" height="20" rx="3" fill="#FFFFFF" opacity=".35"/>
+  <rect x="19" y="24" width="24" height="20" rx="3" fill="#FFFFFF" opacity=".65"/>
+  <path d="M23 19h18a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H23a4 4 0 0 1-4-4V23a4 4 0 0 1 4-4Z" fill="#FFFFFF"/>
+  <path d="M25 26h12M25 31h8" stroke="#6D5DFB" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="m36 33-4 6.5h3.2L34 44l5.8-7.4h-3.5l.7-3.6Z" fill="#F59E0B"/>
+  <path d="M45 39.5h4.5M47.2 37.2v4.6" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+</svg>

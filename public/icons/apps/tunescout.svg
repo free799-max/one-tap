@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TuneScout">
+  <defs>
+    <linearGradient id="bg" x1="6" y1="5" x2="58" y2="59" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F7DF9"/>
+      <stop offset="1" stop-color="#7A4DF0"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#bg)"/>
+  <circle cx="28" cy="28" r="10.5" fill="none" stroke="#FFFFFF" stroke-width="2.8"/>
+  <path d="M35.6 35.6 44.5 44.5" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+  <path d="M30 23.5v8.5" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+  <ellipse cx="27" cy="32.3" rx="3.2" ry="2.6" fill="#FFFFFF"/>
+  <path d="M30 23.5c2.6.6 4.4 1.9 4.8 3.9" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+</svg>

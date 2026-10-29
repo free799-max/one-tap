@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Media Automation">
+  <defs>
+    <linearGradient id="mbg" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F43F5E"/>
+      <stop offset=".55" stop-color="#A855F7"/>
+      <stop offset="1" stop-color="#6366F1"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="16" fill="url(#mbg)"/>
+  <rect x="11" y="17" width="42" height="30" rx="5" fill="#FFFFFF"/>
+  <path d="M21 17v30M43 17v30M11 28h42M11 36h42" stroke="#8B5CF6" stroke-width="2.4" opacity=".85"/>
+  <path d="m30 25 11 5-11 5V25Z" fill="#F43F5E"/>
+</svg>
