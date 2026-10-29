@@ -234,7 +234,7 @@ export function useComposeStatus(projectId: number | null) {
 /**
  * 查询 Compose 项目维护的容器列表
  *
- * 通过容器标签 nasdeck.compose.project 过滤归属容器。
+ * 通过容器标签 onetap.compose.project 过滤归属容器。
  */
 export function useComposeProjectContainers(projectId: number | null) {
   return useQuery<ContainerInfo[]>({

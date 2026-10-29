@@ -1,5 +1,5 @@
 /**
- * NasDeck Logo 图标组件 — 全新设计
+ * OneTap Logo 图标组件 — 全新设计
  *
  * 设计概念：层叠的数据面板 (Deck) + NAS 状态指示灯
  * - 紫色圆角底代表品牌主色
@@ -92,7 +92,7 @@ export function LogoIcon({ className = "", size = 32, inverse = false }: LogoIco
 }
 
 /**
- * NasDeck 简洁版 Logo（仅图标，用于小尺寸场景）
+ * OneTap 简洁版 Logo（仅图标，用于小尺寸场景）
  */
 export function LogoIconSmall({ className = "", size = 20, inverse = false }: LogoIconProps) {
   return <LogoIcon className={className} size={size} inverse={inverse} />;
