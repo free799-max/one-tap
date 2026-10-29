@@ -32,7 +32,7 @@ export const DeployTaskContext = createContext<DeployTaskContextValue | null>(
   null
 );
 
-const STORAGE_KEY = "onetap:deploy-task-ids";
+const STORAGE_KEY = "nas-deck:deploy-task-ids";
 
 /** 读取当前标签页保存的任务 ID；刷新/重新登录后仍能回到进度面板 */
 function readStoredTaskIds(): string[] {

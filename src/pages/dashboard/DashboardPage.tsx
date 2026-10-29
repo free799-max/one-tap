@@ -159,7 +159,7 @@ function HostStatusBar({
           </div>
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold leading-tight text-foreground">
-              {hostname || "OneTap"}
+              {hostname || "NasDeck"}
             </p>
             <p className="text-[10px] leading-tight text-muted-foreground">
               服务概览

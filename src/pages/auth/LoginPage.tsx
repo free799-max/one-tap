@@ -182,7 +182,7 @@ export function LoginPage() {
             <LogoIcon size={24} inverse />
           </div>
           <span className="text-xl font-semibold text-white tracking-tight">
-            OneTap
+            NasDeck
           </span>
         </div>
 
@@ -193,7 +193,7 @@ export function LoginPage() {
             <span className="text-white/80">数字生活</span>
           </h2>
           <p className="mt-6 text-lg text-white/70 leading-relaxed">
-            告别繁琐配置，OneTap 让您轻松拥有专属的家庭智能娱乐中心！
+            告别繁琐配置，NasDeck 让您轻松拥有专属的家庭智能娱乐中心！
             作为一站式自动化编排工具，它提供海量模板，只需一键即可唤醒
             家庭娱乐体验，让一切尽可能在你的掌握之中。
           </p>
@@ -214,7 +214,7 @@ export function LoginPage() {
         </div>
 
         <div className="relative z-10 text-sm text-white/50">
-          © {new Date().getFullYear()} OneTap. All rights reserved.
+          © {new Date().getFullYear()} NasDeck. All rights reserved.
         </div>
       </div>
 
@@ -222,7 +222,7 @@ export function LoginPage() {
       <div className="flex-1 flex items-center justify-center p-4 sm:p-8 relative">
         <div className="lg:hidden absolute top-6 left-6 flex items-center gap-2">
           <LogoIcon size={28} />
-          <span className="text-lg font-semibold text-foreground">OneTap</span>
+          <span className="text-lg font-semibold text-foreground">NasDeck</span>
         </div>
 
         <div className="w-full max-w-[400px] animate-fade-in">
