@@ -133,8 +133,8 @@ export function AppsTab() {
 
   return (
     <div className="space-y-4">
-      <Card className="rounded-xl">
-        <CardContent className="p-4 space-y-4">
+      <Card className="rounded-xl py-2">
+        <CardContent className="px-4 pb-4 pt-2 space-y-4">
           {/* 工具栏 */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 overflow-x-auto scrollbar-hidden pb-1 order-2 sm:order-1">

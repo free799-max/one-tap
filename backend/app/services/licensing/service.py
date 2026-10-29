@@ -344,6 +344,10 @@ class LicensingService:
     async def refresh(self, db: AsyncSession) -> dict[str, Any]:
         state = await self.get_state(db)
         if not state.refresh_token:
+            # 只丢了刷新令牌但还留着授权码（例如旧版本刷新失败时被清空）时，
+            # 直接用授权码重新激活，用户不需要重新输入。
+            if state.license_key:
+                return await self.activate(db, state.license_key, state.device_name)
             raise APIException("本机尚未激活授权", 409)
         device = await get_device_fingerprint(state.installation_id)
         try:
@@ -372,10 +376,12 @@ class LicensingService:
             self._apply_activation(state, data, payload)
             await db.commit()
         except APIException as exc:
-            if exc.status_code in {401, 403}:
-                self._clear_authorization(state, exc.message)
-            else:
-                state.last_error = exc.message
+            # 刷新令牌失效（管理端重置、同机重新激活换了令牌等）时，
+            # 用本机保存的授权码自动重新激活，而不是清空本地授权。
+            if exc.status_code in {401, 403} and state.license_key:
+                logger.info("刷新令牌失效，使用本机授权码重新激活：%s", exc.message)
+                return await self.activate(db, state.license_key, state.device_name)
+            state.last_error = exc.message
             await db.commit()
             raise
         return await self.get_status(db)
@@ -491,7 +497,7 @@ class LicensingService:
         try:
             async with async_session() as db:
                 state = await self.get_state(db)
-                if not state.refresh_token:
+                if not state.refresh_token and not state.license_key:
                     return
                 await self.refresh(db)
         except asyncio.CancelledError:

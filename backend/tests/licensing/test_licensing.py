@@ -368,9 +368,10 @@ async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
 
 
 @pytest.mark.parametrize("status_code", [401, 403])
-async def test_refresh_auth_failure_revokes_local_access_and_allows_reactivation(
+async def test_refresh_auth_failure_reactivates_with_stored_key(
     client, monkeypatch, status_code
 ):
+    """刷新令牌失效时用本机授权码自动重新激活，不再清空本地授权。"""
     token = await register(client, "admin")
     await client.get("/api/license/status", headers=auth(token))
     state = await get_state(client)
@@ -396,42 +397,71 @@ async def test_refresh_auth_failure_revokes_local_access_and_allows_reactivation
     )
     assert activated.status_code == 200
 
-    post.side_effect = APIException("授权已被管理端吊销", status_code)
-    rejected = await client.post("/api/license/refresh", headers=auth(token))
-    assert rejected.status_code == status_code
-    status = await client.get("/api/license/status", headers=auth(token))
-    assert status.json()["data"]["valid"] is False
-    assert status.json()["data"]["activated"] is False
-    assert status.json()["data"]["last_error"] == "授权已被管理端吊销"
+    post.side_effect = [
+        APIException("刷新令牌或设备标识无效", status_code),
+        activation_data,
+    ]
+    refreshed = await client.post("/api/license/refresh", headers=auth(token))
+    assert refreshed.status_code == 200
+    assert refreshed.json()["data"]["valid"] is True
+
+    actions = [call.args[0] for call in post.call_args_list]
+    assert actions[-2:] == ["refresh", "activate"]
+    activate_body = post.call_args_list[-1].args[1]
+    assert activate_body["license_key"] == "license-key"
+    assert activate_body["installation_id"] == installation_id
 
     state = await get_state(client)
-    assert state.installation_id == installation_id
+    assert state.certificate is not None
+    assert state.refresh_token == "refresh-token"
+    assert state.license_key == "license-key"
     assert state.device_name == "nas"
-    assert state.certificate is None
-    assert state.refresh_token is None
-    assert state.license_id is None
-    assert state.activation_id is None
+    assert state.last_error is None
 
-    blocked = await client.post(
-        "/api/orchestrations/example/deploy",
-        headers=auth(token),
-        json={"instance_name": "example", "selected_apps": ["app"]},
+
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_refresh_auth_failure_keeps_local_authorization(
+    client, monkeypatch, status_code
+):
+    """重新激活也失败时保留证书与授权码，离线有效期内仍可用。"""
+    token = await register(client, "admin")
+    await client.get("/api/license/status", headers=auth(token))
+    state = await get_state(client)
+    signed_certificate = certificate(
+        installation_id=state.installation_id,
+        license_id=101,
+        activation_id=202,
     )
-    assert blocked.status_code == 403
-    assert blocked.json()["message"] == "需要有效授权"
-
-    post.side_effect = None
-    post.return_value = activation_data
-    reactivated = await client.post(
+    post = AsyncMock(
+        return_value={
+            "certificate": signed_certificate,
+            "refresh_token": "refresh-token",
+            "license_id": 101,
+            "activation_id": 202,
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+        }
+    )
+    monkeypatch.setattr(licensing_service, "_post", post)
+    await client.post(
         "/api/license/activate",
         headers=auth(token),
-        json={"license_key": "new-license-key"},
+        json={"license_key": "license-key", "device_name": "nas"},
     )
-    assert reactivated.status_code == 200
-    assert reactivated.json()["data"]["valid"] is True
+
+    post.side_effect = APIException("刷新令牌或设备标识无效", status_code)
+    rejected = await client.post("/api/license/refresh", headers=auth(token))
+    assert rejected.status_code == status_code
+
+    status = (await client.get("/api/license/status", headers=auth(token))).json()["data"]
+    assert status["activated"] is True
+    assert status["last_error"] == "刷新令牌或设备标识无效"
+
     state = await get_state(client)
-    assert state.installation_id == installation_id
-    assert state.device_name == "nas"
+    assert state.certificate is not None
+    assert state.refresh_token == "refresh-token"
+    assert state.license_key == "license-key"
+    assert state.license_id == "101"
+    assert state.activation_id == "202"
 
 
 async def test_deactivate_auth_failure_also_clears_local_authorization(
