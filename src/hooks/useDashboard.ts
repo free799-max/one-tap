@@ -6,9 +6,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getOverview,
   getOverviewAppDetail,
+  getOverviewAppMetrics,
   upgradeOverviewApp,
   type Overview,
   type OverviewAppDetail,
+  type OverviewAppMetrics,
 } from "@/api/dashboard";
 
 export type {
@@ -30,11 +32,21 @@ export function useOverview() {
   });
 }
 
-/** 查询应用容器详情与监控指标，弹窗打开时每 5 秒刷新 */
+/** 查询应用容器详情，弹窗打开时每 5 秒刷新 */
 export function useOverviewAppDetail(instanceId: number | null) {
   return useQuery<OverviewAppDetail>({
     queryKey: ["dashboard", "app-detail", instanceId],
     queryFn: () => getOverviewAppDetail(instanceId as number),
+    enabled: instanceId != null,
+    refetchInterval: instanceId != null ? 5_000 : false,
+  });
+}
+
+/** 独立查询监控指标，慢采样只影响监控区域，不阻塞详情首屏 */
+export function useOverviewAppMetrics(instanceId: number | null) {
+  return useQuery<OverviewAppMetrics | null>({
+    queryKey: ["dashboard", "app-metrics", instanceId],
+    queryFn: () => getOverviewAppMetrics(instanceId as number),
     enabled: instanceId != null,
     refetchInterval: instanceId != null ? 5_000 : false,
   });
