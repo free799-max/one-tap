@@ -1,7 +1,8 @@
 /**
- * Compose 项目日志弹窗（实时 SSE 版）
+ * 编排/应用日志弹窗（实时 SSE 版）
  *
- * 通过 SSE 实时流式展示 docker compose logs 输出，支持跟随滚动、暂停、清空、复制。
+ * 通过 SSE 实时流式展示 docker compose logs（或指定应用的日志流）输出，
+ * 支持跟随滚动、暂停、清空、复制。
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -23,7 +24,8 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toast";
-import { useComposeLogsStream, useComposeStatus } from "@/hooks/useCompose";
+import { useComposeStatus } from "@/hooks/useCompose";
+import { useLogsStream, withLogToken } from "@/hooks/useLogsStream";
 
 /** 根据 Compose 状态返回 Badge 样式 */
 function statusVariant(status: string) {
@@ -43,24 +45,37 @@ export function StackLogsDialog({
   projectName,
   open,
   onOpenChange,
+  streamPath,
+  title = "编排日志",
+  statusText,
 }: {
   projectId: number | null;
   projectName: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 直接指定日志流地址（不含 tail/token），用于非 Compose 项目来源 */
+  streamPath?: string | null;
+  title?: string;
+  /** 外部传入的状态文案，优先于 Compose 状态徽标 */
+  statusText?: string | null;
 }) {
   const toast = useToast();
   const [tail, setTail] = useState(100);
   const [follow, setFollow] = useState(true);
-  const { logs, connected, clearLogs } = useComposeLogsStream(
-    open ? projectId : null,
-    tail,
-    (message) => {
-      toast.error(message);
-      onOpenChange(false);
-    }
-  );
-  const { data: status } = useComposeStatus(projectId);
+  const basePath =
+    streamPath ?? (projectId ? `/api/docker/compose/${projectId}/logs/stream` : null);
+  const logsUrl =
+    open && basePath
+      ? withLogToken(
+          `${basePath}${basePath.includes("?") ? "&" : "?"}tail=${tail}&follow=${follow}`
+        )
+      : null;
+  const { logs, connected, clearLogs } = useLogsStream(logsUrl, (message) => {
+    toast.error(message);
+    onOpenChange(false);
+  });
+  const { data: status } = useComposeStatus(streamPath ? null : projectId);
+  const statusLabel = statusText || status?.status;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -99,15 +114,15 @@ export function StackLogsDialog({
         <DialogHeader className="flex-row flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 pr-14 border-b shrink-0">
           <DialogTitle className="text-lg font-semibold flex items-center gap-2 flex-wrap">
             <FileText className="h-5 w-5 text-muted-foreground" />
-            编排日志
+            {title}
             {projectName && (
               <span className="text-base font-medium text-foreground">
                 {projectName}
               </span>
             )}
-            {status?.status && (
-              <Badge variant={statusVariant(status.status)} className="text-xs">
-                {status.status}
+            {statusLabel && (
+              <Badge variant={statusVariant(statusLabel)} className="text-xs">
+                {statusLabel}
               </Badge>
             )}
           </DialogTitle>

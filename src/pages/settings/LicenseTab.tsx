@@ -5,6 +5,7 @@ import {
   Check,
   Clock3,
   Copy,
+  Gift,
   Infinity as InfinityIcon,
   KeyRound,
   Loader2,
@@ -62,7 +63,7 @@ function LicenseStatusBadge({ status }: { status: LicenseStatus }) {
   let Icon = XCircle;
 
   if (!status.activated) {
-    label = "未激活";
+    label = "免费版";
     className = "bg-muted text-muted-foreground";
     Icon = ShieldOff;
   } else if (normalized.includes("expired")) {
@@ -180,6 +181,7 @@ export function LicenseTab() {
 
   return (
     <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+      {license.activated && (
       <Card className="rounded-xl xl:col-span-2">
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -190,7 +192,7 @@ export function LicenseTab() {
             <LicenseStatusBadge status={license} />
           </div>
           <CardDescription>
-            自动化功能需要有效授权；离线有效期间可继续使用已授权功能。
+            当前为授权版，自动化方案与定时自动化更新均已解锁；离线有效期间可继续使用已授权功能。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -295,17 +297,28 @@ export function LicenseTab() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {isAdmin && !license.valid && (
         <Card className="rounded-xl xl:col-span-2">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <KeyRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-              激活授权
-            </CardTitle>
-            <CardDescription>
-              输入订阅授权码，将当前设备与授权绑定。
-            </CardDescription>
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1.5">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <KeyRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                  激活授权
+                </CardTitle>
+                <CardDescription>
+                  输入授权码升级为授权版，解锁定时自动化更新。
+                </CardDescription>
+              </div>
+              {!license.activated && (
+                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500 px-3 py-1 text-sm font-semibold text-white shadow-sm">
+                  <Gift className="h-4 w-4" aria-hidden="true" />
+                  免费版 · 无期限
+                </span>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             <form
@@ -351,7 +364,7 @@ export function LicenseTab() {
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title="确认解绑授权？"
-        description="解绑后当前设备将无法使用自动化功能，需要重新激活授权才能恢复。"
+        description="解绑后当前设备将回到免费版，无法使用自动化更新，需要重新激活授权才能恢复。"
         confirmText="确认解绑"
         destructive
         isPending={deactivate.isPending}

@@ -31,7 +31,7 @@ import {
 } from "@/hooks/useOrchestrations";
 import { useApps, type App } from "@/hooks/useApps";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
-import { cn } from "@/lib/utils";
+import { cn, formatVersion } from "@/lib/utils";
 import { getAutomationCategoryMeta } from "@/lib/automation-categories";
 import {
   ArrowRight,
@@ -444,12 +444,15 @@ export function AutomationCategoryPage() {
                       方案有新版本
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      v{selectedDetail.orchestration_version || "未知"}
+                      {formatVersion(selectedDetail.orchestration_version)}
                       <span className="mx-1 text-muted-foreground/60">→</span>
-                      v
                       {selectedDetail.template_version ||
-                        currentOrchestration?.version ||
-                        "最新"}
+                      currentOrchestration?.version
+                        ? formatVersion(
+                            selectedDetail.template_version ||
+                              currentOrchestration?.version
+                          )
+                        : "最新"}
                     </p>
                     {selectedDetail.template_changelog?.trim() && (
                       <p className="mt-1 line-clamp-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/80">

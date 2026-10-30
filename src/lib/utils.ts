@@ -46,6 +46,18 @@ export function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
+/**
+ * 版本号统一显示
+ *
+ * 版本可能来自应用市场的镜像标签（自带 `v`，如 `v2.63.23`），
+ * 也可能来自方案模板（纯数字，如 `1.0.0`），这里统一补成恰好一个 `v` 前缀。
+ */
+export function formatVersion(version?: string | null): string {
+  const value = String(version ?? "").trim();
+  if (!value) return "未知";
+  return /^v/i.test(value) ? value : `v${value}`;
+}
+
 /** ISO 日期转 yyyy-MM-dd HH:mm:ss 格式 */
 export function formatDate(iso: string): string {
   if (!iso) return "-";

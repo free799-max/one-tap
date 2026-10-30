@@ -14,6 +14,7 @@ import { ExternalLink, Code, Cpu } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AppIcon } from "./AppIcon";
+import { formatVersion } from "@/lib/utils";
 import type { App } from "@/hooks/useApps";
 
 interface AppDetailDialogProps {
@@ -74,7 +75,7 @@ export function AppDetailDialog({
                   </Badge>
                 )}
                 <Badge variant="outline" className="text-xs font-normal">
-                  版本 {app.version}
+                  版本 {formatVersion(app.version)}
                 </Badge>
                 <Badge variant="outline" className="text-xs font-normal capitalize">
                   {app.type === "compose" ? "多容器编排" : "单容器"}

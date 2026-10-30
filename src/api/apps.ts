@@ -17,6 +17,12 @@ export interface App {
   source_url: string | null;
   architectures: string[];
   image: string | null;
+  /** 默认镜像体积（字节） */
+  image_size?: number | null;
+  /** 默认镜像推送时间 */
+  image_pushed_at?: string | null;
+  /** 默认镜像摘要 */
+  image_digest?: string | null;
   default_ports: { port: number; protocol?: string; description?: string }[];
   config_schema: Record<string, unknown>;
   version: string;
