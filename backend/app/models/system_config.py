@@ -25,6 +25,7 @@ class SystemConfig(Base):
         default_admin_username: 部署服务时自动配置的统一管理员用户名
         default_admin_password: 部署服务时自动配置的统一管理员密码（空则每次随机）
         default_email_domain: 需要邮箱登录的应用使用的邮箱后缀（不含 @）
+        auto_update_enabled: 是否开启自动更新（定时同步应用市场与自动化方案，仅授权版可用）
         docker_registry_mirrors: Docker 镜像加速地址列表，按优先级排序
         hosts_optimizer_enabled: 是否启用 Hosts 优选
         hosts_optimizer_mode: 运行模式，manual（仅手动）/ auto（定时）
@@ -59,6 +60,9 @@ class SystemConfig(Base):
     )
     default_email_domain: Mapped[str] = mapped_column(
         String(255), default="", server_default="", nullable=False
+    )
+    auto_update_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
     )
     docker_registry_mirrors: Mapped[list[str]] = mapped_column(
         JSON,

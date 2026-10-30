@@ -69,9 +69,6 @@ class DeployMixin:
 
         返回组合部署记录和每个 App 对应的部署任务 ID 列表。
         """
-        from app.services.licensing import licensing_service
-
-        await licensing_service.require_valid(db)
         db_orchestration = await self.get_orchestration(db, orchestration_name)
 
         composition = db_orchestration.app_composition or []

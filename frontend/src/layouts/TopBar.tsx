@@ -7,7 +7,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
   Bell,
-  HelpCircle,
+  RefreshCw,
   User,
   LogOut,
   PanelLeft,
@@ -16,6 +16,12 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
+import { useCatalogSync } from "@/hooks/useCatalogSync";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface TopBarProps {
   sidebarCollapsed: boolean;
@@ -25,6 +31,7 @@ interface TopBarProps {
 export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
   const { user, logout } = useAuth();
   const { activeTaskIds, isPanelOpen, openPanel } = useDeployTasks();
+  const catalogSync = useCatalogSync();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -56,11 +63,34 @@ export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
         )}
       </button>
 
-      {/* 右侧：帮助 + 通知 + 部署任务入口 + 用户菜单 */}
+      {/* 右侧：同步 + 通知 + 部署任务入口 + 用户菜单 */}
       <div className="flex items-center gap-1">
-        <button className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-          <HelpCircle className="h-4 w-4" />
-        </button>
+        {user?.role === "admin" && (
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <button
+                  onClick={() => catalogSync.mutate()}
+                  disabled={catalogSync.isPending}
+                  aria-label="从管理端同步应用市场与自动化配置"
+                  className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${
+                      catalogSync.isPending ? "animate-spin" : ""
+                    }`}
+                  />
+                </button>
+              }
+            />
+            <TooltipContent side="bottom" align="center">
+              {catalogSync.isPending
+                ? "正在从管理端同步"
+                : "从管理端同步应用市场与自动化配置"}
+            </TooltipContent>
+          </Tooltip>
+        )}
         <button className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors relative">
           <Bell className="h-4 w-4" />
           <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white" />

@@ -25,8 +25,6 @@ import {
   BookOpen,
   CheckCircle2,
   Clock,
-  Eye,
-  EyeOff,
   FolderTree,
   Loader2,
   Play,
@@ -139,7 +137,6 @@ export function ReaderAutoSyncPanel({
   const saveMutation = useSaveAppAutoSync();
   const runMutation = useRunAppAutoSync();
   const [draft, setDraft] = useState<ReaderAutoSyncConfig | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -186,21 +183,11 @@ export function ReaderAutoSyncPanel({
   const fillDetected = () => {
     if (!data?.detected) return;
     update({
-      reader_url: data.detected.reader_url || draft.reader_url,
-      reader_username:
-        data.detected.reader_username || draft.reader_username,
-      reader_password:
-        data.detected.reader_password || draft.reader_password,
-      reader_token: data.detected.reader_token || draft.reader_token,
-      ermao_url: data.detected.ermao_url || draft.ermao_url,
       library_dir: data.detected.library_dir || draft.library_dir,
       library_host_dir:
         data.detected.library_host_dir || draft.library_host_dir,
       ermao_library_dir:
         data.detected.ermao_library_dir || draft.ermao_library_dir,
-      ermao_email: data.detected.ermao_email || draft.ermao_email,
-      ermao_password:
-        data.detected.ermao_password || draft.ermao_password,
     });
   };
 
@@ -409,7 +396,7 @@ export function ReaderAutoSyncPanel({
                 type="button"
                 className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 font-mono hover:bg-muted/70"
                 onClick={fillDetected}
-                title="点击填入检测到的地址与目录"
+                title="点击填入检测到的目录"
               >
                 {data.detected.library_host_dir || "未检测到"} →{" "}
                 {data.detected.library_dir || "未检测到"}
@@ -423,150 +410,50 @@ export function ReaderAutoSyncPanel({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-3 rounded-lg border p-3">
-          <div>
-            <span className="text-sm font-medium">Reader 接口</span>
-            <p className="text-[11px] text-muted-foreground">
-              账号由部署后的自动配置写入；开启 secure 模式时优先使用
-              accessToken。
-            </p>
-          </div>
+      <div className="space-y-3 rounded-lg border p-3">
+        <div>
+          <span className="text-sm font-medium">二毛扫描</span>
+          <p className="text-[11px] text-muted-foreground">
+            Reader 与二毛的访问地址和登录凭据均自动复用各应用的认证设置。
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="reader-url">访问地址</Label>
+            <Label htmlFor="reader-ermao-lib">书库 ID（可留空自动匹配）</Label>
             <Input
-              id="reader-url"
+              id="reader-ermao-lib"
               className="font-mono text-xs"
-              value={draft.reader_url}
-              onChange={(e) => update({ reader_url: e.target.value })}
+              value={draft.ermao_lib_id}
+              onChange={(e) => update({ ermao_lib_id: e.target.value })}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-username">登录用户名</Label>
-              <Input
-                id="reader-username"
-                className="text-xs"
-                value={draft.reader_username}
-                onChange={(e) => update({ reader_username: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-password">登录密码</Label>
-              <Input
-                id="reader-password"
-                type={showPassword ? "text" : "password"}
-                className="text-xs"
-                value={draft.reader_password}
-                onChange={(e) => update({ reader_password: e.target.value })}
-              />
-            </div>
-          </div>
           <div className="space-y-1.5">
-            <Label htmlFor="reader-token">访问 Token（自动获取，可留空）</Label>
+            <Label htmlFor="reader-scan-wait">扫描等待上限（秒）</Label>
             <Input
-              id="reader-token"
-              className="font-mono text-xs"
-              value={draft.reader_token}
-              onChange={(e) => update({ reader_token: e.target.value })}
+              id="reader-scan-wait"
+              type="number"
+              min={10}
+              max={3600}
+              value={draft.scan_wait_seconds}
+              onChange={(e) =>
+                update({ scan_wait_seconds: Number(e.target.value) || 10 })
+              }
             />
           </div>
         </div>
-
-        <div className="space-y-3 rounded-lg border p-3">
+        <div className="flex items-center justify-between border-t pt-3">
           <div>
-            <span className="text-sm font-medium">二毛读书</span>
+            <p className="text-xs font-medium">自动初始化二毛账号与书库</p>
             <p className="text-[11px] text-muted-foreground">
-              首次运行会在二毛未初始化时自动创建账号与书库；已有账号时请填写原密码。
+              仅在二毛还没有任何用户/书库时生效
             </p>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="reader-ermao-url">访问地址</Label>
-            <Input
-              id="reader-ermao-url"
-              className="font-mono text-xs"
-              value={draft.ermao_url}
-              onChange={(e) => update({ ermao_url: e.target.value })}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-ermao-email">登录邮箱</Label>
-              <Input
-                id="reader-ermao-email"
-                type="email"
-                className="text-xs"
-                value={draft.ermao_email}
-                onChange={(e) => update({ ermao_email: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-ermao-password">登录密码</Label>
-              <div className="flex items-center gap-1">
-                <Input
-                  id="reader-ermao-password"
-                  type={showPassword ? "text" : "password"}
-                  className="text-xs"
-                  value={draft.ermao_password}
-                  onChange={(e) =>
-                    update({ ermao_password: e.target.value })
-                  }
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-9 w-9 shrink-0 px-0"
-                  aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                  onClick={() => setShowPassword((value) => !value)}
-                >
-                  {showPassword ? (
-                    <EyeOff className="h-3.5 w-3.5" />
-                  ) : (
-                    <Eye className="h-3.5 w-3.5" />
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-ermao-lib">书库 ID（可留空自动匹配）</Label>
-              <Input
-                id="reader-ermao-lib"
-                className="font-mono text-xs"
-                value={draft.ermao_lib_id}
-                onChange={(e) => update({ ermao_lib_id: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="reader-scan-wait">扫描等待上限（秒）</Label>
-              <Input
-                id="reader-scan-wait"
-                type="number"
-                min={10}
-                max={3600}
-                value={draft.scan_wait_seconds}
-                onChange={(e) =>
-                  update({ scan_wait_seconds: Number(e.target.value) || 10 })
-                }
-              />
-            </div>
-          </div>
-          <div className="flex items-center justify-between border-t pt-3">
-            <div>
-              <p className="text-xs font-medium">自动初始化二毛账号与书库</p>
-              <p className="text-[11px] text-muted-foreground">
-                仅在二毛还没有任何用户/书库时生效
-              </p>
-            </div>
-            <ToggleButton
-              active={draft.auto_setup}
-              onClick={() => update({ auto_setup: !draft.auto_setup })}
-            >
-              {draft.auto_setup ? "已开启" : "已关闭"}
-            </ToggleButton>
-          </div>
+          <ToggleButton
+            active={draft.auto_setup}
+            onClick={() => update({ auto_setup: !draft.auto_setup })}
+          >
+            {draft.auto_setup ? "已开启" : "已关闭"}
+          </ToggleButton>
         </div>
       </div>
 

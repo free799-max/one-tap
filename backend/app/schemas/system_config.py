@@ -27,6 +27,9 @@ class SystemConfigBase(BaseModel):
         max_length=255,
         description="需要邮箱登录的应用使用的邮箱后缀（不含 @）",
     )
+    auto_update_enabled: bool = Field(
+        False, description="是否开启自动更新（仅授权版可开启）"
+    )
     docker_registry_mirrors: list[str] = Field(
         default_factory=list,
         description="Docker 镜像加速地址列表，按优先级排序",
@@ -54,6 +57,9 @@ class SystemConfigUpdate(BaseModel):
     default_admin_username: Optional[str] = Field(None, max_length=255)
     default_admin_password: Optional[str] = Field(None, max_length=255)
     default_email_domain: Optional[str] = Field(None, max_length=255)
+    auto_update_enabled: Optional[bool] = Field(
+        None, description="是否开启自动更新（仅授权版可开启）"
+    )
     docker_registry_mirrors: Optional[list[str]] = None
 
 

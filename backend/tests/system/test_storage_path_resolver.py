@@ -4,6 +4,7 @@ import pytest
 
 from app.core.exceptions import APIException
 from app.services.system import StoragePathResolver
+from app.services.system.storage import is_host_system_path
 
 
 class TestStoragePathResolver:
@@ -223,3 +224,16 @@ class TestStoragePathResolverDataDirectories:
         # 空路径
         assert resolver.is_managed_path("") is False
         assert resolver.is_managed_path(None) is False
+
+    def test_is_host_system_path(self):
+        """Docker 套接字、时区文件等宿主机内置路径应被识别并放行。"""
+        assert is_host_system_path("/var/run/docker.sock") is True
+        assert is_host_system_path("/var/run/docker.sock/") is True
+        assert is_host_system_path("/run/docker.sock") is True
+        assert is_host_system_path("/etc/localtime") is True
+        assert is_host_system_path("/etc/timezone") is True
+        # 普通目录和空值不属于内置文件
+        assert is_host_system_path("/etc/passwd") is False
+        assert is_host_system_path("/mnt/media") is False
+        assert is_host_system_path("") is False
+        assert is_host_system_path(None) is False

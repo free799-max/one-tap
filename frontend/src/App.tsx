@@ -20,7 +20,6 @@ import { DockerHostPage } from "./pages/docker/host/DockerHostPage";
 import { DockerImagesPage } from "./pages/docker/images/DockerImagesPage";
 import { DockerStacksPage } from "./pages/docker/stacks/DockerStacksPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
-import { LicenseGuard } from "./components/LicenseGuard";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -79,19 +78,11 @@ export default function App() {
                   {/* 自动化管理 */}
                   <Route
                     path="/automation"
-                    element={
-                      <LicenseGuard>
-                        <AutomationCategoriesPage />
-                      </LicenseGuard>
-                    }
+                    element={<AutomationCategoriesPage />}
                   />
                   <Route
                     path="/automation/:category"
-                    element={
-                      <LicenseGuard>
-                        <AutomationCategoryPage />
-                      </LicenseGuard>
-                    }
+                    element={<AutomationCategoryPage />}
                   />
 
                   {/* Docker 管理 */}

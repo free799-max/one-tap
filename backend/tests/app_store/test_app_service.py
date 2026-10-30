@@ -6,6 +6,7 @@ import pytest
 
 from app.core.exceptions import APIException
 from app.services.app_store.app_service import _extract_app_ports
+from app.services.system import StoragePathResolver
 from app.services.system.port_allocator import (
     _parse_proc_net_tcp,
     get_used_ports,
@@ -328,6 +329,125 @@ class TestValidateAndPreparePorts:
                 )
 
         assert exc_info.value.status_code == 400
+
+    @staticmethod
+    def _volume_app():
+        return type(
+            "App",
+            (),
+            {
+                "name": "portainer",
+                "config_schema": {
+                    "type": "object",
+                    "properties": {
+                        "volumes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["host_path", "container_path", "mode"],
+                                "properties": {
+                                    "host_path": {"type": "string"},
+                                    "container_path": {"type": "string"},
+                                    "mode": {"type": "string"},
+                                },
+                            },
+                        }
+                    },
+                },
+                "yaml_template": "services:\n  app:\n    image: test",
+            },
+        )()
+
+    @pytest.mark.asyncio
+    async def test_allows_host_system_mounts(self, app_service):
+        """Docker 套接字等宿主机内置文件不受数据目录限制。"""
+        resolver = StoragePathResolver(app_data=("/opt/docker", "/docker"))
+        config = {
+            "volumes": [
+                {
+                    "host_path": "/var/run/docker.sock",
+                    "container_path": "/var/run/docker.sock",
+                    "mode": "ro",
+                }
+            ]
+        }
+
+        project_name, _ = await app_service._validate_and_prepare(
+            db_app=self._volume_app(),
+            instance_name="portainer",
+            config=config,
+            check_ports=False,
+            resolver=resolver,
+        )
+
+        assert project_name == "portainer"
+
+    @pytest.mark.asyncio
+    async def test_rejects_unmanaged_absolute_mounts(self, app_service):
+        """普通绝对路径仍必须位于受管存储目录下。"""
+        resolver = StoragePathResolver(app_data=("/opt/docker", "/docker"))
+        config = {
+            "volumes": [
+                {
+                    "host_path": "/mnt/other/data",
+                    "container_path": "/data",
+                    "mode": "rw",
+                }
+            ]
+        }
+
+        with pytest.raises(APIException) as exc_info:
+            await app_service._validate_and_prepare(
+                db_app=self._volume_app(),
+                instance_name="portainer",
+                config=config,
+                check_ports=False,
+                resolver=resolver,
+            )
+
+        assert "不在已配置的应用数据目录" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_strips_builtin_mount_from_legacy_config(self, app_service):
+        """模板已内置的系统挂载不再从旧实例配置中重复渲染。"""
+        app = self._volume_app()
+        app.yaml_template = (
+            "services:\n  app:\n    image: test\n    volumes:\n"
+            "      - /var/run/docker.sock:/var/run/docker.sock:ro\n"
+            "{%- for vol in volumes %}\n"
+            "      - {{ vol.host_path }}:{{ vol.container_path }}:{{ vol.mode }}\n"
+            "{%- endfor %}\n"
+        )
+        config = {
+            "volumes": [
+                {
+                    "host_path": "/var/run/docker.sock",
+                    "container_path": "/var/run/docker.sock",
+                    "mode": "ro",
+                },
+                {
+                    "host_path": "portainer/data",
+                    "container_path": "/data",
+                    "mode": "rw",
+                },
+            ]
+        }
+
+        await app_service._validate_and_prepare(
+            db_app=app,
+            instance_name="portainer",
+            config=config,
+            check_ports=False,
+            resolver=StoragePathResolver(app_data=("/opt/docker", "/docker")),
+        )
+
+        assert config["volumes"] == [
+            {
+                "host_path": "portainer/data",
+                "container_path": "/data",
+                "mode": "rw",
+            }
+        ]
 
 
 class TestValidateAndPrepareImage:

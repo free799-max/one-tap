@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, JSON, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,6 +32,10 @@ class App(Base):
     architectures: Mapped[list[str]] = mapped_column(JSON, default=list)
     # 默认镜像名，如 jellyfin/jellyfin
     image: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 默认镜像元数据：体积（字节）、推送时间、摘要
+    image_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    image_pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    image_digest: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # 默认端口列表，如 [{"port": 8096, "protocol": "tcp", "description": "Web UI"}]
     default_ports: Mapped[list[dict]] = mapped_column(JSON, default=list)
     # 前端动态表单 JSON Schema

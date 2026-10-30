@@ -153,6 +153,9 @@ class SystemConfigService:
                 data.default_email_domain
             )
 
+        if data.auto_update_enabled is not None:
+            config.auto_update_enabled = bool(data.auto_update_enabled)
+
         if data.docker_registry_mirrors is not None:
             config.docker_registry_mirrors = normalize_docker_registry_mirrors(
                 data.docker_registry_mirrors
@@ -181,6 +184,7 @@ class SystemConfigService:
             "default_admin_username": config.default_admin_username,
             "default_admin_password": config.default_admin_password,
             "default_email_domain": config.default_email_domain or "",
+            "auto_update_enabled": bool(config.auto_update_enabled),
             "email_username_apps": list(EMAIL_USERNAME_APPS),
             "docker_registry_mirrors": config.docker_registry_mirrors or [],
         }

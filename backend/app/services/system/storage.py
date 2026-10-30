@@ -8,6 +8,23 @@
 
 from app.core.exceptions import APIException
 
+# 宿主机自带文件：Docker 套接字与时区文件等由系统提供，不能也不需要
+# 落在应用数据目录/数据目录下，部署校验时应直接放行。
+HOST_SYSTEM_PATHS = frozenset(
+    {
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+        "/etc/localtime",
+        "/etc/timezone",
+    }
+)
+
+
+def is_host_system_path(path: str | None) -> bool:
+    """判断路径是否为宿主机内置文件（而非需要受管目录的普通挂载）。"""
+    value = (path or "").strip().rstrip("/")
+    return value in HOST_SYSTEM_PATHS
+
 
 class StoragePathResolver:
     """存储路径解析器。

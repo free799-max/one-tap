@@ -4,10 +4,10 @@ export interface LicenseStatus {
   activated: boolean;
   valid: boolean;
   status: string;
+  /** free 免费版；licensed 授权版 */
+  edition: "free" | "licensed";
   /** 是否为永久授权 */
   perpetual: boolean;
-  /** 临时授权剩余月数，永久授权为 null */
-  temporary_months: number | null;
   license_id: string | null;
   activation_id: string | null;
   /** 授权码，仅管理员接口返回 */

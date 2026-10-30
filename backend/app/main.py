@@ -7,7 +7,6 @@
 from contextlib import asynccontextmanager
 
 import logging
-import secrets
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,10 +16,11 @@ from app.core.exceptions import APIException
 from app.schemas.response import StandardResponse
 from app.core.custom_route import CustomAPIRoute
 
-from app.config import DEFAULT_SECRET_KEY, settings
+from app.config import ensure_secret_key, settings
 from app.api.auth import router as auth_router
 from app.api.orchestration import deploy_tasks_router, orchestrations_router
 from app.api.app_store import router as apps_router
+from app.api.catalog import router as catalog_router
 from app.api.dashboard import router as dashboard_router
 from app.api.settings import router as settings_router
 from app.api.license import router as license_router
@@ -31,17 +31,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理：启动时初始化资源，关闭时释放资源。"""
-    # SECRET_KEY 仍为默认占位值时，生成随机密钥并打印醒目警告；
-    # 不硬失败以免打断开发，但重启后旧令牌会全部失效
-    if settings.SECRET_KEY == DEFAULT_SECRET_KEY:
-        settings.SECRET_KEY = secrets.token_urlsafe(48)
-        warning = (
-            "检测到 SECRET_KEY 使用默认值，已自动生成随机密钥。"
-            "生产环境请通过环境变量 SECRET_KEY 配置固定密钥，"
-            "否则每次重启后所有登录状态都会失效！"
-        )
-        logger.warning(warning)
-        print(f"\n*** WARNING: {warning} ***\n", flush=True)
+    ensure_secret_key()
 
     # 执行数据库迁移（包含 schema 与内置数据初始化）
     import asyncio
@@ -87,6 +77,7 @@ async def lifespan(app: FastAPI):
     # 目录同步：配置管理端地址后，启动时同步一次并按间隔循环同步，
     # 失败仅告警不阻断启动；服务关闭时取消后台同步任务
     sync_task = None
+    auto_update_task = None
     from app.services.manage_client import manage_base_urls
 
     if manage_base_urls():
@@ -104,14 +95,47 @@ async def lifespan(app: FastAPI):
                 except Exception as exc:
                     logger.warning("%s同步%s失败：%s", stage, label, exc)
 
+        async def _auto_update_allowed() -> bool:
+            """自动更新关闭或授权失效时跳过定时同步。"""
+            from app.database import async_session
+            from app.services.licensing import licensing_service
+            from app.services.system.config_service import system_config_service
+
+            async with async_session() as db:
+                config = await system_config_service.get_or_create(db)
+                if not config.auto_update_enabled:
+                    return False
+                try:
+                    await licensing_service.require_valid(db)
+                except Exception:
+                    return False
+                return True
+
+        async def _run_auto_update() -> None:
+            """自动升级 OneTap 自己部署的实例，异常仅记录告警。"""
+            from app.services.orchestration import auto_update
+
+            try:
+                await auto_update.run_auto_update()
+            except Exception as exc:
+                logger.warning("自动更新实例失败：%s", exc)
+
         if settings.MANAGE_SYNC_ON_STARTUP:
             await _sync_catalog("启动时")
+
+        # 启动同步完成后，若已开启自动更新则补跑一轮；放后台避免拉镜像
+        # 阻塞服务启动
+        if await _auto_update_allowed():
+            auto_update_task = asyncio.create_task(_run_auto_update())
 
         async def _sync_loop():
             """按配置间隔循环同步应用市场与编排方案，异常仅记录告警。"""
             while True:
                 await asyncio.sleep(settings.MANAGE_SYNC_INTERVAL_MINUTES * 60)
+                if not await _auto_update_allowed():
+                    continue
                 await _sync_catalog("定时")
+                await _run_auto_update()
 
         sync_task = asyncio.create_task(_sync_loop())
 
@@ -136,12 +160,25 @@ async def lifespan(app: FastAPI):
 
     licensing_service.start_scheduler()
 
+    # 安装上报：启动时登记本机安装，之后每天上报一次，用于管理端统计。
+    from app.services.installation_report import installation_reporter
+
+    installation_reporter.start_scheduler()
+
     yield
 
     await music_auto_service.stop_scheduler()
     await reader_auto_service.stop_scheduler()
     await hosts_optimizer_service.stop_scheduler()
     await licensing_service.stop_scheduler()
+    await installation_reporter.stop_scheduler()
+
+    if auto_update_task is not None:
+        auto_update_task.cancel()
+        try:
+            await auto_update_task
+        except asyncio.CancelledError:
+            pass
 
     if sync_task is not None:
         sync_task.cancel()
@@ -196,6 +233,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(orchestrations_router)
 app.include_router(apps_router)
+app.include_router(catalog_router)
 app.include_router(dashboard_router)
 app.include_router(deploy_tasks_router, prefix="/api")
 app.include_router(settings_router)

@@ -264,6 +264,50 @@ async def test_detect_reads_library_from_instance_volumes(session_local, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_panel_reuses_app_auth_settings(session_local, monkeypatch):
+    group_id = await _seed_group(
+        session_local,
+        {
+            "reader": {
+                "url": "http://reader-new/",
+                "auth_type": "basic",
+                "username": "reader-user",
+                "password": "reader-pass",
+                "auto_sync": {
+                    "reader_url": "http://reader-old",
+                    "reader_username": "old-user",
+                    "reader_password": "old-pass",
+                    "reader_token": "stale-token",
+                },
+            },
+            "ermao-library": {
+                "url": "http://ermao-new/",
+                "username": "reader@example.com",
+                "password": "ermao-pass",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        ReaderAutoSyncService,
+        "_container_mounts",
+        AsyncMock(return_value=[]),
+    )
+    service = ReaderAutoSyncService()
+
+    async with session_local() as db:
+        panel = await service.get_panel(db, group_id)
+
+    config = panel["config"]
+    assert config["reader_url"] == "http://reader-new"
+    assert config["reader_username"] == "reader-user"
+    assert config["reader_password"] == "reader-pass"
+    assert config["reader_token"] == ""
+    assert config["ermao_url"] == "http://ermao-new"
+    assert config["ermao_email"] == "reader@example.com"
+    assert config["ermao_password"] == "ermao-pass"
+
+
+@pytest.mark.asyncio
 async def test_save_config_generates_password_and_persists(session_local, monkeypatch):
     group_id = await _seed_group(session_local, {"reader": {"url": "http://reader"}})
     monkeypatch.setattr(

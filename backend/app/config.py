@@ -5,11 +5,13 @@
 """
 
 import os
+import secrets
+from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
-# SECRET_KEY 的默认占位值，启动时检测到该值会自动生成随机密钥
+# 未显式配置 SECRET_KEY 时，启动阶段会从数据目录读取或自动生成。
 DEFAULT_SECRET_KEY = "change-me-in-production"
 
 
@@ -19,11 +21,14 @@ class Settings(BaseSettings):
     APP_NAME: str = "OneTap"
     """应用名称。"""
 
+    APP_VERSION: str = "dev"
+    """应用版本，构建镜像时由 CI 以标签注入，用于安装记录展示。"""
+
     DATABASE_URL: str = "postgresql+asyncpg://onetap:onetap@localhost:5434/onetap"
     """数据库连接字符串，默认使用本机 Docker PostgreSQL 异步驱动。"""
 
     SECRET_KEY: str = DEFAULT_SECRET_KEY
-    """JWT 签名密钥，生产环境必须替换为随机字符串。"""
+    """JWT 签名密钥，可通过环境变量覆盖，否则自动持久化到数据目录。"""
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     """访问令牌过期时间（分钟），默认 24 小时。"""
@@ -43,9 +48,9 @@ class Settings(BaseSettings):
     APP_ICON_DIR: str = ""
     """图标文件存储目录，默认为 DATA_ROOT/app-icons，可单独覆盖。"""
 
-    MANAGE_BASE_URL: str = ""
-    """配套管理端（onetap-manage）基础地址，留空表示禁用应用与编排方案同步。
-    支持逗号分隔的多个地址，前一个不可用时自动重试下一个。"""
+    MANAGE_BASE_URL: str = "https://m.one-tap.vip,https://m.one-tab.vip"
+    """配套管理端（onetap-manage）基础地址，设为空可禁用应用与编排方案同步。
+    支持逗号分隔的多个地址，前一个不可用时自动重试下一个；CI 可在构建前替换默认值。"""
 
     MANAGE_SYNC_INTERVAL_MINUTES: int = 30
     """从管理端定时同步应用与编排方案的间隔（分钟）。"""
@@ -84,3 +89,22 @@ class Settings(BaseSettings):
 
 # 全局配置单例
 settings = Settings()
+
+
+def ensure_secret_key() -> None:
+    """读取或生成持久化的 JWT 密钥，显式配置的环境变量优先。"""
+    if settings.SECRET_KEY and settings.SECRET_KEY != DEFAULT_SECRET_KEY:
+        return
+
+    secret_path = Path(settings.DATA_ROOT) / ".secret_key"
+    secret_key = ""
+    if secret_path.exists():
+        secret_key = secret_path.read_text(encoding="utf-8").strip()
+
+    if not secret_key:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        secret_key = secrets.token_urlsafe(48)
+        secret_path.write_text(secret_key, encoding="utf-8")
+        secret_path.chmod(0o600)
+
+    settings.SECRET_KEY = secret_key

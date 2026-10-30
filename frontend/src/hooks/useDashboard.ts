@@ -2,10 +2,11 @@
  * 服务概览 React Query hooks
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getOverview,
   getOverviewAppDetail,
+  upgradeOverviewApp,
   type Overview,
   type OverviewAppDetail,
 } from "@/api/dashboard";
@@ -36,5 +37,16 @@ export function useOverviewAppDetail(instanceId: number | null) {
     queryFn: () => getOverviewAppDetail(instanceId as number),
     enabled: instanceId != null,
     refetchInterval: instanceId != null ? 5_000 : false,
+  });
+}
+
+/** 手动升级单应用，成功后刷新概览与详情 */
+export function useUpgradeOverviewApp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: number) => upgradeOverviewApp(instanceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
   });
 }

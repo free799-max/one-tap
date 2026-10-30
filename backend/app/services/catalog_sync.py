@@ -81,6 +81,19 @@ def _resolve_icon(icon: str | None, base_url: str) -> str | None:
     return icon
 
 
+def _parse_naive_utc(value: str | None) -> datetime | None:
+    """把管理端 ISO 时间转成 SQLite 友好的无时区 UTC 时间。"""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
 async def _delete_removed_apps(session, remote_names: set[str]) -> int:
     """删除管理端已下架/移除的应用缓存。
 
@@ -218,6 +231,9 @@ async def sync_apps() -> dict:
                 "source_url": item.get("repo_url"),
                 "architectures": item.get("architectures") or [],
                 "image": item.get("image"),
+                "image_size": item.get("image_size"),
+                "image_pushed_at": _parse_naive_utc(item.get("image_pushed_at")),
+                "image_digest": item.get("image_digest"),
                 "default_ports": item.get("default_ports") or [],
                 "config_schema": config_schema,
                 "yaml_template": yaml_template,
@@ -530,6 +546,36 @@ async def _record_sync_failure(exc: Exception, mode: str) -> None:
             await session.commit()
     except Exception:
         logger.exception("记录编排方案同步失败事件时出错")
+
+
+async def sync_all(mode: str = "manual") -> dict:
+    """依次同步应用分类、应用市场与编排方案，汇总各部分结果。
+
+    单类同步失败不影响其余部分，失败信息收集到 ``errors`` 中由调用方
+    展示；未配置管理端地址时各部分均返回 ``skipped``。
+    """
+    if not manage_base_urls():
+        return {"skipped": True}
+
+    result: dict = {}
+    errors: list[str] = []
+    steps = (
+        ("categories", "应用分类", sync_categories),
+        ("apps", "应用市场", sync_apps),
+        ("orchestrations", "编排方案", sync_orchestrations),
+    )
+    for key, label, sync in steps:
+        try:
+            if key == "orchestrations":
+                result[key] = await sync(mode=mode)
+            else:
+                result[key] = await sync()
+        except Exception as exc:
+            logger.warning("%s同步失败：%s", label, exc)
+            errors.append(f"{label}：{exc}")
+            result[key] = {"error": str(exc)}
+    result["errors"] = errors
+    return result
 
 
 def get_sync_status() -> dict:

@@ -377,12 +377,15 @@ class TestOverviewService:
         assert overview.running == 0
         assert overview.categories[0].apps[0].status == "stopped"
 
-        hidden = await overview_service.get_overview(
+        stopped = await overview_service.get_overview(
             db_session,
             host="nas.local",
             docker_snapshot=DockerSnapshot(available=True),
         )
-        assert hidden.total == 0
+        # compose down 会移除容器，但应用记录仍在，应展示为已停止而不是消失
+        assert stopped.total == 1
+        assert stopped.running == 0
+        assert stopped.categories[0].apps[0].status == "stopped"
 
     def test_normalize_host_strips_scheme_and_port(self):
         assert normalize_host("http://192.168.1.10:5000") == "192.168.1.10"

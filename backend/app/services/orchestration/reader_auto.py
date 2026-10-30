@@ -6,8 +6,9 @@
 2. 导出 EPUB、修复 XML 后写入二毛书库目录；
 3. 触发二毛书库扫描并等待导入任务结束。
 
-目录与账号保存在实例组 ``app_configs["reader"]["auto_sync"]`` 中，
-由后台调度器按间隔执行，也可在自动化页面手动触发。运行状态写入
+同步策略与目录保存在实例组 ``app_configs["reader"]["auto_sync"]`` 中，
+应用地址和账号直接复用各应用的认证配置。后台调度器按间隔执行，
+也可在自动化页面手动触发。运行状态写入
 ``reader_auto_sync_books`` 表，用于判断是否需要重新导出。
 """
 
@@ -183,7 +184,7 @@ def validate_config(config: dict[str, Any]) -> None:
     """校验地址与目录，不合法时抛 APIException。"""
     reader_url = config["reader_url"]
     if not reader_url:
-        raise APIException("未检测到 Reader 地址，请填写访问地址", 400)
+        raise APIException("请先在 Reader 认证设置中填写访问地址", 400)
     if not reader_url.startswith(("http://", "https://")):
         raise APIException("Reader 地址必须以 http:// 或 https:// 开头", 400)
 
@@ -209,11 +210,11 @@ def validate_config(config: dict[str, Any]) -> None:
 
     if config["scan_enabled"]:
         if not config["ermao_url"]:
-            raise APIException("开启二毛扫描前需要填写二毛地址", 400)
+            raise APIException("请先在二毛读书认证设置中填写访问地址", 400)
         if not config["ermao_email"]:
-            raise APIException("开启二毛扫描前需要填写登录邮箱", 400)
+            raise APIException("请先在二毛读书认证设置中填写登录邮箱", 400)
         if not config["ermao_password"]:
-            raise APIException("开启二毛扫描前需要填写登录密码", 400)
+            raise APIException("请先在二毛读书认证设置中填写登录密码", 400)
 
 
 def safe_name(name: str | None) -> str:
@@ -298,33 +299,36 @@ class ReaderAutoSyncService:
         return value if isinstance(value, dict) else {}
 
     @classmethod
-    def _apply_provisioned_credentials(
+    def _apply_app_credentials(
         cls, group: AppOrchestrationInstance, config: dict[str, Any]
     ) -> None:
-        """账号自动配置成功后，以 app_configs 中的凭据为准。
-
-        自动同步面板里可能还留着首次运行前生成的密码；应用一旦完成
-        自动配置，就改用真实生效的账号与 accessToken，避免反复登录失败。
-        """
+        """始终以各应用认证设置中的地址和凭据为准。"""
         reader = cls._entry(group, APP_NAME)
-        if reader.get("provisioned"):
-            for key, field in (
-                ("reader_username", "username"),
-                ("reader_password", "password"),
-            ):
-                value = str(reader.get(field) or "").strip()
-                if value:
-                    config[key] = value
+        for key, field in (
+            ("reader_url", "url"),
+            ("reader_username", "username"),
+            ("reader_password", "password"),
+        ):
+            value = str(reader.get(field) or "").strip()
+            if value:
+                config[key] = value
+        config["reader_url"] = config["reader_url"].rstrip("/")
+        config["reader_token"] = (
+            str(reader.get("api_key") or "").strip()
+            if reader.get("auth_type") in ("api_key", "apikey")
+            else ""
+        )
 
         ermao = cls._entry(group, TARGET_APP)
-        if ermao.get("provisioned"):
-            for key, field in (
-                ("ermao_email", "username"),
-                ("ermao_password", "password"),
-            ):
-                value = str(ermao.get(field) or "").strip()
-                if value:
-                    config[key] = value
+        for key, field in (
+            ("ermao_url", "url"),
+            ("ermao_email", "username"),
+            ("ermao_password", "password"),
+        ):
+            value = str(ermao.get(field) or "").strip()
+            if value:
+                config[key] = value
+        config["ermao_url"] = config["ermao_url"].rstrip("/")
 
     async def get_panel(
         self, db, group_id: int, app_name: str = APP_NAME
@@ -361,8 +365,8 @@ class ReaderAutoSyncService:
         for key, value in defaults.items():
             if not config.get(key):
                 config[key] = value
-        # 已完成自动配置时以真实生效的账号为准
-        self._apply_provisioned_credentials(group, config)
+        # 认证设置是唯一来源，自动同步中的历史地址和凭据不再生效
+        self._apply_app_credentials(group, config)
 
         stats = await self._stats(db, group_id)
         run = self._runs.get(group_id) or {}
@@ -411,7 +415,7 @@ class ReaderAutoSyncService:
             )
         if not normalized["ermao_password"]:
             normalized["ermao_password"] = detected.get("ermao_password", "")
-        self._apply_provisioned_credentials(group, normalized)
+        self._apply_app_credentials(group, normalized)
         # 开启扫描但还没有密码时生成一个，首次运行会自动初始化二毛账号
         if normalized["scan_enabled"] and not normalized["ermao_password"]:
             normalized["ermao_password"] = secrets.token_urlsafe(12)
@@ -656,7 +660,7 @@ class ReaderAutoSyncService:
         for key in ("ermao_library_dir", "ermao_url"):
             if not config[key]:
                 config[key] = detected.get(key, "")
-        self._apply_provisioned_credentials(group, config)
+        self._apply_app_credentials(group, config)
         validate_config(config)
 
         current = self._runs.get(group_id) or {}
@@ -819,7 +823,7 @@ class ReaderAutoSyncService:
                     config["ermao_email"] = (
                         detected.get("ermao_email") or DEFAULT_EMAIL
                     )
-                self._apply_provisioned_credentials(group, config)
+                self._apply_app_credentials(group, config)
                 validate_config(config)
 
                 library_root = Path(config["library_host_dir"])

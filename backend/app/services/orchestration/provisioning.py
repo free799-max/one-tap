@@ -423,6 +423,7 @@ class ProvisionMixin:
                 # 优先展示客户端实际等待原因（HTTP 状态码/连接失败等），
                 # 容器日志尾行作为兜底（如镜像拉取阶段）
                 note = ""
+                note_prefix = ""
                 if status_getter is not None:
                     try:
                         note = (status_getter() or "").strip()
@@ -430,8 +431,11 @@ class ProvisionMixin:
                         note = ""
                 if not note:
                     note = await self._last_log_line(logs_reader)
+                    # 标注来源，避免把应用自身日志误当成平台操作
+                    if note:
+                        note_prefix = "应用日志："
                 if note:
-                    message = f"{message}：{note[:160]}"
+                    message = f"{message}：{note_prefix}{note[:160]}"
                 progress(message)
         except asyncio.CancelledError:
             task.cancel()

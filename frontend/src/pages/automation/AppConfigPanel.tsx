@@ -85,6 +85,8 @@ const AUTH_TYPE_LABELS: Record<AuthType, string> = {
   api_key: "API Key",
 };
 
+const INSPECTABLE_APPS = new Set(["jellyfin", "moviepilot", "qbittorrent"]);
+
 interface AppAuthConfig {
   url?: string;
   auth_type?: AuthType;
@@ -399,31 +401,52 @@ export function AppConfigPanel({
         </div>
       </div>
 
-      <Tabs key={app.app_name} defaultValue="overview" className="mt-5">
-        <TabsList className="bg-muted/60">
-          <TabsTrigger value="overview" className="gap-1.5">
-            <LayoutGrid className="h-3.5 w-3.5" />
+      <Tabs
+        key={app.app_name}
+        defaultValue="overview"
+        className="mt-5 border-0! bg-transparent! shadow-none! outline-none! ring-0!"
+      >
+        <TabsList className="scrollbar-hidden h-auto max-w-full gap-6 overflow-x-auto rounded-none border-0! bg-transparent! p-0 shadow-none! outline-none! ring-0!">
+          <TabsTrigger
+            value="overview"
+            className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+          >
+            <LayoutGrid className="h-4 w-4" aria-hidden="true" />
             概览
           </TabsTrigger>
-          <TabsTrigger value="inspect" className="gap-1.5">
-            <Stethoscope className="h-3.5 w-3.5" />
-            检测优化
-          </TabsTrigger>
+          {INSPECTABLE_APPS.has(app.app_name) && (
+            <TabsTrigger
+              value="inspect"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <Stethoscope className="h-4 w-4" aria-hidden="true" />
+              检测优化
+            </TabsTrigger>
+          )}
           {app.app_name === "music-tag-web" && (
-            <TabsTrigger value="organize" className="gap-1.5">
-              <Wand2 className="h-3.5 w-3.5" />
+            <TabsTrigger
+              value="organize"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <Wand2 className="h-4 w-4" aria-hidden="true" />
               自动整理
             </TabsTrigger>
           )}
           {app.app_name === "reader" && (
-            <TabsTrigger value="auto-sync" className="gap-1.5">
-              <BookOpen className="h-3.5 w-3.5" />
+            <TabsTrigger
+              value="auto-sync"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <BookOpen className="h-4 w-4" aria-hidden="true" />
               自动同步
             </TabsTrigger>
           )}
           {app.app_name === "moviepilot" && (
-            <TabsTrigger value="integration" className="gap-1.5">
-              <Plug className="h-3.5 w-3.5" />
+            <TabsTrigger
+              value="integration"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <Plug className="h-4 w-4" aria-hidden="true" />
               集成
             </TabsTrigger>
           )}
@@ -642,9 +665,11 @@ export function AppConfigPanel({
           </div>
         </TabsContent>
 
-        <TabsContent value="inspect" className="pt-4">
-          <AppInspectPanel instanceId={detail.id} app={app} />
-        </TabsContent>
+        {INSPECTABLE_APPS.has(app.app_name) && (
+          <TabsContent value="inspect" className="pt-4">
+            <AppInspectPanel instanceId={detail.id} app={app} />
+          </TabsContent>
+        )}
 
         {app.app_name === "music-tag-web" && detail && (
           <TabsContent value="organize" className="pt-4">

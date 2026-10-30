@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
+import { useLicenseStatus } from "@/hooks/useLicense";
 import { useSystemConfig, useUpdateSystemConfig, useTestProxy } from "@/hooks/useSettings";
 import {
   Tooltip,
@@ -28,6 +29,7 @@ import {
   Info,
   KeyRound,
   Loader2,
+  RefreshCw,
   SlidersHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,7 @@ interface BasicFormState {
   default_admin_username: string;
   default_admin_password: string;
   default_email_domain: string;
+  auto_update_enabled: boolean;
 }
 
 const EMAIL_APP_LABELS: Record<string, string> = {
@@ -58,12 +61,15 @@ const EMPTY_FORM: BasicFormState = {
   default_admin_username: "admin",
   default_admin_password: "",
   default_email_domain: "",
+  auto_update_enabled: false,
 };
 
 export function BasicSettingsTab() {
   const { data: config, isLoading } = useSystemConfig();
   const updateConfig = useUpdateSystemConfig();
   const testProxy = useTestProxy();
+  const { data: license } = useLicenseStatus();
+  const licensed = Boolean(license?.valid);
   const toast = useToast();
 
   const [form, setForm] = useState<BasicFormState>(EMPTY_FORM);
@@ -78,6 +84,7 @@ export function BasicSettingsTab() {
         default_admin_username: config.default_admin_username || "admin",
         default_admin_password: config.default_admin_password || "",
         default_email_domain: config.default_email_domain || "",
+        auto_update_enabled: config.auto_update_enabled ?? false,
       });
       setInitialized(true);
     }
@@ -94,7 +101,8 @@ export function BasicSettingsTab() {
     form.proxy_address !== (config.https_proxy || config.http_proxy || "") ||
     form.default_admin_username !== (config.default_admin_username || "admin") ||
     form.default_admin_password !== (config.default_admin_password || "") ||
-    form.default_email_domain !== (config.default_email_domain || "");
+    form.default_email_domain !== (config.default_email_domain || "") ||
+    form.auto_update_enabled !== (config.auto_update_enabled ?? false);
 
   const proxyResult = testProxy.data;
 
@@ -142,6 +150,7 @@ export function BasicSettingsTab() {
         default_admin_username: form.default_admin_username.trim() || "admin",
         default_admin_password: form.default_admin_password.trim(),
         default_email_domain: emailDomain,
+        auto_update_enabled: form.auto_update_enabled,
       },
       {
         onSuccess: (data) => {
@@ -262,6 +271,71 @@ export function BasicSettingsTab() {
                 </div>
               )}
             </div>
+          </div>
+        </CardContent>
+
+        <div className="border-t border-border" />
+
+        {/* 自动更新 */}
+        <CardHeader className="pb-0">
+          <CardTitle className="text-base flex items-center gap-2">
+            <RefreshCw className="h-4 w-4 text-muted-foreground" />
+            自动更新
+            <Tooltip>
+              <TooltipTrigger
+                delay={150}
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label="自动更新说明"
+                  >
+                    <Info className="h-4 w-4" />
+                  </Button>
+                }
+              />
+              <TooltipContent
+                side="bottom"
+                align="start"
+                className="max-w-72 whitespace-normal font-normal leading-relaxed"
+              >
+                自动更新只维护由 OneTap 安装和管理的应用，不会修改或更新用户自行安装的容器；升级只替换镜像，不会新建应用或改动挂载与端口。
+              </TooltipContent>
+            </Tooltip>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="auto_update_enabled" className="text-sm font-medium">
+                启用自动更新
+              </Label>
+              <Switch
+                id="auto_update_enabled"
+                checked={form.auto_update_enabled}
+                disabled={!licensed && !form.auto_update_enabled}
+                onCheckedChange={(checked) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    auto_update_enabled: checked,
+                  }))
+                }
+              />
+              {!licensed && (
+                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                  授权版功能
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {!licensed && form.auto_update_enabled
+                ? "授权已失效，自动更新已暂停，激活授权后恢复。"
+                : licensed
+                  ? "开启后每 30 分钟同步应用市场与自动化方案，并自动升级 OneTap 部署的应用（只替换镜像，不会新建应用）。"
+                  : "免费版不支持自动更新，激活授权后可开启。"}
+            </p>
           </div>
         </CardContent>
 

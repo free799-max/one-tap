@@ -1,5 +1,5 @@
 # OneTap 生产部署：一个应用容器（React + FastAPI + Nginx）+ 一个 PostgreSQL 容器。
-# 使用前复制 .env.example 为 .env，并填写 POSTGRES_PASSWORD、SECRET_KEY。
+# 使用前复制 .env.example 为 .env，并填写 POSTGRES_PASSWORD。
 name: ${COMPOSE_PROJECT_NAME:-onetap}
 
 services:

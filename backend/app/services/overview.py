@@ -5,8 +5,10 @@
 """
 
 import asyncio
+import queue
 import re
 import socket
+import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +30,7 @@ from app.schemas.dashboard import (
     OverviewOut,
 )
 from app.services import catalog_sync
+from app.services.compose import compose_manager
 from app.services.docker import docker, docker_manager
 
 # 分类展示顺序由管理端下发的分类字典决定；未同步时未知分类按名称排序
@@ -298,7 +301,10 @@ def _resolve_instance_status(
         if project is None:
             return None
         if snapshot.available:
-            return snapshot.project_status.get(project.project_name)
+            status = snapshot.project_status.get(project.project_name)
+            # compose down 后容器会被移除，但应用只是停止运行，
+            # 仍需在概览中展示，便于用户再次启动或查看配置
+            return status or "stopped"
         return instance.status
 
     # 导入的外部容器：按容器 ID / 名称判断
@@ -333,6 +339,12 @@ def _build_overview_app(
     app = instance.app
     assert app is not None
     category = _category_of(app, instance)
+    # 编排应用由实例组整体升级，单卡片不提供升级入口
+    upgrade_supported = bool(
+        instance.orchestration_group_id is None
+        and instance.project_id
+        and not (instance.config or {}).get("imported")
+    )
     return OverviewAppOut(
         id=instance.id,
         app_name=app.name,
@@ -343,6 +355,14 @@ def _build_overview_app(
         status=status,
         url=resolve_app_url(app, instance, instance.orchestration_group, host),
         instance_name=instance.instance_name,
+        version=instance.orchestration_version,
+        latest_version=app.version,
+        upgrade_supported=upgrade_supported,
+        update_available=(
+            upgrade_supported
+            and bool(instance.orchestration_version)
+            and instance.orchestration_version != app.version
+        ),
     )
 
 
@@ -638,7 +658,15 @@ class OverviewService:
 
         container, error = await asyncio.to_thread(_find_container_sync, instance)
         if container is None:
-            return OverviewAppDetailOut(app=app_out, error=error)
+            # 容器可能已被 compose down 移除，应用本身仍在，返回项目信息供再次启动
+            return OverviewAppDetailOut(
+                app=app_out,
+                project_id=instance.project_id,
+                project_name=(
+                    instance.project.project_name if instance.project else None
+                ),
+                error=error,
+            )
 
         def _collect():
             info = _collect_container_info(container)
@@ -656,9 +684,87 @@ class OverviewService:
         except Exception as exc:
             return OverviewAppDetailOut(
                 app=app_out,
+                project_id=instance.project_id,
                 error=f"获取容器信息失败: {exc}",
             )
-        return OverviewAppDetailOut(app=app_out, metrics=metrics, **info)
+        return OverviewAppDetailOut(
+            app=app_out, project_id=instance.project_id, metrics=metrics, **info
+        )
+
+    async def open_log_stream(
+        self,
+        db: AsyncSession,
+        instance_id: int,
+        tail: int = 200,
+        follow: bool = True,
+    ):
+        """解析应用实例的日志来源并返回异步迭代器。
+
+        有 Compose 项目时走 ``docker compose logs``（覆盖项目内全部服务）；
+        导入的外部容器没有 Compose 项目，回退到容器日志。
+        数据库会话在响应开始前已用毕，迭代过程只读 Docker。
+        """
+        result = await db.execute(
+            select(AppInstance)
+            .where(AppInstance.id == instance_id)
+            .options(selectinload(AppInstance.project))
+        )
+        instance = result.scalar_one_or_none()
+        if instance is None:
+            raise APIException("应用实例不存在", 404)
+
+        if instance.project is not None:
+            project = instance.project
+            return compose_manager.stream_logs(
+                project, tail=tail, follow=follow
+            )
+
+        container, error = await asyncio.to_thread(_find_container_sync, instance)
+        if container is None:
+            raise APIException(error or "未找到该应用的容器", 404)
+        return self._stream_container_logs(container.id, tail=tail, follow=follow)
+
+    async def _stream_container_logs(
+        self,
+        container_id: str,
+        tail: int = 200,
+        follow: bool = True,
+    ):
+        """把同步的容器日志生成器转成异步迭代器。
+
+        Docker SDK 的日志流是同步阻塞生成器，放到线程里读、经队列转交事件循环；
+        超出队列容量时反压线程，避免日志刷屏时内存膨胀。
+        """
+        log_queue: queue.Queue = queue.Queue(maxsize=500)
+        stop_event = threading.Event()
+
+        def _pump() -> None:
+            try:
+                for line in docker_manager.stream_container_logs(
+                    container_id, tail=tail, follow=follow, timestamps=False
+                ):
+                    if stop_event.is_set():
+                        break
+                    log_queue.put(line)
+            except Exception as exc:  # noqa: BLE001 — 错误转交主协程统一处理
+                log_queue.put(exc)
+            finally:
+                log_queue.put(None)
+
+        threading.Thread(target=_pump, daemon=True).start()
+        try:
+            while True:
+                try:
+                    item = await asyncio.to_thread(log_queue.get, True, 1.0)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise APIException(f"日志流异常: {item}", 500)
+                yield item
+        finally:
+            stop_event.set()
 
 
 overview_service = OverviewService()

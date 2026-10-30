@@ -37,7 +37,7 @@ docker compose ps
 
 ### 环境变量
 
-`.env` 是唯一的配置来源：Compose 用它做变量替换，并通过 `env_file` 把整份文件注入 `app` 容器，配置文件里不再重复维护这些变量。表中未填的项由应用内置默认值兜底。
+`docker-compose.yml` 使用 `.env` 完成变量替换，并通过 `env_file` 注入 `app` 容器；运行时环境变量会覆盖 `backend/app/config.py` 中的内置默认值。通常只需填写数据库密码。
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -45,7 +45,7 @@ docker compose ps
 | `POSTGRES_DB` | 否 | `onetap` | 数据库名，仅首次初始化数据卷时生效 |
 | `POSTGRES_USER` | 否 | `onetap` | 数据库用户，仅首次初始化数据卷时生效 |
 | `POSTGRES_PASSWORD` | **是** | 无 | 数据库密码，建议用 `openssl rand -hex 24` 生成 |
-| `SECRET_KEY` | **是** | 无 | JWT 签名密钥，用 `openssl rand -hex 32` 生成 |
+| `SECRET_KEY` | 否 | 自动生成并持久化 | JWT 签名密钥，默认保存到 `DATA_ROOT/.secret_key`，仅在需要自行指定时配置 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | 否 | `1440` | 登录令牌有效期 |
 | `REGISTRATION_OPEN` | 否 | `false` | `false` 时仅首个用户可注册并成为管理员 |
 | `CORS_ORIGINS` | 否 | 空 | 跨域来源，逗号分隔；同源部署无需配置 |
@@ -97,7 +97,7 @@ docker push harbor.cacty.top/library/onetap-base:latest
 
 `onetap:buildcache` 是 buildx 的层缓存标签，不是可部署镜像。
 
-构建期的 `MANAGE_BASE_URL` 由流水线变量传入并写入镜像（默认 `https://m.one-tap.vip,https://m.one-tab.vip`），不随代码写死；运行时 `.env` 里的同名变量优先级更高。
+构建期的 `MANAGE_BASE_URL`、`MANAGE_SYNC_INTERVAL_MINUTES` 和 `MANAGE_SYNC_ON_STARTUP` 由流水线变量在构建前替换 `backend/app/config.py` 中的默认值；运行时 `.env` 里的同名变量优先级更高。
 
 部署时在 NAS 上拉取指定版本的镜像：
 

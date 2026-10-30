@@ -43,6 +43,88 @@ const stageMap: Record<string, string> = {
   failed: "部署失败",
 };
 
+/** Compose 项目操作动词（与后端 compose action 一致） */
+const composeActionVerbMap: Record<string, string> = {
+  up: "启动",
+  down: "停止",
+  restart: "重启",
+};
+
+/** 从任务 meta 中取 Compose 操作动词，未知 action 回退为「操作」 */
+function composeActionVerb(meta: Record<string, unknown>): string {
+  return composeActionVerbMap[String(meta.action || "")] || "操作";
+}
+
+/** 任务标题：按操作类型区分部署、升级、启停、重启、删除 */
+function taskTitleOf(meta: Record<string, unknown>): string | null {
+  const target =
+    (meta.app_name as string) ||
+    (meta.project_name as string) ||
+    (meta.instance_name as string) ||
+    "实例";
+  switch (meta.operation) {
+    case "delete":
+      return `删除 ${(meta.instance_name as string) || "实例组"}`;
+    case "provision":
+      return "自动配置与装配";
+    case "upgrade":
+      return `升级 ${target}`;
+    case "compose_action":
+      return `${composeActionVerb(meta)} ${target}`;
+    default:
+      return null;
+  }
+}
+
+/** 结束态文案：部署完成 / 升级完成 / 停止完成 等 */
+function finishedLabel(meta: Record<string, unknown>, failed: boolean): string {
+  switch (meta.operation) {
+    case "delete":
+      return failed ? "删除失败" : "删除完成";
+    case "provision":
+      return failed ? "自动配置失败" : "自动配置完成";
+    case "upgrade":
+      return failed ? "升级失败" : "升级完成";
+    case "compose_action":
+      return `${composeActionVerb(meta)}${failed ? "失败" : "完成"}`;
+    default:
+      return failed ? "部署失败" : "部署完成";
+  }
+}
+
+/** 完成态摘要文案 */
+function successSummary(meta: Record<string, unknown>): {
+  title: string;
+  hint: string;
+} {
+  switch (meta.operation) {
+    case "upgrade":
+      return { title: "升级完成，镜像已更新", hint: "配置与数据保持不变" };
+    case "compose_action":
+      if (meta.action === "down") {
+        return {
+          title: "已停止，容器已移除",
+          hint: "可在概览的应用详情中重新启动",
+        };
+      }
+      if (meta.action === "restart") {
+        return {
+          title: "重启完成，服务已恢复",
+          hint: "可在实例列表中查看访问地址与运行状态",
+        };
+      }
+      return {
+        title: "启动完成，服务已运行",
+        hint: "可在实例列表中查看访问地址与运行状态",
+      };
+    default:
+      return {
+        title: "部署完成，服务已启动",
+        hint: "可在实例列表中查看访问地址与运行状态",
+      };
+  }
+}
+
 const statusVariantMap: Record<
   string,
   { variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ReactNode }
@@ -54,16 +136,12 @@ const statusVariantMap: Record<
 
 function TaskTitle({ state }: { state: DeployTaskState }) {
   const meta = state.meta || {};
-  const isDelete = meta.operation === "delete";
-  const isProvision = meta.operation === "provision";
-  const title = isDelete
-    ? `删除 ${(meta.instance_name as string) || "实例组"}`
-    : isProvision
-      ? "自动配置与装配"
-      : (meta.app_name as string) ||
-        (meta.project_name as string) ||
-        (meta.instance_name as string) ||
-        "部署任务";
+  const title =
+    taskTitleOf(meta) ||
+    (meta.app_name as string) ||
+    (meta.project_name as string) ||
+    (meta.instance_name as string) ||
+    "部署任务";
   const subtitleCandidates = [
     meta.instance_name as string | undefined,
     meta.description as string | undefined,
@@ -129,22 +207,16 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
   const meta = state.meta || {};
   const appName = meta.app_name as string | undefined;
   const appIcon = meta.icon as string | undefined;
-  const isDelete = meta.operation === "delete";
-  const isProvision = meta.operation === "provision";
   const stageLabel =
     state.stage === "completed"
-      ? isDelete
-        ? "删除完成"
-        : isProvision
-          ? "自动配置完成"
-          : "部署完成"
+      ? finishedLabel(meta, false)
       : state.stage === "failed"
-        ? isDelete
-          ? "删除失败"
-          : isProvision
-            ? "自动配置失败"
-            : "部署失败"
-        : stageMap[state.stage] || state.stage;
+        ? finishedLabel(meta, true)
+        : meta.operation === "compose_action" &&
+            state.stage === "starting_services"
+          ? `${composeActionVerb(meta)}服务`
+          : stageMap[state.stage] || state.stage;
+  const summary = successSummary(meta);
 
   return (
     <div
@@ -213,16 +285,16 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
           <CheckCircle2 className="h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
           <div className="min-w-0">
             <p className="text-xs font-medium text-green-700">
-              {isDelete || isProvision
+              {meta.operation === "delete" || meta.operation === "provision"
                 ? state.progress.message
-                : "部署完成，服务已启动"}
+                : summary.title}
             </p>
             <p className="text-[11px] text-green-600/80 truncate">
-              {isDelete
+              {meta.operation === "delete"
                 ? "可在「恢复」中找回应用数据"
-                : isProvision
+                : meta.operation === "provision"
                   ? "配置与装配结果已写入实例详情"
-                  : "可在实例列表中查看访问地址与运行状态"}
+                  : summary.hint}
             </p>
           </div>
         </div>
@@ -233,7 +305,7 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
       {state.error && (
         <div className="mt-3 rounded-md bg-destructive/10 border border-destructive/20 p-3">
           <p className="text-xs font-semibold text-destructive mb-1">
-            {isDelete ? "删除失败" : isProvision ? "自动配置失败" : "部署失败"}
+            {finishedLabel(meta, true)}
           </p>
           <p className="text-xs text-destructive/90 whitespace-pre-wrap break-all">
             {state.error}

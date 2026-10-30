@@ -76,6 +76,14 @@ async def update_system_config(
     current_user: User = Depends(require_admin),
 ):
     """更新系统全局配置。"""
+    current = await system_config_service.get_or_create(db)
+    if data.auto_update_enabled and not current.auto_update_enabled:
+        from app.services.licensing import licensing_service
+
+        try:
+            await licensing_service.require_valid(db)
+        except APIException as exc:
+            raise APIException("自动更新需要授权版，请先激活授权", 403) from exc
     config = await system_config_service.update(db, data)
     return system_config_service.to_dict(config)
 

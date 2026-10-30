@@ -432,6 +432,12 @@ async def compose_action(
             "compose_action",
             project_id=project.id,
             action=action,
+            # 前端按 operation/action 展示「启动/停止/重启」文案
+            meta={
+                "operation": "compose_action",
+                "action": action,
+                "project_name": project.project_name,
+            },
         )
     except RuntimeError as e:
         raise APIException(str(e), 409) from e

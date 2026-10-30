@@ -1077,3 +1077,73 @@ async def test_sync_does_not_steal_remote_duplicate_name(sync_db, monkeypatch):
 
     assert await _get_by_name(sync_db, "old-a") is not None
     assert await _get_by_name(sync_db, "new-b") is not None
+
+
+async def test_sync_all_runs_each_section_in_order(sync_db, monkeypatch):
+    """整体同步依次执行分类、应用市场与编排方案，并汇总结果。"""
+    calls: list[object] = []
+
+    async def fake_categories():
+        calls.append("categories")
+        return {"total": 3}
+
+    async def fake_apps():
+        calls.append("apps")
+        return {"created": 1, "updated": 0, "removed": 0, "skipped": 0, "total": 1}
+
+    async def fake_orchestrations(mode: str = "auto"):
+        calls.append(("orchestrations", mode))
+        return {"created": 2, "updated": 0, "removed": 0, "total": 2, "events": 2}
+
+    monkeypatch.setattr(catalog_sync, "sync_categories", fake_categories)
+    monkeypatch.setattr(catalog_sync, "sync_apps", fake_apps)
+    monkeypatch.setattr(catalog_sync, "sync_orchestrations", fake_orchestrations)
+
+    result = await catalog_sync.sync_all(mode="manual")
+
+    assert calls == ["categories", "apps", ("orchestrations", "manual")]
+    assert result["categories"] == {"total": 3}
+    assert result["apps"]["total"] == 1
+    assert result["orchestrations"]["total"] == 2
+    assert result["errors"] == []
+
+
+async def test_sync_all_keeps_other_sections_when_one_fails(sync_db, monkeypatch):
+    """单类同步失败不影响其余部分，失败信息收集到 errors。"""
+
+    async def failing_categories():
+        raise RuntimeError("分类接口异常")
+
+    async def fake_apps():
+        return {"created": 0, "updated": 1, "removed": 0, "skipped": 0, "total": 1}
+
+    async def fake_orchestrations(mode: str = "auto"):
+        return {"created": 0, "updated": 1, "removed": 0, "total": 1, "events": 0}
+
+    monkeypatch.setattr(catalog_sync, "sync_categories", failing_categories)
+    monkeypatch.setattr(catalog_sync, "sync_apps", fake_apps)
+    monkeypatch.setattr(catalog_sync, "sync_orchestrations", fake_orchestrations)
+
+    result = await catalog_sync.sync_all()
+
+    assert result["categories"] == {"error": "分类接口异常"}
+    assert result["apps"]["updated"] == 1
+    assert result["orchestrations"]["updated"] == 1
+    assert len(result["errors"]) == 1
+    assert "应用分类" in result["errors"][0]
+
+
+async def test_sync_all_skipped_when_manage_base_url_empty(sync_db, monkeypatch):
+    """MANAGE_BASE_URL 为空时整体跳过，不执行任何同步。"""
+    monkeypatch.setattr(settings, "MANAGE_BASE_URL", "")
+
+    async def fail():  # pragma: no cover - 不应被调用
+        raise AssertionError("未配置管理端时不应执行同步")
+
+    monkeypatch.setattr(catalog_sync, "sync_categories", fail)
+    monkeypatch.setattr(catalog_sync, "sync_apps", fail)
+    monkeypatch.setattr(catalog_sync, "sync_orchestrations", fail)
+
+    result = await catalog_sync.sync_all()
+
+    assert result == {"skipped": True}

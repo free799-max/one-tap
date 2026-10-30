@@ -2,13 +2,11 @@
  * Docker Compose 日志相关 hooks
  *
  * - useComposeLogs：一次性查询日志
- * - useComposeLogsStream：SSE 实时日志流（行数有上限，防止内存无限增长）
+ * - useComposeLogsStream：SSE 实时日志流（实现见通用 hook useLogsStream）
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { useState, useEffect, useRef, useCallback } from "react";
-import { getToken } from "@/lib/api";
-import { appendLogLine } from "@/lib/log-stream";
+import { useLogsStream, withLogToken } from "@/hooks/useLogsStream";
 import * as composeApi from "@/api/compose";
 
 /**
@@ -26,19 +24,15 @@ export function useComposeLogs(
   });
 }
 
-// eslint-disable-next-line no-control-regex
-const ANSI_PATTERN = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_PATTERN, "");
-}
-
-function cleanLogLine(line: string): string {
-  const cleaned = stripAnsi(line).replace(/\r?\n$/, "");
-  if (cleaned.includes("\r")) {
-    return cleaned.split("\r").pop() ?? cleaned;
-  }
-  return cleaned;
+/** 构造 Compose 项目日志流地址（已带鉴权 token） */
+export function composeLogsStreamUrl(
+  projectId: number,
+  tail: number = 100,
+  follow: boolean = true
+): string {
+  return withLogToken(
+    `/api/docker/compose/${projectId}/logs/stream?tail=${tail}&follow=${follow}`
+  );
 }
 
 /**
@@ -54,56 +48,8 @@ export function useComposeLogsStream(
   tail: number = 100,
   onError?: (message: string) => void
 ) {
-  const [logs, setLogs] = useState<string[]>([]);
-  const [connected, setConnected] = useState(false);
-  const onErrorRef = useRef(onError);
-
-  // 保持 onError 最新引用，避免其变化导致 SSE 反复重建
-  useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
-
-  const clearLogs = useCallback(() => setLogs([]), []);
-
-  useEffect(() => {
-    if (!projectId) return;
-
-    const token = getToken() || "";
-    const es = new EventSource(
-      `/api/docker/compose/${projectId}/logs/stream?tail=${tail}&follow=true&token=${encodeURIComponent(token)}`
-    );
-
-    es.onopen = () => {
-      setConnected(true);
-      setLogs([]);
-    };
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.error) {
-          onErrorRef.current?.(data.error);
-          setConnected(false);
-          return;
-        }
-        if (typeof data.line === "string") {
-          setLogs((prev) => appendLogLine(prev, cleanLogLine(data.line)));
-        }
-      } catch {
-        // 忽略解析错误
-      }
-    };
-
-    es.onerror = () => {
-      setConnected(false);
-    };
-
-    return () => {
-      es.close();
-      setLogs([]);
-      setConnected(false);
-    };
-  }, [projectId, tail]);
-
-  return { logs, connected, clearLogs };
+  return useLogsStream(
+    projectId ? composeLogsStreamUrl(projectId, tail) : null,
+    onError
+  );
 }

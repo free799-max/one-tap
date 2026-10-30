@@ -50,7 +50,7 @@ docker compose logs -f app     # 查看应用、迁移与定时任务日志
 
 生产环境只有 `app` 与 `postgres` 两个容器；`app` 内的 Nginx 对外监听 80，FastAPI 只监听容器内回环地址 5001，前端与 API 使用同一端口。
 
-镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）只接收 `frontend/` 的独立快照，不接收其他目录或标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`（正式版本另打 `v主.次`、`v主`、`latest`）。`MANAGE_BASE_URL` 在构建期写入镜像（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
+镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）只接收 `frontend/` 的独立快照，不接收其他目录或标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`（正式版本另打 `v主.次`、`v主`、`latest`）。`MANAGE_BASE_URL` 等管理端同步配置在构建前由 CI 替换 `backend/app/config.py` 中的默认值（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
 
 ## 架构
 
@@ -231,7 +231,7 @@ DockerComposeProject 1--1 DockerComposeStack
 ## 应用市场数据同步
 
 - 应用定义由配套管理端（onetap-manage）维护，本仓库**不再提供应用创建/编辑/删除/图标上传**。原 `POST/PUT/DELETE /api/apps`、`POST /api/apps/preview-template`、`POST/GET /api/apps/{name}/icon` 接口与前端 `/appstore/create`、`/appstore/:name/edit` 页面均已移除。
-- 管理端地址、同步间隔与启动同步通过 `.env` 的 `MANAGE_BASE_URL` / `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 注入：`MANAGE_BASE_URL` 支持逗号分隔的多个地址，请求失败按顺序重试下一个并记住最近成功地址（见 `services/manage_client.py`）。后端启动时与每 30 分钟从 `GET {MANAGE_BASE_URL}/api/public/apps` 拉取已发布应用，upsert 到本地 `apps` 表作为只读缓存（实现见 `services/catalog_sync.py` 的 `sync_apps`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
+- 管理端地址、同步间隔与启动同步的默认值内置在 `backend/app/config.py`，GitLab CI 构建前按流水线变量替换，运行时可用 `.env` 的 `MANAGE_BASE_URL` / `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 覆盖：`MANAGE_BASE_URL` 支持逗号分隔的多个地址，请求失败按顺序重试下一个并记住最近成功地址（见 `services/manage_client.py`）。后端启动时与每 30 分钟从 `GET {MANAGE_BASE_URL}/api/public/apps` 拉取已发布应用，upsert 到本地 `apps` 表作为只读缓存（实现见 `services/catalog_sync.py` 的 `sync_apps`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
 - 只同步带 `compose_template` 且通过模板 / Schema 校验的条目，校验失败仅告警跳过；管理端下架（远端不再返回）的应用会删除本地缓存，但只删非内置且没有部署实例的记录，远端返回空列表时不做清理；`is_builtin` 等本地字段保持不变。
 - 分类为自由字符串，展示名称与排序由管理端 `backend/app/core/categories.py` 统一维护，经 `GET /api/public/categories` 下发；本仓库启动/定时同步到进程内缓存，前端通过 `GET /api/apps/categories` 获取（`frontend/src/lib/categories.ts` 仅保留查表辅助，不再内置映射），未配置 `MANAGE_BASE_URL` 时回退显示原始分类值。
 - 应用定义与应用目录 JSON 已整体迁移到管理端仓库：数据文件在 `onetap-manage/backend/app/data/apps/`，由管理端启动种子与 `scripts/import_apps.py` 导入；本仓库不再保留应用导入脚本。
@@ -329,10 +329,10 @@ DockerComposeProject 1--1 DockerComposeStack
   - `fix_epub`（`services/apps/reader/epub.py`）转义裸 `&`、剔除非法 XML 控制字符，并按 `mimetype` 首条且 STORED 重新打包。
 - 账号自动配置：`ReaderAppClient` 在部署时通过 `reader_env` 注入 `READER_APP_SECURE=true` 开启登录认证，首次调用 `/reader3/login`（`isLogin=false`）注册管理员，已有账号直接登录。Reader 每次登录都会轮换 `accessToken`，因此只落库用户名/密码，不保存令牌；自动同步每次用账号密码重新登录。统一密码变化时会先尝试用旧密码登录并调用 `/reader3/resetPassword`，未配置 `READER_APP_SECUREKEY` 时该管理接口不可用，会提示手动重置密码或重新部署数据卷。
 - 账号自动配置：`ErmaoLibraryClient` 通过 `/api/auth/setup` 创建首个管理员（邮箱密码），已初始化时登录并用 `/api/auth/account/password` 同步统一密码；普通用户名映射为 `<用户名>@example.com`，实际生效的邮箱写入 `app_configs`。
-- 自动同步优先使用 `app_configs` 中已完成自动配置的账号（`reader` 的用户名/密码、`ermao-library` 的邮箱/密码），面板里首次运行前生成的旧密码不会再覆盖真实账号。
-- 配置保存在 `group.app_configs['reader']['auto_sync']`，由 `main.py` lifespan 启动的后台调度器按间隔执行，也可从自动化页手动触发。
-  - 地址、书库目录与二毛书库目录默认从运行中容器的真实挂载和同组二毛配置推导（Docker 不可用时回退到实例配置），在 `AppConfigPanel` 的「自动同步」Tab 中可一键填入或手动修改。
-  - 首次运行遇到二毛尚未初始化时，可用配置中的邮箱/密码自动创建管理员和书库（`auto_setup`）；已有账号时直接登录，失败会明确提示填写原密码。
+- 自动同步始终以各应用认证设置中的地址和凭据为准（`reader` 的用户名/密码、`ermao-library` 的邮箱/密码），不在面板重复填写，历史 `auto_sync` 中的旧认证信息不会覆盖最新配置。
+- 同步策略与目录保存在 `group.app_configs['reader']['auto_sync']`，由 `main.py` lifespan 启动的后台调度器按间隔执行，也可从自动化页手动触发。
+  - 书库目录与二毛书库目录默认从运行中容器的真实挂载推导（Docker 不可用时回退到实例配置），在 `AppConfigPanel` 的「自动同步」Tab 中可一键填入或手动修改；应用地址和账号在各自的认证设置中维护。
+  - 首次运行遇到二毛尚未初始化时，可用认证设置中的邮箱/密码自动创建管理员和书库（`auto_setup`）；已有账号时直接登录，失败会提示检查认证设置。
   - 书籍导出状态与失败退避存于 `reader_auto_sync_books` 表；接口为 `GET/PUT /api/orchestrations/instances/{id}/apps/reader/auto-sync` 与 `POST .../auto-sync/run`。
   - 后端需要能写到书库的宿主机目录（当前 PM2 部署直接可写；Docker 部署需把该目录按相同路径挂载进 `app` 容器）。
   - 旧的 `apps/reader/3.2.14` 镜像与 `BRIDGE_*` 环境变量不再参与运行，Reader 使用官方 `hectorqin/reader:latest` 即可。

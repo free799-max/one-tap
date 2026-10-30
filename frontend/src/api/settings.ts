@@ -16,6 +16,8 @@ export interface SystemConfig {
   default_admin_password: string;
   /** 需要邮箱登录的应用使用的邮箱后缀（不含 @） */
   default_email_domain: string;
+  /** 是否开启自动更新（仅授权版可开启） */
+  auto_update_enabled: boolean;
   /** 使用邮箱作为登录账号的应用标识 */
   email_username_apps: string[];
   /** Docker 镜像加速地址列表，顺序即优先级 */
@@ -31,6 +33,7 @@ export interface SystemConfigUpdate {
   default_admin_username?: string;
   default_admin_password?: string;
   default_email_domain?: string | null;
+  auto_update_enabled?: boolean;
   docker_registry_mirrors?: string[];
 }
 
@@ -47,6 +50,7 @@ export function getSystemConfig(): Promise<SystemConfig> {
       default_admin_username: data.default_admin_username ?? "admin",
       default_admin_password: data.default_admin_password ?? "",
       default_email_domain: data.default_email_domain ?? "",
+      auto_update_enabled: data.auto_update_enabled ?? false,
       email_username_apps: data.email_username_apps ?? [],
       docker_registry_mirrors: data.docker_registry_mirrors ?? [],
     };

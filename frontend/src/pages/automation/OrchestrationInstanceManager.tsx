@@ -31,7 +31,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { AppIcon } from "../apps/AppIcon";
-import { cn } from "@/lib/utils";
+import { cn, formatVersion } from "@/lib/utils";
 import type { App } from "@/hooks/useApps";
 import type {
   AppCompositionItem,
@@ -211,7 +211,7 @@ export function OrchestrationInstanceManager({
                         className="h-4 shrink-0 px-1.5 py-0 text-[10px] font-normal tabular-nums text-muted-foreground"
                         title="实例部署时的方案版本"
                       >
-                        v{instance.orchestration_version || "未知"}
+                        {formatVersion(instance.orchestration_version)}
                       </Badge>
                     </span>
                   </span>

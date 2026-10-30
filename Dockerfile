@@ -23,10 +23,9 @@ RUN pnpm run build
 #    FastAPI 仅监听回环地址
 FROM ${BASE_IMAGE} AS runtime
 
-# 应用市场管理端地址：构建期写入镜像作为默认值，运行时由 .env 覆盖。
-# CI 通过 --build-arg 传入，未传时使用生产地址；逗号分隔的多个地址按顺序重试。
-ARG MANAGE_BASE_URL=https://m.one-tap.vip,https://m.one-tab.vip
-ENV MANAGE_BASE_URL=${MANAGE_BASE_URL}
+# 应用版本：CI 用版本标签注入，客户端安装上报与管理端展示使用。
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 
 # 只复制运行时文件，避免把本地的 backend/data、测试和虚拟环境带进镜像
 COPY backend/app ./app

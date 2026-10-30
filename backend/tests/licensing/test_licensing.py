@@ -136,8 +136,8 @@ async def test_status_is_redacted_and_available_to_regular_user(client):
         "activated",
         "valid",
         "status",
+        "edition",
         "perpetual",
-        "temporary_months",
         "license_id",
         "activation_id",
         "license_key",
@@ -146,6 +146,7 @@ async def test_status_is_redacted_and_available_to_regular_user(client):
         "last_refreshed_at",
         "last_error",
     }
+    assert data["edition"] == "free"
     assert data["perpetual"] is False
     assert data["license_key"] is None
     assert "secret" not in response.text
@@ -174,18 +175,38 @@ async def test_license_key_visible_to_admin_only(client):
     assert "ND-1234-5678-ABCD" not in user_resp.text
 
 
-async def test_unlicensed_orchestration_write_returns_403_but_get_is_available(client):
+async def test_free_edition_can_use_orchestration_apis(client):
+    """免费版不再受授权门禁限制，只有后台定时自动化仍需要授权。"""
     token = await register(client, "admin")
     response = await client.post(
         "/api/orchestrations/example/deploy",
         headers=auth(token),
         json={"instance_name": "example", "selected_apps": ["app"]},
     )
-    assert response.status_code == 403
-    assert response.json()["message"] == "需要有效授权"
+    assert response.json().get("message") != "需要有效授权"
+    assert response.status_code != 403
 
     get_response = await client.get("/api/orchestrations", headers=auth(token))
     assert get_response.status_code == 200
+
+
+async def test_auto_update_requires_license(client):
+    """未激活授权时不能开启自动更新，已开启的可以关闭。"""
+    token = await register(client, "admin")
+    denied = await client.put(
+        "/api/settings",
+        headers=auth(token),
+        json={"auto_update_enabled": True},
+    )
+    assert denied.status_code == 403
+    assert "自动更新需要授权版" in denied.json()["message"]
+
+    disabled = await client.put(
+        "/api/settings",
+        headers=auth(token),
+        json={"auto_update_enabled": False},
+    )
+    assert disabled.status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -211,15 +232,16 @@ def test_certificate_validation_accepts_valid_ed25519_jwt():
     assert payload["perpetual"] is True
 
 
-def test_certificate_validation_accepts_temporary_license():
-    payload = validate_certificate(
-        certificate(perpetual=False, temporary=True, temporary_months=12),
-        INSTALLATION_ID,
-        PUBLIC_PEM,
-        "key-1",
-    )
-    assert payload["temporary"] is True
-    assert payload["temporary_months"] == 12
+def test_certificate_validation_rejects_temporary_license():
+    """临时授权下线，只有授权版永久证书有效。"""
+    with pytest.raises(LicenseCertificateError) as caught:
+        validate_certificate(
+            certificate(perpetual=False, temporary=True, temporary_months=12),
+            INSTALLATION_ID,
+            PUBLIC_PEM,
+            "key-1",
+        )
+    assert caught.value.reason == "invalid_license_type"
 
 
 def test_certificate_hardware_fingerprint_is_enforced_when_present():
@@ -279,9 +301,13 @@ async def test_docker_certificate_is_invalid_during_installation_fallback(client
         break
 
 
-async def test_status_reports_temporary_license_months(client, monkeypatch):
-    """临时授权会带上剩余月数，前端据此展示授权时长。"""
+async def test_status_reports_edition_free_and_licensed(client, monkeypatch):
+    """未激活为免费版，激活后为授权版，且没有临时授权时长。"""
     token = await register(client, "admin")
+    initial = await client.get("/api/license/status", headers=auth(token))
+    assert initial.status_code == 200
+    assert initial.json()["data"]["edition"] == "free"
+
     await client.get("/api/license/status", headers=auth(token))
     state = await get_state(client)
     post = AsyncMock(
@@ -290,14 +316,11 @@ async def test_status_reports_temporary_license_months(client, monkeypatch):
                 state.installation_id,
                 license_id=101,
                 activation_id=202,
-                perpetual=False,
-                temporary=True,
-                temporary_months=2,
             ),
             "refresh_token": "refresh-token",
             "license_id": 101,
             "activation_id": 202,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=60),
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
         }
     )
     monkeypatch.setattr(licensing_service, "_post", post)
@@ -309,8 +332,9 @@ async def test_status_reports_temporary_license_months(client, monkeypatch):
     assert activated.status_code == 200
     data = activated.json()["data"]
     assert data["valid"] is True
-    assert data["perpetual"] is False
-    assert data["temporary_months"] == 2
+    assert data["edition"] == "licensed"
+    assert data["perpetual"] is True
+    assert "temporary_months" not in data
 
 
 async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
@@ -346,7 +370,7 @@ async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
     key_status = await client.get("/api/license/status", headers=auth(token))
     assert key_status.json()["data"]["license_key"] == "license-key"
     assert key_status.json()["data"]["perpetual"] is True
-    assert key_status.json()["data"]["temporary_months"] is None
+    assert key_status.json()["data"]["edition"] == "licensed"
     post.assert_awaited_with(
         "activate",
         {

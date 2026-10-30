@@ -23,7 +23,7 @@ import {
   type AppOrchestration,
   type OrchestrationUpdateEvent,
 } from "@/hooks/useOrchestrations";
-import { cn, formatDate, formatRelativeTime } from "@/lib/utils";
+import { cn, formatDate, formatRelativeTime, formatVersion } from "@/lib/utils";
 import {
   AlertCircle,
   CheckCircle2,
@@ -51,7 +51,7 @@ const SCOPE_LABELS: Record<string, string> = {
 };
 
 function versionLabel(version?: string | null) {
-  return version ? `v${version}` : "未知版本";
+  return version ? formatVersion(version) : "未知版本";
 }
 
 function EventItem({
@@ -214,7 +214,10 @@ function EventList({
           displayName={
             event.orchestration_name === "sync"
               ? "方案同步"
-              : nameMap[event.orchestration_name] || event.orchestration_name
+              : event.orchestration_name.startsWith("app:")
+                ? `应用：${event.orchestration_name.slice(4)}`
+                : nameMap[event.orchestration_name] ||
+                  event.orchestration_name
           }
         />
       ))}

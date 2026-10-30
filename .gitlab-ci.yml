@@ -24,9 +24,11 @@ variables:
   APP_IMAGE_NAME: onetap
   BASE_IMAGE: harbor.cacty.top/library/onetap-base:latest
   NODE_IMAGE: harbor.cacty.top/baseimg/node:22-alpine
-  # 构建期写入镜像默认值；运行时 .env 中的同名变量会覆盖它
+  # 构建前替换后端配置默认值；运行时环境变量仍可覆盖
   # 逗号分隔多个地址，前一个不可用时后端自动重试下一个
   MANAGE_BASE_URL: https://m.one-tap.vip,https://m.one-tab.vip
+  MANAGE_SYNC_INTERVAL_MINUTES: "30"
+  MANAGE_SYNC_ON_STARTUP: "True"
   # NAS 为 ARM 时改为 linux/arm64
   PLATFORMS: linux/amd64
 
@@ -58,12 +60,17 @@ app-image:
         TAGS="$TAGS --tag $APP_REF:v$MAJOR.$MINOR --tag $APP_REF:v$MAJOR --tag $APP_REF:latest"
       fi
       echo "本次构建标签：$TAGS"
+      sed -i \
+        -e "s|^    MANAGE_BASE_URL: str = .*|    MANAGE_BASE_URL: str = \"$MANAGE_BASE_URL\"|" \
+        -e "s|^    MANAGE_SYNC_INTERVAL_MINUTES: int = .*|    MANAGE_SYNC_INTERVAL_MINUTES: int = $MANAGE_SYNC_INTERVAL_MINUTES|" \
+        -e "s|^    MANAGE_SYNC_ON_STARTUP: bool = .*|    MANAGE_SYNC_ON_STARTUP: bool = $MANAGE_SYNC_ON_STARTUP|" \
+        backend/app/config.py
       docker buildx create --use --name onetap --driver docker-container >/dev/null 2>&1 || docker buildx use onetap
       docker buildx build \
         --platform "$PLATFORMS" \
         --build-arg "BASE_IMAGE=$BASE_IMAGE" \
         --build-arg "NODE_IMAGE=$NODE_IMAGE" \
-        --build-arg "MANAGE_BASE_URL=$MANAGE_BASE_URL" \
+        --build-arg "APP_VERSION=$CI_COMMIT_TAG" \
         --label "org.opencontainers.image.title=OneTap" \
         --label "org.opencontainers.image.version=$TAG" \
         --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \

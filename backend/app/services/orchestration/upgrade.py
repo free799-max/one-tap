@@ -15,6 +15,7 @@
 
 import copy
 import logging
+from typing import Callable
 
 import yaml
 from sqlalchemy import select
@@ -115,6 +116,53 @@ async def read_current_image(
     return str(service.get("image") or "") or None
 
 
+def _single_event_name(app_name: str) -> str:
+    """单应用升级事件的展示名（列宽 50，前缀标明不是编排方案）。"""
+    return f"app:{app_name}"[:50]
+
+
+async def resolve_single_target_image(
+    db: AsyncSession,
+    instance: AppInstance,
+    db_app: App,
+) -> str | None:
+    """计算单应用升级后的主服务镜像。
+
+    按实例现有配置重新渲染应用模板，取主服务镜像，与重新部署时的
+    镜像解析规则保持一致；渲染或解析失败时返回 None。
+    """
+    if not instance.project_id:
+        return None
+    project = await db.get(DockerComposeProject, instance.project_id)
+    if project is None:
+        return None
+    try:
+        resolver = await app_service._build_storage_resolver(db)
+        rendered = app_service._render_app(
+            db_app=db_app,
+            config=copy.deepcopy(instance.config or {}),
+            project_name=project.project_name,
+            resolver=resolver,
+        )
+        compose_data = yaml.safe_load(rendered) or {}
+    except Exception:
+        logger.exception("应用 %s 渲染目标镜像失败", db_app.name)
+        return None
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return None
+    try:
+        service_name = UpgradeMixin._resolve_main_service(
+            services, db_app, project.project_name
+        )
+    except APIException:
+        return None
+    service = services.get(service_name)
+    if not isinstance(service, dict):
+        return None
+    return str(service.get("image") or "") or None
+
+
 class UpgradeMixin:
     """按最新模板升级已有编排实例组。"""
 
@@ -126,11 +174,13 @@ class UpgradeMixin:
         app_configs: dict[str, dict],
         shared_config: dict,
         user_id: int | None = None,
+        mode: str = "manual",
     ) -> tuple[AppOrchestrationInstance, list[str]]:
         """一键升级编排实例组到模板当前版本。
 
         已存在的应用只更新镜像，忽略请求里的 ``app_configs`` / ``shared_config``，
         避免误改挂载与端口；这两个参数只用于模板新增应用的初始化配置。
+        ``mode`` 用于更新事件标记来源：用户触发为 manual，自动更新为 auto。
 
         Returns:
             实例组与升级进度任务 ID 列表（统一为一个组级任务）。
@@ -231,6 +281,7 @@ class UpgradeMixin:
                 task_id=task_id,
                 backup_id=backup.id,
                 user_id=user_id,
+                mode=mode,
             )
         )
 
@@ -248,6 +299,7 @@ class UpgradeMixin:
         task_id: str,
         backup_id: int,
         user_id: int | None,
+        mode: str = "manual",
     ) -> None:
         """后台执行升级：逐个应用原地更新镜像，全部成功后更新组版本。"""
         total = len(selected_apps)
@@ -343,7 +395,7 @@ class UpgradeMixin:
                     group_id=group.id,
                     from_version=from_version,
                     to_version=template.version,
-                    mode="manual",
+                    mode=mode,
                     status="applied",
                     detail={
                         "mode": "image_only",
@@ -376,6 +428,7 @@ class UpgradeMixin:
                 selected_apps=selected_apps,
                 backup_id=backup_id,
                 message=str(exc),
+                mode=mode,
             )
             deploy_task_manager.fail_task(task_id, str(exc))
 
@@ -397,6 +450,64 @@ class UpgradeMixin:
         直接复用当前 Compose YAML，只替换主服务的 ``image``，不重新渲染
         模板、不合并 Schema 默认值。这样挂载目录、端口、环境变量与旧部署
         完全一致，即使新模板改了字段默认值也不会影响现有实例。
+        """
+        target_image = resolve_target_image(
+            composition_item, db_app, instance.config
+        )
+        if not target_image:
+            raise APIException(f"应用 {db_app.name} 未配置镜像", 400)
+
+        def _progress(
+            stage: str,
+            percentage: int,
+            message: str,
+            detail: str | None = None,
+        ) -> None:
+            ratio = max(0, min(100, percentage)) / 100
+            mapped = start + int((end - start) * ratio)
+            deploy_task_manager.update_progress(
+                task_id,
+                stage,
+                mapped,
+                f"{db_app.display_name}：{message}",
+                detail,
+            )
+
+        await self._swap_image_and_deploy(
+            db,
+            instance=instance,
+            db_app=db_app,
+            target_image=target_image,
+            progress=_progress,
+            comment=f"方案升级到 v{to_version}",
+            user_id=user_id,
+        )
+
+        # 仅记录镜像覆盖变化，挂载/端口/环境变量保持原样
+        target_config = copy.deepcopy(instance.config or {})
+        image_override = _resolve_composition_image(composition_item)
+        if image_override:
+            target_config["image"] = image_override
+        else:
+            target_config.pop("image", None)
+        instance.config = target_config
+        instance.status = "running"
+        await db.commit()
+
+    async def _swap_image_and_deploy(
+        self,
+        db: AsyncSession,
+        *,
+        instance: AppInstance,
+        db_app: App,
+        target_image: str,
+        progress: Callable[..., None],
+        comment: str,
+        user_id: int | None = None,
+    ) -> str:
+        """把实例当前 Compose 主服务镜像替换为目标镜像并重新拉起。
+
+        只改 ``image``，挂载目录、端口、环境变量保持原样；返回替换前的镜像。
         """
         project = await db.get(DockerComposeProject, instance.project_id)
         if project is None:
@@ -435,88 +546,247 @@ class UpgradeMixin:
         if not isinstance(service, dict):
             raise APIException(f"应用 {db_app.name} 的主服务配置无效", 500)
 
-        target_image = resolve_target_image(
-            composition_item, db_app, instance.config
-        )
-        if not target_image:
-            raise APIException(f"应用 {db_app.name} 未配置镜像", 400)
+        current_image = str(service.get("image") or "")
+        if current_image == target_image:
+            # 镜像已是目标版本：可能是上次升级在 compose up 阶段中断，
+            # YAML 已写好但容器还没拉起来。补一次 up -d 确保服务运行，
+            # 不新增 Compose 版本，避免产生内容相同的版本记录。
+            await compose_manager.action_async(
+                db, project, "up", progress_callback=progress
+            )
+            return current_image
 
-        def _progress(
+        current_tag = _split_image_tag(current_image)[1] or current_image
+        target_tag = _split_image_tag(target_image)[1] or target_image
+        progress(
+            "preparing",
+            0,
+            f"镜像 {current_tag} → {target_tag}",
+        )
+        # 同一应用可能有多个服务复用同一镜像（如主服务 + worker），
+        # 只替换镜像相同的服务，避免误改 Redis/Postgres 等依赖镜像
+        targets = [
+            item
+            for item in services.values()
+            if isinstance(item, dict)
+            and current_image
+            and str(item.get("image") or "") == current_image
+        ]
+        for item in targets or [service]:
+            item["image"] = target_image
+        updated_yaml = yaml.safe_dump(
+            compose_data, sort_keys=False, allow_unicode=True
+        )
+        try:
+            await compose_manager.edit_and_deploy_async(
+                db,
+                project,
+                updated_yaml,
+                user_id=user_id,
+                comment=comment,
+                progress_callback=progress,
+            )
+        except Exception:
+            try:
+                await compose_manager.rollback_version(
+                    db, project, current_version
+                )
+            except Exception:
+                logger.exception(
+                    "应用 %s 升级失败后回滚 Compose 版本失败", db_app.name
+                )
+            raise
+        return current_image
+
+    async def upgrade_single_instance(
+        self,
+        db: AsyncSession,
+        instance_id: int,
+        *,
+        mode: str = "manual",
+        user_id: int | None = None,
+        target_image: str | None = None,
+    ) -> tuple[AppInstance, str]:
+        """升级应用市场单独部署的应用：只替换镜像，保留运行时配置。
+
+        编排部署的应用由实例组统一升级，导入的外部容器不受管理，均拒绝。
+        ``mode`` 用于更新事件标记来源：用户触发为 manual，自动更新为 auto。
+        """
+        instance = await app_service.get_instance(db, instance_id)
+        db_app = instance.app
+        if db_app is None:
+            raise APIException("应用不存在", 404)
+        if instance.orchestration_group_id is not None:
+            raise APIException("编排部署的应用请在实例组中升级", 400)
+        if (instance.config or {}).get("imported"):
+            raise APIException("导入的外部容器不由 OneTap 维护，无法自动升级", 400)
+        if not instance.project_id:
+            raise APIException("该应用没有关联 Compose 项目，无法升级", 409)
+        if instance.status != "running":
+            raise APIException("应用当前不在运行状态，请先启动后再升级", 409)
+        if deploy_task_manager.has_active_task(instance_id=instance.id):
+            raise APIException("应用正在部署或升级中，请等待完成后再试", 409)
+
+        if target_image is None:
+            target_image = await resolve_single_target_image(db, instance, db_app)
+        if not target_image:
+            raise APIException("无法确定目标镜像，请先执行「修复」", 409)
+
+        self._ensure_deploy_capacity(1)
+        task_id = deploy_task_manager.create_task(
+            "app_upgrade",
+            instance_id=instance.id,
+            project_id=instance.project_id,
+            meta={
+                "app_name": db_app.name,
+                "instance_name": instance.instance_name,
+                "description": f"升级 {db_app.display_name}",
+                "operation": "upgrade",
+                "mode": mode,
+            },
+        )
+        instance.status = "deploying"
+        await db.commit()
+
+        create_background_task(
+            self._run_single_upgrade(
+                instance_id=instance.id,
+                db_app_name=db_app.name,
+                target_image=target_image,
+                task_id=task_id,
+                mode=mode,
+                user_id=user_id,
+            )
+        )
+        return instance, task_id
+
+    async def _run_single_upgrade(
+        self,
+        *,
+        instance_id: int,
+        db_app_name: str,
+        target_image: str,
+        task_id: str,
+        mode: str,
+        user_id: int | None,
+    ) -> None:
+        """后台执行单应用升级：替换镜像并重新拉起，成功后更新版本快照。"""
+
+        def report(
             stage: str,
             percentage: int,
             message: str,
             detail: str | None = None,
         ) -> None:
-            ratio = max(0, min(100, percentage)) / 100
-            mapped = start + int((end - start) * ratio)
             deploy_task_manager.update_progress(
-                task_id,
-                stage,
-                mapped,
-                f"{db_app.display_name}：{message}",
-                detail,
+                task_id, stage, percentage, message, detail
             )
 
-        current_image = str(service.get("image") or "")
-        if current_image != target_image:
-            current_tag = _split_image_tag(current_image)[1] or current_image
-            target_tag = _split_image_tag(target_image)[1] or target_image
-            _progress(
-                "preparing",
-                0,
-                f"镜像 {current_tag} → {target_tag}",
-            )
-            # 同一应用可能有多个服务复用同一镜像（如主服务 + worker），
-            # 只替换镜像相同的服务，避免误改 Redis/Postgres 等依赖镜像
-            targets = [
-                item
-                for item in services.values()
-                if isinstance(item, dict)
-                and current_image
-                and str(item.get("image") or "") == current_image
-            ]
-            for item in targets or [service]:
-                item["image"] = target_image
-            updated_yaml = yaml.safe_dump(
-                compose_data, sort_keys=False, allow_unicode=True
-            )
-            try:
-                await compose_manager.edit_and_deploy_async(
+        from_version: str | None = None
+        to_version: str | None = None
+        try:
+            async with async_session() as db:
+                instance = await app_service.get_instance(db, instance_id)
+                db_app = instance.app
+                if db_app is None:
+                    raise APIException("应用不存在", 404)
+                from_version = instance.orchestration_version
+                to_version = db_app.version
+                report("preparing", 5, f"准备升级到 v{to_version}")
+                current_image = await self._swap_image_and_deploy(
                     db,
-                    project,
-                    updated_yaml,
+                    instance=instance,
+                    db_app=db_app,
+                    target_image=target_image,
+                    progress=report,
+                    comment=(
+                        f"自动升级到 v{to_version}"
+                        if mode == "auto"
+                        else f"升级到 v{to_version}"
+                    ),
                     user_id=user_id,
-                    comment=f"方案升级到 v{to_version}",
-                    progress_callback=_progress,
                 )
-            except Exception:
-                try:
-                    await compose_manager.rollback_version(
-                        db, project, current_version
-                    )
-                except Exception:
-                    logger.exception(
-                        "应用 %s 升级失败后回滚 Compose 版本失败", db_app.name
-                    )
-                raise
-        else:
-            # 镜像已是目标版本：可能是上次升级在 compose up 阶段中断，
-            # YAML 已写好但容器还没拉起来。补一次 up -d 确保服务运行，
-            # 不新增 Compose 版本，避免产生内容相同的版本记录。
-            await compose_manager.action_async(
-                db, project, "up", progress_callback=_progress
-            )
+                instance.orchestration_version = to_version
+                instance.status = "running"
+                config = copy.deepcopy(instance.config or {})
+                config.pop("auto_update_failed_version", None)
+                instance.config = config
+                add_update_event(
+                    db,
+                    orchestration_name=_single_event_name(db_app.name),
+                    scope="instance",
+                    from_version=from_version,
+                    to_version=to_version,
+                    mode=mode,
+                    status="applied",
+                    detail={
+                        "mode": "image_only",
+                        "app_instance_id": instance.id,
+                        "app_name": db_app.name,
+                        "image_from": current_image,
+                        "image_to": target_image,
+                    },
+                )
+                await db.commit()
 
-        # 仅记录镜像覆盖变化，挂载/端口/环境变量保持原样
-        target_config = copy.deepcopy(instance.config or {})
-        image_override = _resolve_composition_image(composition_item)
-        if image_override:
-            target_config["image"] = image_override
-        else:
-            target_config.pop("image", None)
-        instance.config = target_config
-        instance.status = "running"
-        await db.commit()
+            report("completed", 100, "升级完成")
+            deploy_task_manager.complete_task(task_id, "升级完成")
+        except Exception as exc:
+            logger.exception("应用实例 %s 升级失败", instance_id)
+            await self._record_single_failure(
+                instance_id=instance_id,
+                app_name=db_app_name,
+                from_version=from_version,
+                to_version=to_version,
+                target_image=target_image,
+                message=str(exc),
+                mode=mode,
+            )
+            deploy_task_manager.fail_task(task_id, str(exc))
+
+    async def _record_single_failure(
+        self,
+        *,
+        instance_id: int,
+        app_name: str,
+        from_version: str | None,
+        to_version: str | None,
+        target_image: str,
+        message: str,
+        mode: str,
+    ) -> None:
+        """升级失败后恢复运行状态并记录 failed 事件（尽力而为）。
+
+        自动更新失败时把失败版本记到实例配置，避免每轮定时任务反复重试
+        同一版本；管理端发布下一个版本后自动恢复尝试。
+        """
+        try:
+            async with async_session() as db:
+                instance = await app_service.get_instance(db, instance_id)
+                instance.status = "running"
+                if mode == "auto" and to_version:
+                    config = copy.deepcopy(instance.config or {})
+                    config["auto_update_failed_version"] = to_version
+                    instance.config = config
+                add_update_event(
+                    db,
+                    orchestration_name=_single_event_name(app_name),
+                    scope="instance",
+                    from_version=from_version,
+                    to_version=to_version,
+                    mode=mode,
+                    status="failed",
+                    detail={
+                        "mode": "image_only",
+                        "app_instance_id": instance.id,
+                        "app_name": app_name,
+                        "image_to": target_image,
+                    },
+                    message=message,
+                )
+                await db.commit()
+        except Exception:
+            logger.exception("应用实例 %s 升级失败后记录事件出错", instance_id)
 
     @staticmethod
     def _resolve_main_service(
@@ -684,6 +954,7 @@ class UpgradeMixin:
         selected_apps: list[str],
         backup_id: int,
         message: str,
+        mode: str = "manual",
     ) -> None:
         """升级失败后回写组状态为 error 并记录 failed 事件（尽力而为）。"""
         try:
@@ -700,7 +971,7 @@ class UpgradeMixin:
                     group_id=group_id,
                     from_version=from_version,
                     to_version=to_version,
-                    mode="manual",
+                    mode=mode,
                     status="failed",
                     detail={
                         "mode": "image_only",

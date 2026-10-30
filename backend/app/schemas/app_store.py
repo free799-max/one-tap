@@ -1,5 +1,7 @@
 """应用商店相关的 Pydantic Schema 模块。"""
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -17,6 +19,9 @@ class AppOut(BaseModel):
     source_url: str | None
     architectures: list[str]
     image: str | None
+    image_size: int | None = None
+    image_pushed_at: datetime | None = None
+    image_digest: str | None = None
     default_ports: list[dict]
     config_schema: dict
     version: str

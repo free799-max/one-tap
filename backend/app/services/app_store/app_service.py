@@ -33,8 +33,35 @@ from app.services.system import (
     storage_directory_service,
     system_config_service,
 )
+from app.services.system.storage import is_host_system_path
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_builtin_volume_mounts(config: dict, yaml_template: str) -> None:
+    """移除模板已内置的宿主机系统挂载行（原地修改）。
+
+    Docker 套接字等挂载已写进新版应用模板；旧实例配置里仍保留同一条
+    可编辑挂载，若原样渲染会重复挂载导致部署失败，这里统一去掉。
+    """
+    volumes = config.get("volumes")
+    if not isinstance(volumes, list):
+        return
+    template = yaml_template or ""
+    kept: list = []
+    for volume in volumes:
+        if isinstance(volume, dict):
+            host_path = str(volume.get("host_path") or "").strip()
+            container_path = str(volume.get("container_path") or "").strip()
+            if (
+                is_host_system_path(host_path)
+                and host_path
+                and container_path
+                and f"{host_path}:{container_path}" in template
+            ):
+                continue
+        kept.append(volume)
+    config["volumes"] = kept
 
 
 def _render_yaml_template(
@@ -439,9 +466,14 @@ class AppService:
         # 1. JSON Schema 校验
         validate_app_config(db_app, config)
 
+        # 1.2 新版模板已内置 Docker 套接字等系统挂载，旧实例配置中的
+        #     同一条挂载需要剔除，否则会重复挂载同一容器路径。
+        _strip_builtin_volume_mounts(config, db_app.yaml_template or "")
+
         # 1.5 数据目录受管路径校验（仅在配置了数据目录时执行）：
         #     此处校验的是应用自身的 volumes，共享配置合并在更上层发生；
-        #     host_path 为空或相对路径会自动拼到 Docker 挂载目录下，视为受管，跳过校验
+        #     host_path 为空或相对路径会自动拼到 Docker 挂载目录下，视为受管，跳过校验；
+        #     Docker 套接字等宿主机内置文件直接放行。
         if resolver is not None and resolver.has_data_directories:
             volumes = config.get("volumes")
             if isinstance(volumes, list):
@@ -450,6 +482,8 @@ class AppService:
                         continue
                     host_path = str(volume.get("host_path") or "").strip()
                     if not host_path or not host_path.startswith("/"):
+                        continue
+                    if is_host_system_path(host_path):
                         continue
                     if not resolver.is_managed_path(host_path):
                         raise APIException(

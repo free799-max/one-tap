@@ -40,7 +40,6 @@ from app.schemas.orchestration import (
     PluginInstallRequest,
     ReaderAutoSyncConfigIn,
 )
-from app.services.licensing import require_license
 from app.services.orchestration import orchestration_service
 from app.services.orchestration.music_auto import music_auto_service
 from app.services.orchestration.reader_auto import reader_auto_service
@@ -185,7 +184,7 @@ async def get_orchestration_instance(
     return await _build_instance_detail_out(db, group)
 
 
-@router.patch(dependencies=[Depends(require_license)], path="/instances/{instance_id}", response_model=OrchestrationInstanceDetailOut)
+@router.patch(path="/instances/{instance_id}", response_model=OrchestrationInstanceDetailOut)
 async def update_orchestration_instance(
     instance_id: int,
     data: OrchestrationInstanceUpdateRequest,
@@ -206,7 +205,6 @@ async def update_orchestration_instance(
 @router.delete(
     "/instances/{instance_id}",
     response_model=OrchestrationDeleteResponse,
-    dependencies=[Depends(require_license)],
 )
 async def delete_orchestration_instance(
     instance_id: int,
@@ -221,7 +219,7 @@ async def delete_orchestration_instance(
     return OrchestrationDeleteResponse(task_id=task_id)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/redeploy", response_model=OrchestrationDeployResponse)
+@router.post(path="/instances/{instance_id}/redeploy", response_model=OrchestrationDeployResponse)
 async def redeploy_orchestration_instance(
     instance_id: int,
     data: OrchestrationDeployRequest,
@@ -247,7 +245,7 @@ async def redeploy_orchestration_instance(
     )
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/upgrade", response_model=OrchestrationDeployResponse)
+@router.post(path="/instances/{instance_id}/upgrade", response_model=OrchestrationDeployResponse)
 async def upgrade_orchestration_instance(
     instance_id: int,
     data: OrchestrationDeployRequest,
@@ -279,7 +277,7 @@ async def upgrade_orchestration_instance(
     )
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/wire")
+@router.post(path="/instances/{instance_id}/wire")
 async def wire_orchestration_instance(
     instance_id: int,
     db: AsyncSession = Depends(get_db),
@@ -307,7 +305,7 @@ async def list_orchestration_backups(
     return await orchestration_service.list_backups(db, orchestration)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/backups/restore", response_model=OrchestrationDeployResponse)
+@router.post(path="/backups/restore", response_model=OrchestrationDeployResponse)
 async def restore_orchestration_backup(
     data: OrchestrationRestoreRequest,
     db: AsyncSession = Depends(get_db),
@@ -346,7 +344,7 @@ async def inspect_orchestration_app(
     }
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/inspect/fix")
+@router.post(path="/instances/{instance_id}/apps/{app_name}/inspect/fix")
 async def fix_orchestration_app(
     instance_id: int,
     app_name: str,
@@ -372,7 +370,7 @@ async def get_app_auto_organize(
     return await music_auto_service.get_panel(db, instance_id, app_name)
 
 
-@router.put(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/auto-organize")
+@router.put(path="/instances/{instance_id}/apps/{app_name}/auto-organize")
 async def save_app_auto_organize(
     instance_id: int,
     app_name: str,
@@ -386,7 +384,7 @@ async def save_app_auto_organize(
     )
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/auto-organize/run")
+@router.post(path="/instances/{instance_id}/apps/{app_name}/auto-organize/run")
 async def run_app_auto_organize(
     instance_id: int,
     app_name: str,
@@ -419,7 +417,7 @@ async def get_app_auto_sync(
     return await reader_auto_service.get_panel(db, instance_id, app_name)
 
 
-@router.put(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/auto-sync")
+@router.put(path="/instances/{instance_id}/apps/{app_name}/auto-sync")
 async def save_app_auto_sync(
     instance_id: int,
     app_name: str,
@@ -427,13 +425,13 @@ async def save_app_auto_sync(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """保存 Reader 自动同步配置（地址、目录与二毛账号）。"""
+    """保存 Reader 自动同步策略与目录，认证信息复用应用配置。"""
     return await reader_auto_service.save_config(
         db, instance_id, data.model_dump(), app_name
     )
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/auto-sync/run")
+@router.post(path="/instances/{instance_id}/apps/{app_name}/auto-sync/run")
 async def run_app_auto_sync(
     instance_id: int,
     app_name: str,
@@ -466,7 +464,7 @@ async def list_app_plugins(
     return await orchestration_service.list_app_plugins(db, instance_id, app_name)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/plugins/install")
+@router.post(path="/instances/{instance_id}/apps/{app_name}/plugins/install")
 async def install_app_plugin(
     instance_id: int,
     app_name: str,
@@ -492,7 +490,7 @@ async def get_app_assets(
     return await orchestration_service.get_app_assets(db, instance_id, app_name)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/instances/{instance_id}/apps/{app_name}/assets/copy")
+@router.post(path="/instances/{instance_id}/apps/{app_name}/assets/copy")
 async def copy_app_assets(
     instance_id: int,
     app_name: str,
@@ -519,7 +517,7 @@ async def verify_app_auth(
     return AppAuthVerifyResponse(valid=result.valid, message=result.message)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/sync")
+@router.post(path="/sync")
 async def sync_orchestrations_endpoint(
     current_user: User = Depends(require_admin),
 ):
@@ -617,7 +615,7 @@ async def get_orchestration_icon(
     return FileResponse(icon_path)
 
 
-@router.post(dependencies=[Depends(require_license)], path="/{name}/deploy", response_model=OrchestrationDeployResponse)
+@router.post(path="/{name}/deploy", response_model=OrchestrationDeployResponse)
 async def deploy_orchestration(
     name: str,
     data: OrchestrationDeployRequest,
@@ -654,7 +652,7 @@ async def get_import_candidates(
     return [candidate.model_dump() for candidate in candidates]
 
 
-@router.post(dependencies=[Depends(require_license)], path="/{name}/import", response_model=OrchestrationImportResponse)
+@router.post(path="/{name}/import", response_model=OrchestrationImportResponse)
 async def import_orchestration(
     name: str,
     data: OrchestrationImportRequest,

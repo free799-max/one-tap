@@ -25,7 +25,7 @@ import {
   type AppOrchestration,
   type OrchestrationInstanceDetail,
 } from "@/hooks/useOrchestrations";
-import { cn } from "@/lib/utils";
+import { cn, formatVersion } from "@/lib/utils";
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -138,9 +138,11 @@ export function AutomationUpgradeDialog({
           </DialogTitle>
           {group && (
             <p className="text-xs text-muted-foreground">
-              v{group.orchestration_version || "未知"}
-              <span className="mx-1">→</span>v
-              {group.template_version || orchestration?.version || "最新"}
+              {formatVersion(group.orchestration_version)}
+              <span className="mx-1">→</span>
+              {group.template_version || orchestration?.version
+                ? formatVersion(group.template_version || orchestration?.version)
+                : "最新"}
             </p>
           )}
         </DialogHeader>

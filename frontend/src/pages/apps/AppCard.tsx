@@ -7,6 +7,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { formatBytes, formatRelativeTime } from "@/lib/utils";
 import { AppIcon } from "./AppIcon";
 import type { App } from "@/hooks/useApps";
 
@@ -49,6 +50,15 @@ export function AppCard({ app, onDeploy, onDetail }: AppCardProps) {
             <p className="text-sm text-muted-foreground line-clamp-1 mt-1">
               {app.description || "暂无描述"}
             </p>
+            {(app.image_size || app.image_pushed_at) && (
+              <p className="mt-1 text-xs text-muted-foreground/80">
+                {app.image_size ? `镜像 ${formatBytes(app.image_size)}` : ""}
+                {app.image_size && app.image_pushed_at ? " · " : ""}
+                {app.image_pushed_at
+                  ? `${formatRelativeTime(app.image_pushed_at)}更新`
+                  : ""}
+              </p>
+            )}
           </div>
 
           <div className="flex items-center justify-between mt-3">

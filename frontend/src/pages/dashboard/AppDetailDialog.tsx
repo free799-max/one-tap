@@ -2,9 +2,10 @@
  * 应用详情弹窗
  *
  * 展示单个已部署应用的容器基本信息与实时监控指标，
- * 打开期间每 5 秒自动刷新一次。
+ * 打开期间每 5 秒自动刷新一次；可查看部署日志。
  */
 
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -16,10 +17,28 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { AppIcon } from "@/pages/apps/AppIcon";
 import { categoryLabel } from "@/lib/categories";
-import { cn, formatBytes, formatDate, formatUptime } from "@/lib/utils";
-import { useOverviewAppDetail } from "@/hooks/useDashboard";
+import { cn, formatBytes, formatDate, formatUptime, formatVersion } from "@/lib/utils";
+import { useQueryClient } from "@tanstack/react-query";
+import { useOverviewAppDetail, useUpgradeOverviewApp } from "@/hooks/useDashboard";
+import { useDeployTasks } from "@/hooks/useDeployTasks";
+import { useToast } from "@/components/ui/toast";
 import { useCategories } from "@/hooks/useApps";
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { useComposeAction } from "@/hooks/useCompose";
+import { useContainerAction } from "@/hooks/useDocker";
+import { StackDetailDialog } from "@/pages/docker/stacks/StackDetailDialog";
+import { StackLogsDialog } from "@/pages/docker/stacks/StackLogsDialog";
+import { StackVersionDialog } from "@/pages/docker/stacks/StackVersionDialog";
+import {
+  ArrowUpCircle,
+  ExternalLink,
+  History,
+  Info,
+  Play,
+  RotateCcw,
+  ScrollText,
+  RefreshCw,
+  Square,
+} from "lucide-react";
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
   running: {
@@ -113,6 +132,15 @@ export function AppDetailDialog({
   const { data, isLoading, isFetching, isError, refetch } =
     useOverviewAppDetail(open ? instanceId : null);
   const { data: categoryOptions = [] } = useCategories();
+  const upgradeMutation = useUpgradeOverviewApp();
+  const { startTask } = useDeployTasks();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const composeAction = useComposeAction();
+  const containerAction = useContainerAction();
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [stackDetailOpen, setStackDetailOpen] = useState(false);
 
   const app = data?.app;
   const status = app
@@ -122,9 +150,76 @@ export function AppDetailDialog({
       }
     : null;
   const metrics = data?.metrics;
+  const isRunning = app?.status === "running";
+  const actionPending = composeAction.isPending || containerAction.isPending;
+
+  /** 停止/启动/重启：有 Compose 项目走项目操作，导入容器回退到容器操作 */
+  const runLifecycleAction = (action: "up" | "down" | "restart") => {
+    if (!data) return;
+    const refresh = () =>
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+
+    if (data.project_id) {
+      composeAction.mutate(
+        { projectId: data.project_id, action },
+        {
+          onSuccess: (response) => {
+            startTask(response.task_id);
+            toast.success(
+              action === "down"
+                ? "停止任务已启动"
+                : action === "up"
+                  ? "启动任务已启动"
+                  : "重启任务已启动"
+            );
+          },
+          onError: (error) => {
+            const message =
+              (error as { displayMessage?: string } | null)?.displayMessage ||
+              "操作失败，请稍后重试";
+            toast.error(message);
+          },
+          onSettled: refresh,
+        }
+      );
+      return;
+    }
+
+    if (data.container_id) {
+      const containerActionMap = {
+        up: "start",
+        down: "stop",
+        restart: "restart",
+      } as const;
+      containerAction.mutate(
+        { id: data.container_id, action: containerActionMap[action] },
+        { onSettled: refresh }
+      );
+      return;
+    }
+
+    toast.error("未找到可操作的容器或编排项目");
+  };
+
+  const handleUpgrade = () => {
+    if (!app) return;
+    upgradeMutation.mutate(app.id, {
+      onSuccess: (response) => {
+        startTask(response.task_id);
+        toast.success("升级任务已启动");
+      },
+      onError: (error) => {
+        const message =
+          (error as { displayMessage?: string } | null)?.displayMessage ||
+          "升级失败，请稍后重试";
+        toast.error(message);
+      },
+    });
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[88vh] gap-0 overflow-hidden p-0 sm:max-w-2xl">
         {isLoading || !data || !app ? (
           <div className="flex h-64 items-center justify-center">
@@ -200,6 +295,33 @@ export function AppDetailDialog({
                 </div>
               )}
 
+              {app.update_available && (
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-foreground">
+                      发现新版本 {formatVersion(app.latest_version)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      当前 {formatVersion(app.version)}
+                      ，升级只替换镜像，配置与数据保持不变。
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="shrink-0"
+                    disabled={upgradeMutation.isPending}
+                    onClick={handleUpgrade}
+                  >
+                    {upgradeMutation.isPending ? (
+                      <RefreshCw className="animate-spin" />
+                    ) : (
+                      <ArrowUpCircle />
+                    )}
+                    {upgradeMutation.isPending ? "升级中" : "立即升级"}
+                  </Button>
+                </div>
+              )}
+
               <section className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-foreground">
@@ -250,11 +372,88 @@ export function AppDetailDialog({
 
               <section className="space-y-2.5">
                 <h3 className="text-sm font-semibold text-foreground">
+                  快捷操作
+                </h3>
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-2.5">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled={actionPending}
+                    onClick={() =>
+                      runLifecycleAction(isRunning ? "down" : "up")
+                    }
+                  >
+                    {isRunning ? <Square /> : <Play />}
+                    {isRunning ? "停止" : "启动"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    disabled={actionPending || !isRunning}
+                    onClick={() => runLifecycleAction("restart")}
+                  >
+                    <RotateCcw />
+                    重启
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8"
+                    onClick={() => setLogsOpen(true)}
+                  >
+                    <ScrollText />
+                    日志
+                  </Button>
+                  {data.project_id != null && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => setVersionsOpen(true)}
+                      >
+                        <History />
+                        版本
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        onClick={() => setStackDetailOpen(true)}
+                      >
+                        <Info />
+                        编排详情
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </section>
+
+              <section className="space-y-2.5">
+                <h3 className="text-sm font-semibold text-foreground">
                   基本信息
                 </h3>
                 <div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-lg border border-border/60 bg-muted/20 p-3 sm:grid-cols-2">
                   <InfoRow label="应用标识" value={app.app_name} />
                   <InfoRow label="实例名称" value={app.instance_name} />
+                  {app.upgrade_supported && (
+                    <>
+                      <InfoRow
+                        label="应用版本"
+                        value={app.version ? formatVersion(app.version) : "—"}
+                      />
+                      <InfoRow
+                        label="最新版本"
+                        value={
+                          app.latest_version
+                            ? formatVersion(app.latest_version)
+                            : "—"
+                        }
+                      />
+                    </>
+                  )}
                   <InfoRow
                     label="访问地址"
                     value={app.url || "—"}
@@ -331,5 +530,27 @@ export function AppDetailDialog({
         )}
       </DialogContent>
     </Dialog>
+    <StackLogsDialog
+      projectId={null}
+      projectName={app?.instance_name ?? null}
+      streamPath={
+        app ? `/api/dashboard/apps/${app.id}/logs/stream` : null
+      }
+      title="应用日志"
+      statusText={status?.label ?? null}
+      open={logsOpen}
+      onOpenChange={setLogsOpen}
+    />
+    <StackVersionDialog
+      projectId={data?.project_id ?? null}
+      open={versionsOpen}
+      onOpenChange={setVersionsOpen}
+    />
+    <StackDetailDialog
+      projectId={data?.project_id ?? null}
+      open={stackDetailOpen}
+      onOpenChange={setStackDetailOpen}
+    />
+    </>
   );
 }

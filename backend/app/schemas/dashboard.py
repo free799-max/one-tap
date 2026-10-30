@@ -16,6 +16,12 @@ class OverviewAppOut(BaseModel):
     # 自动生成的访问地址；无法推断时为 None
     url: str | None = None
     instance_name: str
+    # 实例已部署的应用模板版本与当前模板版本
+    version: str | None = None
+    latest_version: str | None = None
+    # 单应用是否支持一键升级（编排应用由实例组统一升级）
+    upgrade_supported: bool = False
+    update_available: bool = False
 
 
 class OverviewCategoryOut(BaseModel):
@@ -51,6 +57,8 @@ class OverviewAppDetailOut(BaseModel):
     """应用详情：基本信息 + 容器信息 + 实时监控指标。"""
 
     app: OverviewAppOut
+    # 关联的 Compose 项目；导入的外部容器为空
+    project_id: int | None = None
     image: str | None = None
     container_id: str | None = None
     container_name: str | None = None

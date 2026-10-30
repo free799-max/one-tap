@@ -16,6 +16,14 @@ export interface OverviewApp {
   /** 后端根据部署端口自动生成的访问地址 */
   url: string | null;
   instance_name: string;
+  /** 实例部署时的应用模板版本 */
+  version?: string | null;
+  /** 应用市场当前模板版本 */
+  latest_version?: string | null;
+  /** 单应用是否支持一键升级（编排应用由实例组统一升级） */
+  upgrade_supported?: boolean;
+  /** 是否有新版本可升级 */
+  update_available?: boolean;
 }
 
 /** 按分类聚合的应用分组 */
@@ -54,6 +62,8 @@ export interface OverviewAppMetrics {
 /** 应用详情：基本信息 + 容器信息 + 监控指标 */
 export interface OverviewAppDetail {
   app: OverviewApp;
+  /** 关联的 Compose 项目；导入的外部容器为空 */
+  project_id: number | null;
   image: string | null;
   container_id: string | null;
   container_name: string | null;
@@ -77,5 +87,17 @@ export function getOverview() {
 export function getOverviewAppDetail(instanceId: number) {
   return api
     .get<OverviewAppDetail>(`/dashboard/apps/${instanceId}`)
+    .then((response) => response.data);
+}
+
+/** 手动升级单应用（只替换镜像，返回部署任务） */
+export function upgradeOverviewApp(instanceId: number) {
+  return api
+    .post<{
+      task_id: string;
+      instance_id: number;
+      project_id: number | null;
+      status: string;
+    }>(`/dashboard/apps/${instanceId}/upgrade`)
     .then((response) => response.data);
 }
