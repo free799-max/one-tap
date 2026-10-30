@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from app.core.background import create_background_task
 from app.core.exceptions import APIException
 from app.database import async_session
 from app.services.apps import get_client
@@ -56,7 +55,9 @@ class WiringMixin:
             enforce_limit=False,
         )
         inflight[group_id] = task_id
-        create_background_task(self._reprovision_and_wire(group_id, task_id))
+        self._track_provisioning_task(
+            task_id, self._reprovision_and_wire(group_id, task_id)
+        )
         return task_id
 
     async def _wire_group(self, group_id: int) -> None:

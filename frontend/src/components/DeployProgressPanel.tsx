@@ -5,16 +5,19 @@
  * 包含阶段徽章、进度条、累计日志流和错误信息。
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   useDeployTasksEvents,
   type DeployTaskState,
 } from "@/hooks/useDeployTasks";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { AppIcon } from "@/pages/apps/AppIcon";
+import { useToast } from "@/components/ui/toast";
+import api from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { CheckCircle2, XCircle, Loader2, Package, Terminal, AlertTriangle } from "lucide-react";
+import { CheckCircle2, XCircle, Loader2, Package, Square, Terminal, AlertTriangle } from "lucide-react";
 
 interface DeployProgressPanelProps {
   taskIds: string[];
@@ -132,6 +135,7 @@ const statusVariantMap: Record<
   deploying: { variant: "outline", icon: <Loader2 className="h-3 w-3 animate-spin" /> },
   completed: { variant: "default", icon: <CheckCircle2 className="h-3 w-3" /> },
   failed: { variant: "destructive", icon: <XCircle className="h-3 w-3" /> },
+  cancelled: { variant: "secondary", icon: <Square className="h-3 w-3" /> },
 };
 
 function TaskTitle({ state }: { state: DeployTaskState }) {
@@ -158,14 +162,18 @@ function TaskTitle({ state }: { state: DeployTaskState }) {
 }
 
 function LogTerminal({ logs, isFailed }: { logs: string[]; isFailed: boolean }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const terminal = terminalRef.current;
+    if (terminal) {
+      terminal.scrollTop = terminal.scrollHeight;
+    }
   }, [logs.length]);
 
   return (
     <div
+      ref={terminalRef}
       className={cn(
         "mt-3 rounded-md border bg-slate-950 text-slate-100 p-3 font-mono text-[11px] leading-snug overflow-y-auto max-h-64 min-h-[120px]",
         isFailed && "border-destructive/50"
@@ -195,27 +203,40 @@ function LogTerminal({ logs, isFailed }: { logs: string[]; isFailed: boolean }) 
           );
         })
       )}
-      <div ref={bottomRef} />
     </div>
   );
 }
 
-function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[] }) {
+function DeployTaskCard({
+  state,
+  logs,
+  onStop,
+  isStopping = false,
+}: {
+  state: DeployTaskState;
+  logs: string[];
+  onStop?: (taskId: string) => void;
+  isStopping?: boolean;
+}) {
   const isCompleted = state.status === "completed";
   const isFailed = state.status === "failed";
+  const isCancelled = state.status === "cancelled";
   const statusConfig = statusVariantMap[state.status] || statusVariantMap.deploying;
   const meta = state.meta || {};
   const appName = meta.app_name as string | undefined;
   const appIcon = meta.icon as string | undefined;
+  const canStop = state.status === "deploying" && meta.operation === "provision";
   const stageLabel =
     state.stage === "completed"
       ? finishedLabel(meta, false)
       : state.stage === "failed"
         ? finishedLabel(meta, true)
-        : meta.operation === "compose_action" &&
-            state.stage === "starting_services"
-          ? `${composeActionVerb(meta)}服务`
-          : stageMap[state.stage] || state.stage;
+        : state.stage === "cancelled"
+          ? "已停止"
+          : meta.operation === "compose_action" &&
+              state.stage === "starting_services"
+            ? `${composeActionVerb(meta)}服务`
+            : stageMap[state.stage] || state.stage;
   const summary = successSummary(meta);
 
   return (
@@ -239,6 +260,21 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
         )}
         <TaskTitle state={state} />
         <div className="ml-auto flex items-center gap-2 shrink-0">
+          {canStop && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={isStopping}
+              onClick={() => onStop?.(state.taskId)}
+            >
+              {isStopping ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <Square className="h-3 w-3" aria-hidden="true" />
+              )}
+              {isStopping ? "停止中" : "停止装配"}
+            </Button>
+          )}
           <Badge variant={statusConfig.variant} className="text-[10px] h-5 px-1.5 gap-1">
             {statusConfig.icon}
             {stageLabel}
@@ -249,7 +285,7 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
         </div>
       </div>
 
-      {!isCompleted && (
+      {!isCompleted && !isCancelled && (
         <div className="mt-3">
           <Progress
             value={state.progress.percentage}
@@ -258,14 +294,24 @@ function DeployTaskCard({ state, logs }: { state: DeployTaskState; logs: string[
         </div>
       )}
 
-      {!isCompleted && !isFailed && (
+      {state.status === "deploying" && (
         <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
           <Terminal className="h-3.5 w-3.5" aria-hidden="true" />
           <span className="truncate">{state.progress.message}</span>
         </div>
       )}
 
-      {isCompleted && state.warning ? (
+      {isCancelled ? (
+        <div className="mt-3 flex items-center gap-2.5 rounded-lg border bg-muted/50 px-3 py-2.5">
+          <Square className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium">{state.progress.message}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              需要时可在应用详情中重新装配
+            </p>
+          </div>
+        </div>
+      ) : isCompleted && state.warning ? (
         <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
           <AlertTriangle
             className="mt-0.5 h-4 w-4 shrink-0 text-amber-600"
@@ -323,6 +369,8 @@ export function DeployProgressPanel({
   onError,
   onExpired,
 }: DeployProgressPanelProps) {
+  const toast = useToast();
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const activeTaskIds = useMemo(() => taskIds.filter(Boolean), [taskIds]);
   const states = useDeployTasksEvents(
     activeTaskIds,
@@ -331,11 +379,28 @@ export function DeployProgressPanel({
     onExpired
   );
 
-  // 已完成的任务排在前面，让用户一眼看到哪些部署完了；进行中/失败的保持在后
+  const handleStop = async (taskId: string) => {
+    setStoppingTaskId(taskId);
+    try {
+      await api.post(`/deploy-tasks/${taskId}/cancel`);
+      toast.success("已停止自动配置与装配，应用容器保持运行");
+    } catch (error) {
+      const message = (error as { displayMessage?: string }).displayMessage;
+      toast.error(message || "停止装配失败，请重试");
+    } finally {
+      setStoppingTaskId(null);
+    }
+  };
+
+  // 已结束的任务排在前面，让用户一眼看到哪些任务不需要继续等待
   const orderedTaskIds = useMemo(() => {
     const rank = (id: string) => {
       const status = states[id]?.status;
-      return status === "completed" ? 0 : status === "failed" ? 1 : 2;
+      return status === "completed" || status === "cancelled"
+        ? 0
+        : status === "failed"
+          ? 1
+          : 2;
     };
     return [...activeTaskIds].sort((a, b) => rank(a) - rank(b));
   }, [activeTaskIds, states]);
@@ -366,6 +431,8 @@ export function DeployProgressPanel({
             key={taskId}
             state={state}
             logs={state.logs || []}
+            onStop={handleStop}
+            isStopping={stoppingTaskId === taskId}
           />
         );
       })}

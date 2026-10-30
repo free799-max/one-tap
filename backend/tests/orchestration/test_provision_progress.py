@@ -1,10 +1,12 @@
 """部署后账号自动配置与装配的进度任务测试。"""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.exceptions import APIException
 from app.services.apps import ProvisionResult
 from app.services.orchestration import orchestration_service
 from app.services.orchestration import provisioning as provisioning_module
@@ -246,3 +248,56 @@ async def test_provision_group_skips_retry_when_container_stopped(monkeypatch):
     await orchestration_service._provision_group(1, _items()[:1], task_id)
 
     assert provision.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_provisioning_cancels_background_task(monkeypatch):
+    """停止装配要取消实际等待协程，并推送不再恢复的已停止终态。"""
+    manager = DeployTaskManager()
+    monkeypatch.setattr(provisioning_module, "deploy_task_manager", manager)
+    task_id = manager.create_task(
+        "orchestration_provision",
+        meta={"operation": "provision", "instance_name": "test-stack"},
+        enforce_limit=False,
+    )
+    manager.update_progress(task_id, "provisioning", 60, "等待 moviepilot 服务就绪")
+    started = asyncio.Event()
+
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+
+    background = asyncio.create_task(wait_forever())
+    monkeypatch.setattr(
+        orchestration_service,
+        "_provisioning_tasks",
+        {task_id: background},
+        raising=False,
+    )
+    await started.wait()
+
+    await orchestration_service.cancel_provisioning(task_id)
+
+    assert background.cancelled()
+    task = manager.get_task(task_id)
+    assert task is not None
+    assert task["status"] == "cancelled"
+    assert task["stage"] == "cancelled"
+    assert task["progress"]["percentage"] == 60
+    assert "应用容器保持运行" in task["progress"]["message"]
+    assert manager.get_task_history(task_id)[-1]["_task_status"] == "cancelled"
+    assert task_id not in manager.list_active_task_ids()
+
+
+@pytest.mark.asyncio
+async def test_cancel_provisioning_rejects_regular_deploy_task(monkeypatch):
+    """普通部署任务不能走装配取消入口。"""
+    manager = DeployTaskManager()
+    monkeypatch.setattr(provisioning_module, "deploy_task_manager", manager)
+    task_id = manager.create_task("app_deploy")
+
+    with pytest.raises(APIException) as exc_info:
+        await orchestration_service.cancel_provisioning(task_id)
+
+    assert exc_info.value.status_code == 400
+    assert manager.get_task(task_id)["status"] == "deploying"

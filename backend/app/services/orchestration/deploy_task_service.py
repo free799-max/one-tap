@@ -243,6 +243,24 @@ class DeployTaskManager(BaseTaskManager):
             self._append_history(task_id, notify)
             self._notify_listeners(task_id, notify)
 
+    def cancel_task(self, task_id: str, message: str = "任务已停止") -> bool:
+        """停止进行中的任务并通知监听器，已结束任务保持不变。"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task or task.get("status") != self._active_status:
+                return False
+            task["status"] = "cancelled"
+            task["stage"] = "cancelled"
+            task["error"] = None
+            task["completed_at"] = self._now()
+            task["updated_at"] = self._now()
+            percentage = task["progress"].get("percentage", 0)
+            task["progress"] = self._new_progress("cancelled", percentage, message)
+            notify = self._build_notify(task)
+            self._append_history(task_id, notify)
+            self._notify_listeners(task_id, notify)
+            return True
+
     def _on_timeout(self, task: dict):
         """部署任务超时：更新进度阶段并推送脱敏后的失败通知。"""
         task["stage"] = "failed"

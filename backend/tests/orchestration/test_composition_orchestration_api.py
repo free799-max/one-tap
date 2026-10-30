@@ -130,6 +130,13 @@ async def test_list_deploy_tasks_requires_auth(client):
 
 
 @pytest.mark.asyncio
+async def test_cancel_deploy_task_requires_auth(client):
+    """未认证时不能停止装配任务。"""
+    resp = await client.post("/api/deploy-tasks/task-id/cancel")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_list_deploy_tasks_returns_active_task_ids(client):
     """认证后返回进行中的任务 ID，已完成任务不再返回。"""
     from app.services.orchestration.deploy_task_service import deploy_task_manager
@@ -160,3 +167,53 @@ async def test_list_deploy_tasks_returns_active_task_ids(client):
         "Authorization": f"Bearer {token}",
     })
     assert task_id not in resp.json()["data"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_provision_task_stops_worker_and_sse(client, monkeypatch):
+    """停止接口取消真实后台协程，SSE 回放后以 cancelled 终态结束。"""
+    import asyncio
+
+    from app.services.orchestration import orchestration_service
+    from app.services.orchestration.deploy_task_service import deploy_task_manager
+
+    await client.post("/api/auth/register", json={
+        "username": "provisionstop",
+        "password": "provisionstop123",
+    })
+    login_resp = await client.post("/api/auth/login", json={
+        "username": "provisionstop",
+        "password": "provisionstop123",
+    })
+    token = login_resp.json()["data"]["access_token"]
+    task_id = deploy_task_manager.create_task(
+        "orchestration_provision",
+        meta={"operation": "provision", "instance_name": "movie"},
+        enforce_limit=False,
+    )
+    started = asyncio.Event()
+
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+
+    background = asyncio.create_task(wait_forever())
+    monkeypatch.setattr(
+        orchestration_service,
+        "_provisioning_tasks",
+        {task_id: background},
+        raising=False,
+    )
+    await started.wait()
+
+    resp = await client.post(
+        f"/api/deploy-tasks/{task_id}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "cancelled"
+    assert background.cancelled()
+    events = await client.get(f"/api/deploy-tasks/{task_id}/events?token={token}")
+    assert events.status_code == 200
+    assert '"_task_status": "cancelled"' in events.text

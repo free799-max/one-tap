@@ -50,6 +50,47 @@ class ProvisionMixin:
     # 长时间等待服务就绪时刷新进度的间隔（秒），避免跟踪任务被判超时
     PROVISION_HEARTBEAT_SECONDS = 15.0
 
+    def _track_provisioning_task(self, progress_task_id: str, coro) -> asyncio.Task:
+        """登记装配协程，使用户可以按进度任务 ID 停止等待与后续配置。"""
+        task = create_background_task(coro)
+        if not isinstance(task, asyncio.Task):
+            return task
+        tasks = getattr(self, "_provisioning_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._provisioning_tasks = tasks
+        tasks[progress_task_id] = task
+
+        def cleanup(done_task: asyncio.Task) -> None:
+            if tasks.get(progress_task_id) is done_task:
+                tasks.pop(progress_task_id, None)
+
+        task.add_done_callback(cleanup)
+        return task
+
+    async def cancel_provisioning(self, progress_task_id: str) -> None:
+        """取消自动配置与装配，不影响已经启动的应用容器。"""
+        state = deploy_task_manager.get_task(progress_task_id)
+        if state is None:
+            raise APIException("任务不存在", 404)
+        if state.get("type") != "orchestration_provision":
+            raise APIException("仅自动配置与装配任务支持停止", 400)
+        if state.get("status") != "deploying":
+            raise APIException("任务已结束", 409)
+
+        task = getattr(self, "_provisioning_tasks", {}).get(progress_task_id)
+        if task is None or task.done():
+            raise APIException("任务已结束或当前无法停止", 409)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        deploy_task_manager.cancel_task(
+            progress_task_id,
+            "已停止自动配置与装配，应用容器保持运行",
+        )
+
     def _schedule_provisioning(
         self,
         group_id: int,
@@ -97,8 +138,9 @@ class ProvisionMixin:
             },
             enforce_limit=False,
         )
-        create_background_task(
-            self._provision_group(group_id, items, progress_task_id)
+        self._track_provisioning_task(
+            progress_task_id,
+            self._provision_group(group_id, items, progress_task_id),
         )
         return progress_task_id
 

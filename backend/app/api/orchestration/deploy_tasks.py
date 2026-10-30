@@ -42,7 +42,7 @@ async def deploy_task_events(
         history = deploy_task_manager.get_task_history(task_id)
         for entry in history:
             yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
-            if entry.get("_task_status") in ("completed", "failed"):
+            if entry.get("_task_status") in ("completed", "failed", "cancelled"):
                 return
 
         q = deploy_task_manager.register_listener(task_id)
@@ -51,7 +51,7 @@ async def deploy_task_events(
                 try:
                     progress = await asyncio.to_thread(q.get, timeout=1)
                     yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
-                    if progress.get("_task_status") in ("completed", "failed"):
+                    if progress.get("_task_status") in ("completed", "failed", "cancelled"):
                         return
                 except queue.Empty:
                     pass
@@ -59,7 +59,7 @@ async def deploy_task_events(
                 current_task = deploy_task_manager.get_task(task_id)
                 if not current_task:
                     break
-                if current_task["status"] in ("completed", "failed"):
+                if current_task["status"] in ("completed", "failed", "cancelled"):
                     _final = current_task["progress"].copy()
                     _final["_task_status"] = current_task["status"]
                     if current_task.get("error"):
@@ -79,6 +79,18 @@ async def deploy_task_events(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/deploy-tasks/{task_id}/cancel", response_model=DeployTaskStatus)
+async def cancel_deploy_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """停止自动配置与装配，不影响已启动的应用容器。"""
+    from app.services.orchestration import orchestration_service
+
+    await orchestration_service.cancel_provisioning(task_id)
+    return deploy_task_manager.get_task(task_id)
 
 
 @router.get("/deploy-tasks/{task_id}/status", response_model=DeployTaskStatus)
