@@ -132,6 +132,27 @@ def _make_container(
     return container
 
 
+def test_build_access_url_uses_host_network_address(monkeypatch):
+    """桥接容器内部署时，访问地址使用宿主机 IP 而非容器 IP。"""
+    monkeypatch.setattr(
+        "app.services.orchestration.importer.detect_host_address",
+        lambda client: "192.168.1.50",
+    )
+    app = App(
+        name="moviepilot",
+        default_ports=[{"port": 3000, "protocol": "tcp", "description": "Web UI"}],
+    )
+    config = {
+        "ports": [
+            {"local_port": 8001, "container_port": 3000, "protocol": "tcp"}
+        ]
+    }
+
+    url = orchestration_service._build_access_url(app, config)
+
+    assert url == "http://192.168.1.50:8001"
+
+
 @pytest.mark.asyncio
 async def test_scan_import_candidates_match_running_containers(
     db, media_apps, media_orchestration

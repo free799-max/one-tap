@@ -4,11 +4,13 @@
 供应用商店部署与手动 Compose 项目创建共用。
 """
 
+import json
 import logging
 import threading
 import time
 
 from app.services.docker import docker_manager
+from app.services.docker.host_network import run_in_host_network
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +91,33 @@ def _parse_proc_net_tcp(path: str) -> set[int]:
     return listening
 
 
+_HOST_PORT_PROBE = (
+    "import json; "
+    "from app.services.system.port_allocator import _parse_proc_net_tcp; "
+    "print(json.dumps(sorted(_parse_proc_net_tcp('/proc/net/tcp') | "
+    "_parse_proc_net_tcp('/proc/net/tcp6'))))"
+)
+
+
+def _get_host_listening_ports(client, local_ports: set[int]) -> set[int]:
+    try:
+        output = run_in_host_network(client, ["python", "-c", _HOST_PORT_PROBE])
+        if output is None:
+            return local_ports
+        ports = json.loads(output)
+        if not isinstance(ports, list):
+            raise ValueError("宿主机端口探测结果格式错误")
+        return {int(port) for port in ports}
+    except Exception:
+        logger.warning("获取宿主机监听端口失败，使用容器内检测结果", exc_info=True)
+        return local_ports
+
+
 def get_used_ports() -> set[int]:
     """获取宿主机上已被占用的端口。
 
-    合并两个来源：
-    1. Docker 容器已映射的端口（需要能访问 Docker daemon）；
-    2. /proc/net/tcp* 中处于 LISTEN 状态的端口（host network 模式下为宿主机端口）。
+    合并 Docker 容器映射、宿主机网络命名空间中的 IPv4/IPv6 监听端口，
+    以及当前网络命名空间的监听端口（作为探测失败时的兜底）。
     """
     used: set[int] = set()
 
@@ -119,9 +142,12 @@ def get_used_ports() -> set[int]:
             # Docker 不可用时跳过
             logger.warning("获取 Docker 容器端口映射失败，跳过该来源", exc_info=True)
 
-    # 2. 从 /proc/net/tcp* 读取监听端口
-    used.update(_parse_proc_net_tcp("/proc/net/tcp"))
-    used.update(_parse_proc_net_tcp("/proc/net/tcp6"))
+    # 2. 当前网络命名空间与宿主机网络命名空间的监听端口
+    local_ports = _parse_proc_net_tcp("/proc/net/tcp")
+    local_ports.update(_parse_proc_net_tcp("/proc/net/tcp6"))
+    used.update(local_ports)
+    if client is not None:
+        used.update(_get_host_listening_ports(client, local_ports))
 
     return used
 

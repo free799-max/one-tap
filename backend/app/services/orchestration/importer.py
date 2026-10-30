@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import socket
 
 import docker
 from sqlalchemy import select
@@ -19,6 +18,7 @@ from app.schemas.orchestration import (
     ImportCandidateApp,
 )
 from app.services.docker import docker_manager
+from app.services.docker.host_network import detect_host_address
 
 logger = logging.getLogger(__name__)
 
@@ -287,15 +287,11 @@ class ImportMixin:
 
     def _get_host_ip(self) -> str:
         """获取宿主机在内网中的本地 IP，失败时回退到 localhost。"""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.settimeout(0.5)
-                s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
-        except Exception:
-            return "localhost"
+        return detect_host_address(docker_manager._client)
 
-    def _build_access_url(self, app: App, config: dict) -> str | None:
+    def _build_access_url(
+        self, app: App, config: dict, host: str | None = None
+    ) -> str | None:
         """根据应用的 Web 端口定义与实际分配的本地端口生成访问地址。
 
         优先匹配 App.default_ports 中描述含 "Web" 的容器端口对应的本地端口，
@@ -333,7 +329,7 @@ class ImportMixin:
             local_port = tcp_ports[0].get("local_port")
         if not local_port:
             return None
-        return f"http://{self._get_host_ip()}:{local_port}"
+        return f"http://{host or self._get_host_ip()}:{local_port}"
 
     def _fill_access_urls(
         self,
@@ -347,9 +343,10 @@ class ImportMixin:
         认证信息（auth_type/username/password/api_key）保留不动。
         """
         app_configs = dict(group.app_configs or {})
+        host = self._get_host_ip()
         for app_name, instance in instances.items():
             app = app_map.get(app_name)
-            url = self._build_access_url(app, instance.config) if app else None
+            url = self._build_access_url(app, instance.config, host) if app else None
             if not url:
                 continue
             entry = dict(app_configs.get(app_name) or {})

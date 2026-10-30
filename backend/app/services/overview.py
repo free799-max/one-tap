@@ -7,7 +7,6 @@
 import asyncio
 import queue
 import re
-import socket
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from app.schemas.dashboard import (
 from app.services import catalog_sync
 from app.services.compose import compose_manager
 from app.services.docker import docker, docker_manager
+from app.services.docker.host_network import detect_host_address
 
 # 分类展示顺序由管理端下发的分类字典决定；未同步时未知分类按名称排序
 
@@ -199,17 +199,8 @@ def is_loopback_host(host: str) -> bool:
 
 
 def detect_host() -> str:
-    """推断宿主机对内提供访问的地址。
-
-    通过默认路由探测本机内网 IP，探测失败时回退到 localhost。
-    """
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(0.5)
-            sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
-    except OSError:
-        return "localhost"
+    """推断宿主机对内提供访问的地址，探测失败时回退到 localhost。"""
+    return detect_host_address(docker_manager._client)
 
 
 def resolve_host(value: str | None) -> str:

@@ -89,6 +89,32 @@ class TestGetUsedPorts:
 
         assert used == {3000, 3001, 3002, 3003}
 
+    def test_merges_host_ipv6_listening_ports_from_bridge_container(self):
+        """桥接网络下通过宿主机网络探测识别仅 IPv6 监听的端口。"""
+        from app.services.docker import docker_manager
+
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        current = MagicMock()
+        current.attrs = {"HostConfig": {"NetworkMode": "bridge"}}
+        current.image = "onetap:local"
+        mock_client.containers.get.return_value = current
+        mock_client.containers.run.return_value = b"[8005]\n"
+
+        with patch.object(docker_manager, "_client_obj", mock_client):
+            with patch(
+                "app.services.system.port_allocator._parse_proc_net_tcp",
+                return_value=set(),
+            ):
+                used = get_used_ports()
+
+        assert used == {8005}
+        mock_client.containers.run.assert_called_once()
+        run_kwargs = mock_client.containers.run.call_args.kwargs
+        assert run_kwargs["entrypoint"] == []
+        assert run_kwargs["network_mode"] == "host"
+        assert run_kwargs["remove"] is True
+
     def test_skips_docker_when_unavailable(self):
         """Docker 不可用时仍能从 /proc/net/tcp 读取端口。"""
         from app.services.docker import docker_manager

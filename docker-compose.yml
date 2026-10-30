@@ -4,6 +4,7 @@ name: ${COMPOSE_PROJECT_NAME:-onetap}
 
 services:
   postgres:
+    container_name: onetap-postgres
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -21,6 +22,7 @@ services:
       start_period: 10s
 
   app:
+    container_name: onetap-app
     image: "${APP_IMAGE:-onetap:local}"
     build:
       context: .
