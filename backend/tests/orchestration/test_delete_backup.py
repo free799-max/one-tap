@@ -101,11 +101,13 @@ def _fake_delete_project(db):
     return fake_delete_project
 
 
-def _set_app_data_root(monkeypatch, host: str | None):
+def _set_app_data_root(
+    monkeypatch, host: str | None, mount: str | None = None
+):
     async def fake_pair(db):
         if host is None:
             return None
-        return (host, host)
+        return (host, mount or host)
 
     monkeypatch.setattr(storage_directory_service, "get_app_data_pair", fake_pair)
 
@@ -114,8 +116,9 @@ def _set_app_data_root(monkeypatch, host: str | None):
 async def test_delete_instance_backs_up_app_data(
     db, group, monkeypatch, tmp_path
 ):
-    """删除实例组应把应用数据目录移入备份目录并写清单。"""
-    _set_app_data_root(monkeypatch, str(tmp_path))
+    """删除实例组应按容器内路径备份，并在清单中记录宿主机路径。"""
+    host_root = "/srv/onetap/app-data"
+    _set_app_data_root(monkeypatch, host_root, str(tmp_path))
     monkeypatch.setattr(
         compose_manager, "delete_project", _fake_delete_project(db)
     )
@@ -148,7 +151,7 @@ async def test_delete_instance_backs_up_app_data(
     manifest = json.loads((backup_dir / "backup.json").read_text())
     assert manifest["instance_name"] == "test-stack"
     assert manifest["orchestration"] == "media-stack"
-    assert manifest["app_data_root"] == str(tmp_path)
+    assert manifest["app_data_root"] == host_root
     assert manifest["shared_config"] == {}
     assert len(manifest["apps"]) == 1
     app_entry = manifest["apps"][0]

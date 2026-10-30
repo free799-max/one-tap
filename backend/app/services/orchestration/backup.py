@@ -75,13 +75,22 @@ def _backup_destination(root: Path, group_name: str, now: datetime) -> Path:
     return candidate
 
 
-async def resolve_app_data_root(db: AsyncSession) -> Path | None:
-    """读取应用数据目录的宿主机路径；未配置时返回 None。"""
+async def resolve_app_data_paths(db: AsyncSession) -> tuple[Path, Path] | None:
+    """读取应用数据目录的宿主机路径与后端容器内路径。"""
     pair = await storage_directory_service.get_app_data_pair(db)
     if not pair:
         return None
     host_path = (pair[0] or "").strip()
-    return Path(host_path) if host_path else None
+    mount_path = (pair[1] or "").strip()
+    if not host_path or not mount_path:
+        return None
+    return Path(host_path), Path(mount_path)
+
+
+async def resolve_app_data_root(db: AsyncSession) -> Path | None:
+    """读取后端容器内可见的应用数据目录；未配置时返回 None。"""
+    paths = await resolve_app_data_paths(db)
+    return paths[1] if paths else None
 
 
 async def backup_app_data_dirs(
@@ -104,10 +113,11 @@ async def backup_app_data_dirs(
         None；failures 记录移动失败的目录，其数据仍保留在原路径，
         调用方必须提示用户，否则同名重建会静默复用旧数据。
     """
-    root = await resolve_app_data_root(db)
-    if root is None:
+    paths = await resolve_app_data_paths(db)
+    if paths is None:
         logger.warning("未配置应用数据目录，跳过实例组 %s 的数据备份", group_name)
         return None, []
+    host_root, root = paths
 
     try:
         root_resolved = root.resolve()
@@ -187,7 +197,7 @@ async def backup_app_data_dirs(
         "instance_name": group_name,
         "orchestration": orchestration_name,
         "deleted_at": now.isoformat(timespec="seconds"),
-        "app_data_root": str(root),
+        "app_data_root": str(host_root),
         "shared_config": shared_config or {},
         "app_configs": app_configs or {},
         "apps": moved,
