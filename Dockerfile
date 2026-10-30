@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # 应用镜像：OneTap 基础镜像 + 后端代码 + 前端产物。
 # 基础镜像由 docker/base.Dockerfile 手动构建并推送到 Harbor，
