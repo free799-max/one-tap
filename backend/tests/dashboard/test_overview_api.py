@@ -43,3 +43,19 @@ async def test_app_detail_returns_404_for_missing_instance(client):
 
     assert resp.status_code == 404
     assert resp.json()["message"] == "应用实例不存在"
+
+
+@pytest.mark.asyncio
+async def test_app_metrics_requires_auth(client):
+    resp = await client.get("/api/dashboard/apps/1/metrics")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_app_metrics_returns_404_for_missing_instance(client):
+    headers = await _auth_headers(client)
+
+    resp = await client.get("/api/dashboard/apps/9999/metrics", headers=headers)
+
+    assert resp.status_code == 404
+    assert resp.json()["message"] == "应用实例不存在"

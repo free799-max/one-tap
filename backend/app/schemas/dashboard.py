@@ -54,7 +54,7 @@ class AppMetricsOut(BaseModel):
 
 
 class OverviewAppDetailOut(BaseModel):
-    """应用详情：基本信息 + 容器信息 + 实时监控指标。"""
+    """应用详情：基本信息与容器信息；监控指标通过独立接口获取。"""
 
     app: OverviewAppOut
     # 关联的 Compose 项目；导入的外部容器为空

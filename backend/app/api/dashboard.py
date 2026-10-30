@@ -12,7 +12,7 @@ from app.core.exceptions import APIException
 from app.core.security import get_current_user, get_current_user_sse, require_admin
 from app.database import get_db
 from app.models.user import User
-from app.schemas.dashboard import OverviewAppDetailOut, OverviewOut
+from app.schemas.dashboard import AppMetricsOut, OverviewAppDetailOut, OverviewOut
 from app.schemas.orchestration.deploy_task import DeployTaskCreateResponse
 from app.services.orchestration import orchestration_service
 from app.services.overview import overview_service
@@ -45,11 +45,21 @@ async def get_app_detail(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """返回单个应用的容器基本信息与实时监控指标。"""
+    """返回单个应用的容器基本信息，监控指标由独立接口查询。"""
     host = request.headers.get("x-forwarded-host") or request.url.netloc
     return await overview_service.get_app_detail(
         db, instance_id=instance_id, host=host
     )
+
+
+@router.get("/apps/{instance_id}/metrics", response_model=AppMetricsOut | None)
+async def get_app_metrics(
+    instance_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """返回运行中容器的实时监控指标。"""
+    return await overview_service.get_app_metrics(db, instance_id=instance_id)
 
 
 @router.get("/apps/{instance_id}/logs/stream")

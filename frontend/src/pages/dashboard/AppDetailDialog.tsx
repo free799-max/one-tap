@@ -19,7 +19,7 @@ import { AppIcon } from "@/pages/apps/AppIcon";
 import { categoryLabel } from "@/lib/categories";
 import { cn, formatBytes, formatDate, formatUptime, formatVersion } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
-import { useOverviewAppDetail, useUpgradeOverviewApp } from "@/hooks/useDashboard";
+import { useOverviewAppDetail, useOverviewAppMetrics, useUpgradeOverviewApp } from "@/hooks/useDashboard";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
 import { useToast } from "@/components/ui/toast";
 import { useCategories } from "@/hooks/useApps";
@@ -129,7 +129,7 @@ export function AppDetailDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data, isLoading, isFetching, isError, refetch } =
+  const { data, isLoading, isFetching: isDetailFetching, isError, refetch } =
     useOverviewAppDetail(open ? instanceId : null);
   const { data: categoryOptions = [] } = useCategories();
   const upgradeMutation = useUpgradeOverviewApp();
@@ -149,8 +149,13 @@ export function AppDetailDialog({
         className: "border-border bg-muted text-muted-foreground",
       }
     : null;
-  const metrics = data?.metrics;
   const isRunning = app?.status === "running";
+  const {
+    data: metrics,
+    isLoading: metricsLoading,
+    isFetching: metricsFetching,
+  } = useOverviewAppMetrics(open && isRunning ? instanceId : null);
+  const isFetching = isDetailFetching || metricsFetching;
   const actionPending = composeAction.isPending || containerAction.isPending;
 
   /** 停止/启动/重启：有 Compose 项目走项目操作，导入容器回退到容器操作 */
@@ -363,9 +368,11 @@ export function AppDetailDialog({
                   </div>
                 ) : (
                   <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-                    {app.status === "running"
-                      ? "暂时无法获取监控数据"
-                      : "容器未运行，暂无监控数据"}
+                    {metricsLoading && app.status === "running"
+                      ? "正在获取监控数据…"
+                      : app.status === "running"
+                        ? "暂时无法获取监控数据"
+                        : "容器未运行，暂无监控数据"}
                   </div>
                 )}
               </section>

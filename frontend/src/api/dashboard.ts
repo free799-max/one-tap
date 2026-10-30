@@ -59,7 +59,7 @@ export interface OverviewAppMetrics {
   pids: number;
 }
 
-/** 应用详情：基本信息 + 容器信息 + 监控指标 */
+/** 应用详情：基本信息与容器信息，监控指标由独立查询获取 */
 export interface OverviewAppDetail {
   app: OverviewApp;
   /** 关联的 Compose 项目；导入的外部容器为空 */
@@ -83,10 +83,17 @@ export function getOverview() {
     .then((response) => response.data);
 }
 
-/** 查询单个应用的容器详情与监控指标 */
+/** 查询单个应用的容器详情 */
 export function getOverviewAppDetail(instanceId: number) {
   return api
     .get<OverviewAppDetail>(`/dashboard/apps/${instanceId}`)
+    .then((response) => response.data);
+}
+
+/** 独立查询容器监控指标，避免慢采样阻塞详情首屏 */
+export function getOverviewAppMetrics(instanceId: number) {
+  return api
+    .get<OverviewAppMetrics | null>(`/dashboard/apps/${instanceId}/metrics`)
     .then((response) => response.data);
 }
 

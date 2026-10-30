@@ -659,19 +659,8 @@ class OverviewService:
                 error=error,
             )
 
-        def _collect():
-            info = _collect_container_info(container)
-            state = (container.attrs or {}).get("State") or {}
-            metrics = None
-            if state.get("Status", container.status) in {"running", "restarting"}:
-                try:
-                    metrics = _collect_metrics(container)
-                except Exception:
-                    metrics = None
-            return info, metrics
-
         try:
-            info, metrics = await asyncio.to_thread(_collect)
+            info = await asyncio.to_thread(_collect_container_info, container)
         except Exception as exc:
             return OverviewAppDetailOut(
                 app=app_out,
@@ -679,8 +668,38 @@ class OverviewService:
                 error=f"获取容器信息失败: {exc}",
             )
         return OverviewAppDetailOut(
-            app=app_out, project_id=instance.project_id, metrics=metrics, **info
+            app=app_out, project_id=instance.project_id, **info
         )
+
+    async def get_app_metrics(
+        self,
+        db: AsyncSession,
+        instance_id: int,
+    ) -> AppMetricsOut | None:
+        """独立采集运行中容器的监控指标，避免阻塞详情首屏。"""
+        result = await db.execute(
+            select(AppInstance)
+            .where(AppInstance.id == instance_id)
+            .options(selectinload(AppInstance.project))
+        )
+        instance = result.scalar_one_or_none()
+        if instance is None:
+            raise APIException("应用实例不存在", 404)
+
+        container, _ = await asyncio.to_thread(_find_container_sync, instance)
+        if container is None:
+            return None
+
+        def _collect() -> AppMetricsOut | None:
+            state = (container.attrs or {}).get("State") or {}
+            if state.get("Status", container.status) not in {"running", "restarting"}:
+                return None
+            try:
+                return _collect_metrics(container)
+            except Exception:
+                return None
+
+        return await asyncio.to_thread(_collect)
 
     async def open_log_stream(
         self,

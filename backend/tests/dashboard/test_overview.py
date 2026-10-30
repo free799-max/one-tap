@@ -143,6 +143,57 @@ def test_collect_container_info_falls_back_to_port_bindings():
     assert info["uptime_seconds"] is not None
 
 
+@pytest.mark.asyncio
+async def test_detail_does_not_wait_for_independent_metrics(db_session, monkeypatch):
+    """详情首屏不调用慢速 stats，只有独立监控查询才采样。"""
+    app = _make_app()
+    db_session.add(app)
+    await db_session.flush()
+    instance = AppInstance(
+        app_id=app.id,
+        instance_name="music-navidrome",
+        status="running",
+        config={"container_id": "abcdef1234567890"},
+    )
+    db_session.add(instance)
+    await db_session.commit()
+
+    class TrackingContainer(FakeContainer):
+        stats_calls = 0
+
+        def stats(self, stream: bool = False) -> dict:
+            self.stats_calls += 1
+            return super().stats(stream=stream)
+
+    container = TrackingContainer()
+
+    async def fake_snapshot():
+        return DockerSnapshot(
+            available=True,
+            container_status={"abcdef1234567890": "running"},
+        )
+
+    monkeypatch.setattr("app.services.overview.load_docker_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        "app.services.overview._find_container_sync",
+        lambda _instance: (container, None),
+    )
+
+    detail = await overview_service.get_app_detail(
+        db_session, instance.id, host="nas.local"
+    )
+
+    assert detail.container_name == "music-navidrome"
+    assert detail.metrics is None
+    assert container.stats_calls == 0
+
+    metrics = await overview_service.get_app_metrics(db_session, instance.id)
+
+    assert metrics is not None
+    assert metrics.pids == 15
+    assert container.stats_calls == 1
+
+
 class TestBuildAppUrl:
     def test_prefers_web_container_port(self):
         app = _make_app()
