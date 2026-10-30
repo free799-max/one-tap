@@ -29,7 +29,7 @@ export interface DeployTaskProgress {
 
 /** SSE 事件数据 */
 interface DeployTaskEvent extends DeployTaskProgress {
-  _task_status?: "deploying" | "completed" | "failed";
+  _task_status?: "deploying" | "completed" | "failed" | "cancelled";
   _error?: string;
   _warning?: string | null;
   _meta?: Record<string, unknown> | null;
@@ -39,7 +39,7 @@ interface DeployTaskEvent extends DeployTaskProgress {
 export interface DeployTaskState {
   taskId: string;
   type: string;
-  status: "deploying" | "completed" | "failed";
+  status: "deploying" | "completed" | "failed" | "cancelled";
   stage: string;
   progress: DeployTaskProgress;
   error?: string | null;
@@ -287,7 +287,7 @@ export function useDeployTasksEvents(
           return { ...prev, [taskId]: { ...newState, logs } };
         });
 
-        if (newState.status === "completed") {
+        if (newState.status === "completed" || newState.status === "cancelled") {
           onCompleteRef.current?.(taskId, newState);
           es.close();
         } else if (newState.status === "failed") {
