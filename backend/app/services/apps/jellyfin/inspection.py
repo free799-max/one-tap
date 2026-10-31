@@ -401,6 +401,9 @@ class JellyfinInspectionMixin:
         password: str,
     ) -> tuple[bool, str]:
         """启动向导未完成时创建管理员并完成向导。"""
+        # 全新实例（Jellyfin 12）数据库里还没有用户时 POST 会返回 404，
+        # 先 GET 触发服务端创建默认用户
+        await client.get(f"{base_url}/Startup/User")
         resp = await client.post(
             f"{base_url}/Startup/User",
             json={"Name": username, "Password": password},

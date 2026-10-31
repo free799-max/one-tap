@@ -400,6 +400,9 @@ async def test_jellyfin_provision_wizard_flow():
 
         assert result.ok is True
         assert result.api_key == "jf-token"
+        # 先 GET 触发服务端初始化默认用户，再 POST 设置账号密码
+        get_urls = [c.args[0] for c in instance.get.call_args_list]
+        assert get_urls[-1].endswith("/Startup/User")
         args, kwargs = instance.post.call_args_list[0]
         assert args[0].endswith("/Startup/User")
         assert kwargs["json"] == {"Name": "nasadmin", "Password": "Unified#Pass1"}

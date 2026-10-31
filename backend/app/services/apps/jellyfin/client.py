@@ -74,6 +74,10 @@ class JellyfinClient(JellyfinInspectionMixin, AppClient):
                     if not wizard_handled and not public_info.get(
                         "StartupWizardCompleted"
                     ):
+                        # Jellyfin 12 首次启动时数据库里还没有用户，
+                        # POST /Startup/User 会一直返回 404；先 GET 同一路径，
+                        # 触发服务端创建默认用户（与 Web 向导的行为一致）
+                        await client.get(f"{base_url}/Startup/User")
                         user_resp = await client.post(
                             f"{base_url}/Startup/User",
                             json={"Name": username, "Password": password},
@@ -92,8 +96,8 @@ class JellyfinClient(JellyfinInspectionMixin, AppClient):
                             # 已有管理员账号，降级为直接验证目标凭据
                             wizard_handled = True
                         else:
-                            # 404/5xx 说明服务还没初始化完成（如 Jellyfin 12
-                            # 首次启动），不能据此认定向导已结束，下一轮重试
+                            # 服务仍在初始化（5xx）等异常，不能据此认定向导已结束，
+                            # 下一轮重试
                             last_error = (
                                 f"创建管理员失败: HTTP {user_resp.status_code}"
                             )

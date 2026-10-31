@@ -435,6 +435,8 @@ def _jellyfin_auth_handler(state: dict, folders=None):
             state["password"] = body.get("NewPw")
             return httpx.Response(204)
         if path == "/Startup/User":
+            if request.method == "GET":
+                return httpx.Response(200, json={"Name": state.get("username") or "root"})
             body = json.loads(request.content or b"{}")
             state["username"] = body.get("Name")
             state["password"] = body.get("Password")
