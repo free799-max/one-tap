@@ -58,14 +58,9 @@ app-image:
       TENCENT_REF="$TENCENT_REGISTRY/$TENCENT_PROJECT/$TENCENT_IMAGE_NAME"
       TAG="$CI_COMMIT_TAG"
       TAGS="--tag $APP_REF:$TAG --tag $TENCENT_REF:$TAG"
-      # 正式版本额外打 minor / major / latest；预发布标签（如 v1.0.0-rc.1）只保留自身
+      # 正式版本额外打 latest；预发布标签（如 v1.0.0-rc.1）只保留自身
       if printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        CORE="${TAG#v}"
-        MAJOR="${CORE%%.*}"
-        MINOR="${CORE#*.}"
-        MINOR="${MINOR%%.*}"
-        TAGS="$TAGS --tag $APP_REF:v$MAJOR.$MINOR --tag $APP_REF:v$MAJOR --tag $APP_REF:latest"
-        TAGS="$TAGS --tag $TENCENT_REF:v$MAJOR.$MINOR --tag $TENCENT_REF:v$MAJOR --tag $TENCENT_REF:latest"
+        TAGS="$TAGS --tag $APP_REF:latest --tag $TENCENT_REF:latest"
       fi
       echo "本次构建标签：$TAGS"
       # 腾讯云 CCR 需要登录：优先用 CI/CD 变量，未配置时沿用宿主机的登录状态

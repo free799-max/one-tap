@@ -242,5 +242,6 @@ done
 
 echo
 echo "版本：$NEW_TAG"
-echo "镜像：harbor.cacty.top/library/onetap:$NEW_TAG（稳定版另打 latest、v主.次、v主）"
+echo "镜像：harbor.cacty.top/library/onetap:$NEW_TAG（稳定版另打 latest）"
+echo "      ccr.ccs.tencentyun.com/one-tap/one-tap:$NEW_TAG（稳定版另打 latest）"
 echo "流水线：https://git.cacty.top/nas/one-tap/-/pipelines"
