@@ -24,6 +24,7 @@ import {
   Tag,
   Search,
   X,
+  RefreshCw,
 } from "lucide-react";
 import { formatBytes, formatDate, formatRelativeTime } from "@/lib/utils";
 
@@ -55,7 +56,14 @@ export function TagSelectDialog({
 }: TagSelectDialogProps) {
   const [manualTag, setManualTag] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const { data: rawTags, isLoading } = useImageTags(imageName);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const {
+    data: rawTags,
+    isLoading,
+    isFetching,
+    error,
+  } = useImageTags(imageName, refreshToken);
+  const tagError = error as { displayMessage?: string; message?: string } | null;
 
   const tags = useMemo(() => sortTags(rawTags ?? []), [rawTags]);
 
@@ -227,7 +235,25 @@ export function TagSelectDialog({
             <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
               <Tag className="h-8 w-8 mb-2 opacity-40" />
               <p className="text-sm">未找到可用标签</p>
-              <p className="text-xs mt-0.5">将默认使用 latest 标签拉取</p>
+              <p className="text-xs mt-0.5 text-center">
+                {tagError
+                  ? tagError.displayMessage || tagError.message
+                  : "将默认使用 latest 标签拉取"}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                disabled={isFetching}
+                onClick={() => setRefreshToken((token) => token + 1)}
+              >
+                {isFetching ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                )}
+                {isFetching ? "获取中…" : "重新获取"}
+              </Button>
             </div>
           )}
         </div>

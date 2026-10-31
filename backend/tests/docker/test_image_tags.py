@@ -1,5 +1,6 @@
 """镜像标签获取测试（不访问网络）。"""
 
+import httpx
 import pytest
 
 from app.services.docker import image_service
@@ -64,10 +65,143 @@ async def test_get_image_tags_uses_registry_for_ghcr(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_image_tags_swallows_errors(monkeypatch):
-    async def fake_registry(host, repo, limit):
+async def test_get_image_tags_raises_when_all_sources_fail(monkeypatch):
+    async def fake_registry(host, repo, limit, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(image_service, "_registry_tags", fake_registry)
     service = image_service.ImageService.__new__(image_service.ImageService)
-    assert await service.get_image_tags("ghcr.io/foo/bar") == []
+
+    with pytest.raises(image_service.ImageTagsUnavailable, match="boom"):
+        await service.get_image_tags("ghcr.io/foo/bar")
+
+
+@pytest.mark.asyncio
+async def test_hub_failure_falls_back_to_registry(monkeypatch):
+    calls = []
+
+    async def fake_hub(repo, limit):
+        raise RuntimeError("hub unreachable")
+
+    async def fake_registry(host, repo, limit, **kwargs):
+        calls.append({"host": host, "repo": repo, "root": kwargs.get("root")})
+        return [{"name": "latest", "last_updated": "", "size": 0, "digest": "sha256:x"}]
+
+    monkeypatch.setattr(image_service, "_hub_tags", fake_hub)
+    monkeypatch.setattr(image_service, "_registry_tags", fake_registry)
+    service = image_service.ImageService.__new__(image_service.ImageService)
+
+    tags = await service.get_image_tags("gitlab/gitlab-ce")
+
+    assert [t["name"] for t in tags] == ["latest"]
+    assert calls[0]["host"] == "registry-1.docker.io"
+    assert calls[0]["repo"] == "gitlab/gitlab-ce"
+
+
+@pytest.mark.asyncio
+async def test_registry_falls_back_to_configured_mirror(monkeypatch):
+    calls = []
+
+    async def fake_hub(repo, limit):
+        raise RuntimeError("hub unreachable")
+
+    async def fake_registry(host, repo, limit, **kwargs):
+        calls.append(kwargs.get("root"))
+        if kwargs.get("root") is None:
+            raise RuntimeError("registry unreachable")
+        return [{"name": "19.5.1-ce.0", "last_updated": "", "size": 0, "digest": "sha256:x"}]
+
+    monkeypatch.setattr(image_service, "_hub_tags", fake_hub)
+    monkeypatch.setattr(image_service, "_registry_tags", fake_registry)
+    service = image_service.ImageService.__new__(image_service.ImageService)
+
+    tags = await service.get_image_tags(
+        "gitlab/gitlab-ce", mirrors=["https://docker.m.daocloud.io"]
+    )
+
+    assert [t["name"] for t in tags] == ["19.5.1-ce.0"]
+    assert calls == [None, "https://docker.m.daocloud.io"]
+
+
+@pytest.mark.asyncio
+async def test_mirror_provider_only_called_on_failure(monkeypatch):
+    provider_calls = []
+
+    async def fake_hub(repo, limit):
+        return [{"name": "latest", "last_updated": "", "size": 0, "digest": "sha256:x"}]
+
+    async def provider():
+        provider_calls.append(True)
+        return ["https://docker.1ms.run"]
+
+    monkeypatch.setattr(image_service, "_hub_tags", fake_hub)
+    service = image_service.ImageService.__new__(image_service.ImageService)
+
+    tags = await service.get_image_tags("nginx", mirror_provider=provider)
+    assert [t["name"] for t in tags] == ["latest"]
+    assert provider_calls == []
+
+    image_service._tag_cache.clear()
+
+    async def failing_hub(repo, limit):
+        raise RuntimeError("hub unreachable")
+
+    async def fake_registry(host, repo, limit, **kwargs):
+        if kwargs.get("root") is None:
+            raise RuntimeError("registry unreachable")
+        return [{"name": "mirror-tag", "last_updated": "", "size": 0, "digest": "sha256:y"}]
+
+    monkeypatch.setattr(image_service, "_hub_tags", failing_hub)
+    monkeypatch.setattr(image_service, "_registry_tags", fake_registry)
+
+    tags = await service.get_image_tags("nginx", mirror_provider=provider)
+    assert [t["name"] for t in tags] == ["mirror-tag"]
+    assert provider_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_refresh_bypasses_tag_cache(monkeypatch):
+    calls = []
+
+    async def fake_hub(repo, limit):
+        calls.append(repo)
+        return [{"name": "latest", "last_updated": "", "size": 0, "digest": "sha256:x"}]
+
+    monkeypatch.setattr(image_service, "_hub_tags", fake_hub)
+    service = image_service.ImageService.__new__(image_service.ImageService)
+
+    await service.get_image_tags("nginx")
+    await service.get_image_tags("nginx")
+    assert len(calls) == 1
+
+    await service.get_image_tags("nginx", refresh=True)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_mirror_tags_use_v2_protocol(monkeypatch):
+    """镜像加速地址按 OCI Distribution 协议列出标签。"""
+    requested = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if request.url.path == "/v2/library/nginx/tags/list":
+            return httpx.Response(200, json={"name": "library/nginx", "tags": ["latest"]})
+        return httpx.Response(200, json={"tags": ["latest"]})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        image_service.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    tags = await image_service._registry_tags(
+        "", "library/nginx", 5, root="https://docker.1ms.run"
+    )
+
+    assert [t["name"] for t in tags] == ["latest"]
+    assert any(
+        url.startswith("https://docker.1ms.run/v2/library/nginx/tags/list")
+        for url in requested
+    )

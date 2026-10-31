@@ -5,6 +5,7 @@ import math
 import re
 import time
 import urllib.parse
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -30,6 +31,17 @@ _MANIFEST_BUDGET = 8
 _CONFIG_BUDGET = 4
 _TAG_CACHE_TTL = 300
 _tag_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+class ImageTagsUnavailable(RuntimeError):
+    """所有标签来源（Docker Hub、registry、镜像加速）均不可用。"""
+
+
+def _describe_error(exc: Exception) -> str:
+    """把标签获取异常转成前端可读的简短原因。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return str(exc) or type(exc).__name__
 
 
 def _split_image_ref(image: str) -> tuple[str, str]:
@@ -69,18 +81,22 @@ def _next_link(header: str | None) -> str | None:
 
 
 class _RegistryClient:
-    """OCI Distribution 协议客户端，匿名访问公开仓库。"""
+    """OCI Distribution 协议客户端，匿名访问公开仓库。
 
-    def __init__(self, client: httpx.AsyncClient, host: str, repo: str):
+    ``root`` 是仓库根地址（如 ``https://registry-1.docker.io``），
+    镜像加速地址也可作为根地址，从而复用同一套 tags/list 协议。
+    """
+
+    def __init__(self, client: httpx.AsyncClient, root: str, repo: str):
         self._client = client
-        self.host = host
+        self.root = root.rstrip("/")
         self.repo = repo
         self._token: str | None = None
         self._lock = asyncio.Lock()
 
     @property
     def _base(self) -> str:
-        return f"https://{self.host}/v2/{self.repo}"
+        return f"{self.root}/v2/{self.repo}"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": _MANIFEST_ACCEPT}
@@ -94,10 +110,7 @@ class _RegistryClient:
         async with self._lock:
             if self._token is not None:
                 return
-            try:
-                resp = await self._client.get(f"https://{self.host}/v2/")
-            except httpx.HTTPError:
-                raise
+            resp = await self._client.get(f"{self.root}/v2/")
             challenge = _parse_bearer_challenge(
                 resp.headers.get("www-authenticate", "")
             )
@@ -211,13 +224,19 @@ async def _retry(fn, attempts: int = 2):
                 raise
 
 
-async def _registry_tags(host: str, repo: str, limit: int) -> list[dict]:
+async def _registry_tags(
+    host: str, repo: str, limit: int, *, root: str | None = None
+) -> list[dict]:
+    """按 OCI Distribution 协议列出标签。
+
+    ``root`` 给定时直接作为仓库根地址（镜像加速地址），否则用 ``https://host``。
+    """
     async with httpx.AsyncClient(
         timeout=15,
         follow_redirects=True,
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=32),
     ) as client:
-        registry = _RegistryClient(client, host, repo)
+        registry = _RegistryClient(client, root or f"https://{host}", repo)
         names = await _retry(lambda: registry.list_tags(limit))
         if not names:
             return []
@@ -275,6 +294,8 @@ async def _registry_tags(host: str, repo: str, limit: int) -> list[dict]:
 
 async def _gather_bounded(coros: dict, timeout: float) -> dict:
     """并发的协程在预算内完成则返回，超时的直接放弃。"""
+    if not coros:
+        return {}
     tasks = {key: asyncio.create_task(coro) for key, coro in coros.items()}
     done, pending = await asyncio.wait(tasks.values(), timeout=timeout)
     for task in pending:
@@ -609,33 +630,94 @@ class ImageService(common.BaseDockerService):
             raise RuntimeError("Docker not available")
         self._client.images.pull(image)
 
-    async def get_image_tags(self, image: str) -> list[dict]:
+    async def get_image_tags(
+        self,
+        image: str,
+        *,
+        refresh: bool = False,
+        mirrors: list[str] | None = None,
+        mirror_provider: Callable[[], Awaitable[list[str]]] | None = None,
+    ) -> list[dict]:
         """获取指定镜像的可用标签列表。
 
         支持 Docker Hub 与任意 OCI registry（ghcr.io、quay.io 等），
         按最后更新时间倒序排列，最新的标签排在最前面。
+
+        Docker Hub 接口不可达时会依次回退到 registry-1.docker.io 与
+        镜像加速地址，全部失败时抛出 ``ImageTagsUnavailable``，由接口层
+        把原因返回给前端。
+
+        Args:
+            image: 镜像名，可带标签或域名
+            refresh: 为 True 时跳过进程内缓存重新获取
+            mirrors: 镜像加速地址列表，顺序即优先级
+            mirror_provider: 未显式给 mirrors 时的异步备用源，仅在需要回退时调用
         """
         host, repo = _split_image_ref(image)
         if not repo:
             return []
 
         cache_key = f"{host}/{repo}"
-        cached = _tag_cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < _TAG_CACHE_TTL:
-            return cached[1]
+        if not refresh:
+            cached = _tag_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < _TAG_CACHE_TTL:
+                return cached[1]
 
-        try:
-            if host:
-                tags = await _registry_tags(host, repo, _REGISTRY_TAG_LIMIT)
-            else:
-                tags = await _hub_tags(repo, _TAG_LIMIT)
-        except Exception as e:
-            common.logger.info("获取镜像标签失败 %s: %s", image, e)
-            return []
+        errors: list[str] = []
+
+        async def _try(label: str, fetch) -> list[dict]:
+            try:
+                tags = await fetch()
+            except Exception as exc:
+                errors.append(f"{label}: {_describe_error(exc)}")
+                common.logger.info(
+                    "获取镜像标签失败 %s (%s): %s", image, label, exc
+                )
+                return []
+            if not tags:
+                errors.append(f"{label}: 未返回标签")
+            return tags
+
+        if host:
+            tags = await _try(
+                host, lambda: _registry_tags(host, repo, _REGISTRY_TAG_LIMIT)
+            )
+        else:
+            tags = await _try("Docker Hub", lambda: _hub_tags(repo, _TAG_LIMIT))
+            if not tags:
+                tags = await _try(
+                    "registry-1.docker.io",
+                    lambda: _registry_tags(
+                        "registry-1.docker.io", repo, _REGISTRY_TAG_LIMIT
+                    ),
+                )
+            if not tags:
+                candidates = mirrors
+                if candidates is None and mirror_provider is not None:
+                    try:
+                        candidates = await mirror_provider()
+                    except Exception:
+                        common.logger.info("获取镜像加速地址失败", exc_info=True)
+                        candidates = []
+                if candidates:
+                    # 加速地址并发尝试，仍按配置顺序取第一个有结果的
+                    attempts = [
+                        _try(
+                            mirror,
+                            lambda m=mirror: _registry_tags(
+                                "", repo, _REGISTRY_TAG_LIMIT, root=m
+                            ),
+                        )
+                        for mirror in candidates
+                    ]
+                    results = await asyncio.gather(*attempts)
+                    tags = next((result for result in results if result), [])
+
+        if not tags:
+            raise ImageTagsUnavailable("；".join(errors) or "未返回任何标签")
 
         tags = _sort_tags(tags)
-        if tags:
-            _tag_cache[cache_key] = (time.monotonic(), tags)
+        _tag_cache[cache_key] = (time.monotonic(), tags)
         return tags
 
     def pull_image_async(self, image: str, task_id: str, task_manager):

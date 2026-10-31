@@ -5,6 +5,7 @@ import json
 import logging
 import queue
 import threading
+import time
 
 import docker
 from fastapi import APIRouter, Depends, status
@@ -17,6 +18,7 @@ from app.core.exceptions import APIException
 from app.core.security import get_current_user, get_current_user_sse, require_admin
 from app.database import get_db
 from app.models.docker import DockerMirrorConfig
+from app.models.system_config import SystemConfig
 from app.models.user import User
 from app.schemas.docker import (
     BatchImageDeleteRequest,
@@ -30,6 +32,8 @@ from app.schemas.docker import (
     PullTaskStatus,
 )
 from app.services.docker import docker_manager, task_manager
+from app.services.docker.image_service import ImageTagsUnavailable
+from app.services.system.registry_mirror_service import registry_mirror_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(route_class=CustomAPIRoute)
@@ -112,13 +116,70 @@ async def search_images(
         raise APIException(f"镜像搜索失败: {e}", 500) from e
 
 
+_MANAGED_MIRRORS_TTL = 600
+"""管理端推荐镜像源的内存缓存时长（秒）。"""
+
+_managed_mirrors_cache: tuple[float, list[str]] | None = None
+"""最近一次从管理端获取的镜像加速地址。"""
+
+
+async def _managed_tag_mirrors() -> list[str]:
+    """从管理端获取推荐镜像加速地址，未配置管理端时返回空列表。"""
+    global _managed_mirrors_cache
+    now = time.monotonic()
+    if _managed_mirrors_cache and now - _managed_mirrors_cache[0] < _MANAGED_MIRRORS_TTL:
+        return _managed_mirrors_cache[1]
+
+    try:
+        payload = await registry_mirror_service.fetch_remote()
+    except Exception:
+        logger.info("从管理端获取镜像加速地址失败", exc_info=True)
+        return []
+
+    urls = [
+        str(item.get("url"))
+        for item in payload.get("mirrors") or []
+        if item.get("url")
+    ]
+    _managed_mirrors_cache = (now, urls)
+    return urls
+
+
+async def _tag_mirrors(db: AsyncSession) -> list[str]:
+    """标签获取的备用源：优先用设置里的镜像加速地址，未配置时用管理端推荐。"""
+    try:
+        result = await db.execute(select(SystemConfig).where(SystemConfig.id == 1))
+        config = result.scalar_one_or_none()
+    except Exception:
+        logger.warning("读取镜像加速配置失败", exc_info=True)
+        config = None
+
+    configured = list(config.docker_registry_mirrors or []) if config else []
+    if configured:
+        return configured
+    return await _managed_tag_mirrors()
+
+
 @router.get("/images/tags", response_model=list[ImageTag])
 async def get_image_tags(
     image: str,
+    refresh: bool = False,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取指定镜像的可用标签列表。"""
-    return await docker_manager.get_image_tags(image)
+    """获取指定镜像的可用标签列表。
+
+    Docker Hub 不可达时按镜像加速地址重试；仍失败则返回 502 与具体原因，
+    避免前端只看到空列表而不知道发生了什么。
+    """
+    try:
+        return await docker_manager.get_image_tags(
+            image,
+            refresh=refresh,
+            mirror_provider=lambda: _tag_mirrors(db),
+        )
+    except ImageTagsUnavailable as e:
+        raise APIException(f"获取镜像标签失败：{e}", 502) from e
 
 
 @router.post("/images/pull", response_model=PullTaskResponse)
