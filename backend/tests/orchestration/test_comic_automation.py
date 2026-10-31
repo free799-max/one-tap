@@ -213,6 +213,40 @@ async def test_kavita_provision_registers_first_user(monkeypatch):
     assert result.api_key == "kavita-key"
 
 
+@pytest.mark.asyncio
+async def test_kavita_provision_retries_register_after_5xx(monkeypatch):
+    """注册接口瞬时 5xx 不能耗尽唯一一次注册机会。"""
+    state = {"register_calls": 0, "registered": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/health":
+            return httpx.Response(200, text="Ok")
+        if path == "/api/Account/login":
+            if not state["registered"]:
+                return httpx.Response(401)
+            return httpx.Response(200, json={"apiKey": "kavita-key"})
+        if path == "/api/Account/register":
+            state["register_calls"] += 1
+            if state["register_calls"] == 1:
+                return httpx.Response(503)
+            state["registered"] = True
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
+
+    _mock_httpx(monkeypatch, handler)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    result = await KavitaClient().provision(
+        url="http://kavita:5000",
+        username="admin",
+        password="secret",
+    )
+
+    assert result.ok is True
+    assert state["register_calls"] == 2
+
+
 # ---------------- 编排自动装配 ----------------
 
 

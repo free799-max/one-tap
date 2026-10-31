@@ -24,8 +24,9 @@ class KavitaClient(AppClient):
 
     name = "kavita"
     TIMEOUT = 10.0
-    # Kavita 首次启动需要执行数据库迁移，实测 5 分钟以上才监听端口
-    PROVISION_TIMEOUT = 600.0
+    # 首次启动要执行数据库迁移并从 GitHub 下载邮件模板，网络较慢时
+    # 单个模板最长约 100 秒，全部完成前不会监听端口
+    PROVISION_TIMEOUT = 900.0
     supports_provision = True
 
     async def provision(
@@ -44,10 +45,13 @@ class KavitaClient(AppClient):
             return ProvisionResult(ok=False, message="访问地址不能为空")
 
         deadline = time.monotonic() + self.PROVISION_TIMEOUT
-        last_error = "服务未就绪"
+        last_error = "等待服务监听端口（首次启动需完成数据库迁移）"
         register_attempted = False
 
         while time.monotonic() < deadline:
+            # 心跳读取该状态，避免进度里只显示容器日志（Kavita 的迁移日志
+            # 会打上 Fatal 级别但明确标注 This is not an error）
+            self.last_status = last_error
             try:
                 async with httpx.AsyncClient(
                     timeout=self.TIMEOUT,
@@ -55,7 +59,7 @@ class KavitaClient(AppClient):
                 ) as client:
                     health = await client.get(f"{base_url}/api/health")
                     if health.status_code != 200:
-                        last_error = f"服务响应异常: HTTP {health.status_code}"
+                        last_error = f"服务启动中: HTTP {health.status_code}"
                         await asyncio.sleep(5)
                         continue
 
@@ -71,12 +75,12 @@ class KavitaClient(AppClient):
                         )
 
                     if not register_attempted:
-                        register_attempted = True
                         resp = await client.post(
                             f"{base_url}/api/Account/register",
                             json={"username": username, "password": password},
                         )
                         if resp.status_code < 400:
+                            register_attempted = True
                             login = await self._login(
                                 client, base_url, username, password
                             )
@@ -87,11 +91,21 @@ class KavitaClient(AppClient):
                                     api_key=login,
                                     username=username,
                                 )
-                        last_error = (
-                            f"创建管理员失败: HTTP {resp.status_code}"
-                            if resp.status_code >= 400
-                            else "创建管理员后登录失败"
-                        )
+                            last_error = "创建管理员后登录失败"
+                        elif resp.status_code in (400, 401, 403):
+                            # 已有管理员或凭据不合规，重试注册没有意义
+                            register_attempted = True
+                            last_error = (
+                                f"创建管理员失败: HTTP {resp.status_code}"
+                            )
+                        else:
+                            # 5xx/429 等服务端暂时不可用：保留本次机会，
+                            # 下一轮继续尝试注册
+                            last_error = (
+                                f"创建管理员失败: HTTP {resp.status_code}"
+                            )
+                    else:
+                        last_error = "已有管理员账号，但统一密码登录失败"
 
                     if previous_password and previous_password != password:
                         old_key = await self._login(
@@ -103,7 +117,7 @@ class KavitaClient(AppClient):
                                 "请手动重置密码或重新部署数据卷"
                             )
             except httpx.RequestError as exc:
-                last_error = f"无法连接到应用: {exc}"
+                last_error = f"无法连接到应用（服务启动中）: {exc}"
             await asyncio.sleep(5)
 
         return ProvisionResult(ok=False, message=f"自动配置超时: {last_error}")
