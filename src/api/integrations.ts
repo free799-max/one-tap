@@ -88,6 +88,8 @@ export interface NetworkDdnsFamily {
   access_id: string;
   secret_set: boolean;
   domains: string[];
+  manual_domains: string[];
+  auto_domains: string[];
   interval: number;
   get_type: "url" | "netInterface";
   url: string;
