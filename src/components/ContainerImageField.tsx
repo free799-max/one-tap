@@ -58,20 +58,22 @@ export function ContainerImageField({
   );
   const [open, setOpen] = useState(false);
   const [tagQuery, setTagQuery] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
       setQueryRepository(splitImageReference(current.repository).repository);
+      setRefreshToken(0);
     }, 400);
     return () => clearTimeout(timer);
   }, [current.repository]);
 
   const {
     data: imageTags = [],
-    isLoading,
-    refetch,
-  } = useImageTags(queryRepository);
+    isFetching,
+    error,
+  } = useImageTags(queryRepository, refreshToken);
 
   // 点击面板外部或按 Esc 收起
   useEffect(() => {
@@ -115,7 +117,7 @@ export function ContainerImageField({
 
   const selectedMeta = sortedTags.find((tag) => tag.name === current.tag);
   const manualTag = current.tag && !selectedMeta ? current.tag : "";
-  const empty = !isLoading && sortedTags.length === 0;
+  const tagError = error as { displayMessage?: string; message?: string } | null;
 
   const selectTag = (tag: string) => {
     onChange({ repository: current.repository, tag });
@@ -123,13 +125,9 @@ export function ContainerImageField({
     setTagQuery("");
   };
 
-  const toggleOpen = () => {
-    setOpen((prev) => {
-      const next = !prev;
-      if (next && empty) void refetch();
-      return next;
-    });
-  };
+  const retry = () => setRefreshToken((token) => token + 1);
+
+  const toggleOpen = () => setOpen((prev) => !prev);
 
   const repositoryId = `image-repository-${containerName}`;
   const tagId = `image-tag-${containerName}`;
@@ -183,7 +181,7 @@ export function ContainerImageField({
               <span className="truncate font-medium">
                 {current.tag || "请选择标签"}
               </span>
-              {isLoading && (
+              {isFetching && (
                 <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
               )}
             </span>
@@ -201,7 +199,7 @@ export function ContainerImageField({
               aria-labelledby={tagId}
               className="absolute right-0 top-full z-30 mt-1 w-full rounded-xl border bg-popover p-2 text-popover-foreground shadow-lg"
             >
-              {isLoading && sortedTags.length === 0 ? (
+              {isFetching && sortedTags.length === 0 ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   正在加载标签…
@@ -209,15 +207,22 @@ export function ContainerImageField({
               ) : sortedTags.length === 0 ? (
                 <div className="py-6 text-center">
                   <p className="text-xs text-muted-foreground">
-                    未获取到标签，可能是网络异常或 Docker Hub 限流
+                    {tagError
+                      ? tagError.displayMessage || tagError.message
+                      : "未获取到标签，可能是网络异常或 Docker Hub 限流"}
                   </p>
                   <button
                     type="button"
-                    onClick={() => void refetch()}
-                    className="mt-2 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted"
+                    onClick={retry}
+                    disabled={isFetching}
+                    className="mt-2 inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <RefreshCw className="h-3 w-3" />
-                    重新获取
+                    {isFetching ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    {isFetching ? "获取中…" : "重新获取"}
                   </button>
                 </div>
               ) : (

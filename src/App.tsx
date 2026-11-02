@@ -20,6 +20,7 @@ import { DockerHostPage } from "./pages/docker/host/DockerHostPage";
 import { DockerImagesPage } from "./pages/docker/images/DockerImagesPage";
 import { DockerStacksPage } from "./pages/docker/stacks/DockerStacksPage";
 import { SettingsPage } from "./pages/settings/SettingsPage";
+import { IntegrationsPage } from "./pages/integrations/IntegrationsPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -93,6 +94,9 @@ export default function App() {
                   <Route path="/docker/containers" element={<DockerPage />} />
                   <Route path="/docker/images" element={<DockerImagesPage />} />
                   <Route path="/docker/host" element={<DockerHostPage />} />
+
+                  {/* 应用集成 */}
+                  <Route path="/integrations" element={<IntegrationsPage />} />
 
                   {/* 系统设置 */}
                   <Route path="/settings" element={<SettingsPage />} />

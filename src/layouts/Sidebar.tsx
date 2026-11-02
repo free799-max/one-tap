@@ -5,7 +5,7 @@
  * - 服务概览 / 服务编排（独立项）
  * - AUTOMATION 分组（按管理端组合动态生成）
  * - DOCKER 分组（容器编排/管理/镜像/主机）
- * - 系统设置（底部独立项）
+ * - 系统分组（应用集成/系统设置）
  */
 
 import { useState, useEffect } from "react";
@@ -19,6 +19,7 @@ import {
   Monitor,
   Settings,
   ChevronDown,
+  Plug,
 } from "lucide-react";
 import { LogoIcon } from "@/components/LogoIcon";
 import { useOrchestrations } from "@/hooks/useOrchestrations";
@@ -45,10 +46,25 @@ const dockerItems: NavItemConfig[] = [
   { path: "/docker/host", label: "主机", icon: Monitor },
 ];
 
-// 底部独立项
-const bottomItems: NavItemConfig[] = [
+// 系统分组：应用集成与系统设置
+const systemItems: NavItemConfig[] = [
+  { path: "/integrations", label: "应用集成", icon: Plug },
   { path: "/settings", label: "系统设置", icon: Settings },
 ];
+
+/**
+ * 解码 pathname
+ *
+ * 浏览器地址栏中的非 ASCII 路径（如 /automation/书籍）会以百分号编码返回，
+ * 而 Link 的 to 是原始路径，直接比较会导致中文分类导航项无法高亮。
+ */
+function normalizePathname(pathname: string): string {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
 
 /** 导航项组件 */
 function NavItem({
@@ -179,7 +195,7 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed }: SidebarProps) {
   const location = useLocation();
-  const pathname = location.pathname;
+  const pathname = normalizePathname(location.pathname);
   const { data: orchestrations = [] } = useOrchestrations();
   const automationItems: NavItemConfig[] = buildAutomationCategories(
     orchestrations
@@ -280,17 +296,17 @@ export function Sidebar({ collapsed }: SidebarProps) {
           uppercaseTitle={false}
         />
 
-        {/* 底部独立项 */}
-        <div className={collapsed ? "mt-4 space-y-1" : "mt-6 space-y-0.5"}>
-          {bottomItems.map((item) => (
-            <NavItem
-              key={item.path}
-              item={item}
-              active={pathname === item.path}
-              collapsed={effectiveCollapsed}
-            />
-          ))}
-        </div>
+        {/* 系统分组 */}
+        <NavGroup
+          title="系统"
+          items={systemItems}
+          pathname={pathname}
+          collapsed={false}
+          onToggle={() => {}}
+          sidebarCollapsed={effectiveCollapsed}
+          collapsible={false}
+          uppercaseTitle={false}
+        />
       </nav>
 
       {/* 底部用户卡片 */}
