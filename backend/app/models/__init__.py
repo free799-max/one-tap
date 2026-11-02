@@ -27,6 +27,7 @@ from app.models.orchestration import (
     ReaderAutoSyncBook,
 )
 from app.models.system_config import SystemConfig
+from app.models.integration import IntegrationConfig
 from app.models.storage_directory import StorageDirectory
 from app.models.license import LicenseState
 from app.models.docker import (
@@ -44,6 +45,7 @@ __all__ = [
     "OrchestrationUpdateEvent", "OrchestrationUpgradeBackup",
     "ReaderAutoSyncBook",
     "SystemConfig", "StorageDirectory", "LicenseState",
+    "IntegrationConfig",
     "DockerMirrorConfig",
     "DockerComposeProject", "DockerComposeVersion", "DockerComposeStack",
     "COMPOSE_PROJECT_LABEL",

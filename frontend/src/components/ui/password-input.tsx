@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 interface PasswordInputProps extends React.ComponentProps<"input"> {
   /** 外层容器的类名（如 flex 布局下用于撑满宽度） */
   containerClassName?: string;
+  /** 点击眼睛按钮时先交给外部处理；返回 true 表示已处理，不切换明文 */
+  onToggleClick?: (nextVisible: boolean) => boolean | void;
 }
 
 /** 带明文/密文切换按钮的密码输入框 */
@@ -14,6 +16,7 @@ function PasswordInput({
   className,
   containerClassName,
   disabled,
+  onToggleClick,
   ...props
 }: PasswordInputProps) {
   const [visible, setVisible] = React.useState(false);
@@ -30,7 +33,10 @@ function PasswordInput({
         type="button"
         tabIndex={-1}
         disabled={disabled}
-        onClick={() => setVisible((value) => !value)}
+        onClick={() => {
+          if (onToggleClick?.(!visible) === true) return;
+          setVisible((value) => !value);
+        }}
         className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r-lg text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         title={visible ? "隐藏密码" : "显示密码"}
         aria-label={visible ? "隐藏密码" : "显示密码"}

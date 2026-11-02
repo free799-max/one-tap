@@ -23,6 +23,7 @@ from app.api.app_store import router as apps_router
 from app.api.catalog import router as catalog_router
 from app.api.dashboard import router as dashboard_router
 from app.api.settings import router as settings_router
+from app.api.integrations import router as integrations_router
 from app.api.license import router as license_router
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,14 @@ async def lifespan(app: FastAPI):
                 "启动 reconciliation：%s 个卡在 deploying 的实例组已置为 error",
                 group_result.rowcount,
             )
+
+        # 清理 Docker 中已无容器的失败部署记录，避免它们长期出现在应用列表
+        # 与集成选择器中；Docker 不可用或记录较新时不会删除。
+        from app.services.orchestration.orphan_cleanup import (
+            purge_orphaned_instances,
+        )
+
+        await purge_orphaned_instances(session)
 
     # 目录同步：配置管理端地址后，启动时同步一次并按间隔循环同步，
     # 失败仅告警不阻断启动；服务关闭时取消后台同步任务
@@ -237,6 +246,7 @@ app.include_router(catalog_router)
 app.include_router(dashboard_router)
 app.include_router(deploy_tasks_router, prefix="/api")
 app.include_router(settings_router)
+app.include_router(integrations_router)
 app.include_router(license_router)
 
 # Docker 管理路由（依赖可选的 Docker 环境）
