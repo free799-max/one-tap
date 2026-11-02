@@ -177,6 +177,7 @@ export interface NetworkApp extends IntegrationApp {
   domains: string[];
   target_url: string | null;
   proxy_enabled: boolean;
+  is_custom: boolean;
   listen_port: number | null;
   enable_tls: boolean;
   network: "tcp" | "tcp4" | "tcp6";
@@ -330,6 +331,7 @@ export function listNetworkApps(): Promise<NetworkApp[]> {
 
 export function upsertNetworkProxy(data: {
   app_instance_id: number;
+  custom_name?: string | null;
   domains: string[];
   target_url?: string | null;
   listen_port?: number | null;

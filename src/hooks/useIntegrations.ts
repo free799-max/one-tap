@@ -223,6 +223,7 @@ export function useUpsertNetworkProxy() {
     ApiError,
     {
       app_instance_id: number;
+      custom_name?: string | null;
       domains: string[];
       target_url?: string | null;
       listen_port?: number | null;

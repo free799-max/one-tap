@@ -50,6 +50,30 @@ const NETWORK_OPTIONS: { value: ListenNetwork; label: string }[] = [
   { value: "tcp6", label: "仅 IPv6" },
 ];
 
+const CUSTOM_APP: NetworkApp = {
+  instance_id: 0,
+  app_name: "custom",
+  display_name: "自定义应用",
+  instance_name: "自定义后端",
+  status: "custom",
+  url: null,
+  icon: null,
+  username: null,
+  password_set: false,
+  api_key_set: false,
+  has_credentials: false,
+  domain: null,
+  domains: [],
+  target_url: null,
+  proxy_enabled: false,
+  is_custom: true,
+  listen_port: null,
+  enable_tls: false,
+  network: "tcp",
+  certificate_id: 0,
+  ssl_forced: true,
+};
+
 function splitLines(text: string): string[] {
   return text
     .split(/[\n,]/)
@@ -328,8 +352,9 @@ function AppPicker({
                 {filtered.map((item, index) => {
                   const isSelected = item.instance_id === value;
                   const isActive = index === activeIndex;
-                  const address =
-                    item.url ?? item.target_url ?? "未探测到后端地址";
+                  const address = item.is_custom
+                    ? "手动填写后端地址"
+                    : (item.url ?? item.target_url ?? "未探测到后端地址");
                   return (
                     <button
                       key={item.instance_id}
@@ -435,11 +460,12 @@ export function ProxyDialog({
   const ddns = useNetworkDdns(open && isLucky);
 
   const [appId, setAppId] = useState(0);
+  const [customName, setCustomName] = useState("");
   const [domainsText, setDomainsText] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
   const [listenPort, setListenPort] = useState(defaultPort);
   const [enableTls, setEnableTls] = useState(false);
-  const [network, setNetwork] = useState<ListenNetwork>("tcp");
+  const [network, setNetwork] = useState<ListenNetwork>("tcp4");
   const [certificateId, setCertificateId] = useState(defaultCertificateId);
   const [sslForced, setSslForced] = useState(true);
   const [certMode, setCertMode] = useState<"auto" | "selfsigned" | "acme">(
@@ -460,6 +486,7 @@ export function ProxyDialog({
     setCertMode("auto");
     if (editing) {
       setAppId(editing.instance_id);
+      setCustomName(editing.is_custom ? editing.display_name : "");
       setDomainsText(editing.domains.join("\n"));
       setTargetUrl(editing.target_url ?? editing.url ?? "");
       setListenPort(editing.listen_port ?? defaultPort);
@@ -468,14 +495,14 @@ export function ProxyDialog({
       setCertificateId(editing.certificate_id || defaultCertificateId);
       setSslForced(editing.ssl_forced);
     } else {
-      const first =
-        apps.find((item) => !item.proxy_enabled) ?? apps[0] ?? null;
+      const first = apps.find((item) => !item.proxy_enabled) ?? null;
       setAppId(first?.instance_id ?? 0);
+      setCustomName("");
       setDomainsText("");
       setTargetUrl(first?.target_url ?? first?.url ?? "");
       setListenPort(defaultPort);
       setEnableTls(false);
-      setNetwork("tcp");
+      setNetwork("tcp4");
       setCertificateId(defaultCertificateId);
       setSslForced(true);
     }
@@ -506,12 +533,13 @@ export function ProxyDialog({
           : "双栈监听，域名自动写入两套 DDNS。";
   const redirectPort = listenPort === 443 ? 80 : listenPort;
   const app = apps.find((item) => item.instance_id === appId) ?? null;
+  const isCustom = appId <= 0;
   const selectableApps = apps.filter(
     (item) => !item.proxy_enabled || item.instance_id === editingId
   );
   const appChoices = editing
     ? selectableApps.filter((item) => item.instance_id === editingId)
-    : selectableApps;
+    : [...selectableApps, CUSTOM_APP];
 
   const certOptions = certificates.data ?? [];
   const coveringCert =
@@ -539,7 +567,8 @@ export function ProxyDialog({
         ) ?? null
       : null;
   const canSave =
-    !!app &&
+    (!!app || isCustom) &&
+    (!isCustom || customName.trim().length > 0) &&
     domains.length > 0 &&
     targetUrl.trim().length > 0 &&
     (!isLucky || (listenPort >= 1 && listenPort <= 65535));
@@ -586,6 +615,11 @@ export function ProxyDialog({
 
   const handleAppChange = (nextId: number) => {
     setAppId(nextId);
+    if (nextId === CUSTOM_APP.instance_id) {
+      setCustomName("");
+      setTargetUrl("");
+      return;
+    }
     const next = apps.find((item) => item.instance_id === nextId);
     if (next) {
       setTargetUrl(next.target_url ?? next.url ?? "");
@@ -601,7 +635,7 @@ export function ProxyDialog({
   };
 
   const handleSave = async () => {
-    if (!canSave || !app) return;
+    if (!canSave || (!app && !isCustom)) return;
     // HTTPS 已开启但没有覆盖全部域名的证书时，先自动准备证书
     if (isLucky && enableTls && !coveringCert && !pendingCert) {
       const result = await autoCertificate
@@ -611,7 +645,8 @@ export function ProxyDialog({
     }
     upsert.mutate(
       {
-        app_instance_id: app.instance_id,
+        app_instance_id: app?.instance_id ?? CUSTOM_APP.instance_id,
+        custom_name: isCustom ? customName.trim() : null,
         domains,
         target_url: targetUrl.trim() || null,
         listen_port: isLucky ? listenPort : null,
@@ -644,25 +679,35 @@ export function ProxyDialog({
         <div className="space-y-3">
           <div className="space-y-1">
             <Label className="text-xs">应用</Label>
-            {appChoices.length === 0 ? (
-              <p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
-                所有应用都已配置反向代理
-              </p>
-            ) : (
-              <AppPicker
-                apps={appChoices}
-                value={appId}
-                onChange={handleAppChange}
-                disabled={!!editing}
-                showPort={isLucky}
-              />
-            )}
+            <AppPicker
+              apps={appChoices}
+              value={appId}
+              onChange={handleAppChange}
+              disabled={!!editing}
+              showPort={isLucky}
+            />
             {editing && (
               <p className="text-[11px] text-muted-foreground">
                 应用创建后不可更换，如需更换请删除后重新创建。
               </p>
             )}
           </div>
+
+          {isCustom && (
+            <div className="space-y-1">
+              <Label htmlFor="proxy_custom_name" className="text-xs">
+                应用名称
+              </Label>
+              <Input
+                id="proxy_custom_name"
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                maxLength={100}
+                placeholder="例如：内部管理系统"
+                className={INPUT_CLASS}
+              />
+            </div>
+          )}
 
           <div className="space-y-1">
             <Label htmlFor="proxy_domains" className="text-xs">
