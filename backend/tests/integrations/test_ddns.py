@@ -161,6 +161,12 @@ def test_lucky_task_snapshot_success():
     task["Records"][0]["UpdateStatus"] = "SYNC_LOC_RECORD_NOCHANGE"
     assert _lucky_task_snapshot(task)["status"] == "unchanged"
 
+    # IP 没变化是正常结果，不应显示为同步失败
+    task["Records"][0]["UpdateStatus"] = "SYNC_PROVIDER_IP_SAME"
+    snapshot = _lucky_task_snapshot(task)
+    assert snapshot["status"] == "unchanged"
+    assert snapshot["message"] == "IP 未变化，无需更新"
+
 
 def test_lucky_task_snapshot_error():
     task = {

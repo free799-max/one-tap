@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base
@@ -75,8 +77,26 @@ class _FakeServer:
         ]
         self.ddns_tasks: list[dict] = []
         self.ddns_enabled = False
+        # 置为 True 时模拟 Lucky v3：先取登录挑战，再提交 RSA 加密的登录请求
+        self.encrypted_login = False
+        self.login_payload: dict | None = None
+        self._rsa_key = None
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def _login_public_key(self) -> str:
+        if self._rsa_key is None:
+            self._rsa_key = rsa.generate_private_key(
+                public_exponent=65537, key_size=2048
+            )
+        return (
+            self._rsa_key.public_key()
+            .public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
 
     @property
     def base_url(self) -> str:
@@ -136,6 +156,18 @@ class _FakeServer:
                     return self._send({"version": "2026.1.0"})
                 if path == "/version":
                     return self._send({"ret": 0, "version": "2.19.0"})
+                if path == "/api/login/challenge":
+                    if not outer.encrypted_login:
+                        return self._send({"ret": 1, "msg": "not found"}, 404)
+                    return self._send(
+                        {
+                            "ret": 0,
+                            "challengeId": "challenge-1",
+                            "nonce": "nonce-1",
+                            "publicKey": outer._login_public_key(),
+                            "binding": "session",
+                        }
+                    )
                 if path == "/api/webservice/rules":
                     return self._send({"ret": 0, "ruleList": outer.lucky_rules})
                 if path == "/api/ssl":
@@ -204,6 +236,17 @@ class _FakeServer:
                     outer.ciphers[cipher_id] = body
                     return self._send({"Id": cipher_id})
                 if path == "/api/login":
+                    if outer.encrypted_login:
+                        if body.get("challengeId") != "challenge-1":
+                            return self._send({"ret": 2, "msg": "invalid challenge"})
+                        plaintext = b"".join(
+                            outer._rsa_key.decrypt(
+                                base64.b64decode(part), padding.PKCS1v15()
+                            )
+                            for part in body["cipherText"].split(".")
+                        )
+                        outer.login_payload = json.loads(plaintext)
+                        return self._send({"ret": 0, "token": "lucky-token"})
                     # Lucky 新版要求带 "_" 校验参数，缺失时会误报账号密码错误
                     if "_" not in self._query():
                         return self._send(
@@ -370,6 +413,7 @@ async def test_lucky_save_proxy_rule(fake_server):
         assert ("/api/webservice/rule/srv-key-1", "lucky-token") in fake_server.lucky_auth
 
     assert fake_server.lucky_rules[0]["RuleName"] == "OneTap 443"
+    assert fake_server.lucky_rules[0]["IPFilterRule"] == "blacklist"
     assert fake_server.lucky_rules[0]["ProxyList"][0]["Domains"] == [
         "media.example.com",
         "media.lan",
@@ -377,6 +421,23 @@ async def test_lucky_save_proxy_rule(fake_server):
     assert fake_server.lucky_rules[0]["ProxyList"][0]["Locations"] == [
         "http://192.168.1.2:9096"
     ]
+
+
+@pytest.mark.asyncio
+async def test_lucky_v3_encrypted_login(fake_server):
+    fake_server.encrypted_login = True
+    # 超过 120 字节，覆盖 Lucky v3 的分块 RSA 加密
+    password = "长密码" * 40 + "tail"
+    async with LuckyClient(fake_server.base_url, "666", password) as client:
+        assert await client.login() == "lucky-token"
+        assert await client.list_proxy_rules() == []
+
+    payload = fake_server.login_payload
+    assert payload is not None
+    assert payload["account"] == "666"
+    assert payload["password"] == password
+    assert payload["challengeId"] == "challenge-1"
+    assert payload["nonce"] == "nonce-1"
 
 
 def test_lucky_build_proxy_rules_groups_by_port():

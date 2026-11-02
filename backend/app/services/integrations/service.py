@@ -404,6 +404,13 @@ def _is_ddns_domain(domain: str) -> bool:
 _LUCKY_SYNC_STATUS = {
     "SYNC_SUCCESS": "ok",
     "SYNC_LOC_RECORD_NOCHANGE": "unchanged",
+    # Lucky 的「IP 没变化」也是正常结果，不是同步失败
+    "SYNC_PROVIDER_IP_SAME": "unchanged",
+}
+
+_LUCKY_SYNC_MESSAGES = {
+    "SYNC_LOC_RECORD_NOCHANGE": "记录未变化",
+    "SYNC_PROVIDER_IP_SAME": "IP 未变化，无需更新",
 }
 
 
@@ -424,6 +431,8 @@ def _lucky_task_snapshot(task: dict) -> dict:
         message = address_error
     elif update:
         status = _LUCKY_SYNC_STATUS.get(update, "error")
+        if not message:
+            message = _LUCKY_SYNC_MESSAGES.get(update, "")
         if status == "error" and not message:
             message = update
     return {

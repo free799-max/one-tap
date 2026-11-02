@@ -5,10 +5,14 @@
 """
 
 import base64
+import json
+import os
 import time
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from app.core.exceptions import APIException
 
@@ -18,6 +22,8 @@ ONETAP_RULE_KEY_PREFIX = "onetap-port-"
 ONETAP_DDNS_NAME = "OneTap 动态域名"
 ONETAP_CERT_REMARK = "OneTap 自动证书"
 ACME_LETSENCRYPT_DIRECTORY = "https://acme-v02.api.letsencrypt.org/directory"
+# v3 主规则必须选择 IP 过滤规则，沿用旧版子规则的黑名单模式
+DEFAULT_IP_FILTER_RULE = "blacklist"
 
 DDNS_FAMILIES = ("IPv4", "IPv6")
 DEFAULT_IPV4_URLS = "\n".join(
@@ -141,6 +147,37 @@ def rule_name(port: int) -> str:
 
 # Lucky 登录成功后要求把 token 放在该请求头里
 ADMIN_TOKEN_HEADER = "Lucky-Admin-Token"
+# v3 登录挑战与加密登录通过随机会话头绑定
+LOGIN_SESSION_HEADER = "Lucky-Login-Session"
+# 与 Lucky 前端一致：RSA 加密前按 120 个 UTF-8 字节切分，密文用 "." 连接
+LOGIN_RSA_CHUNK_BYTES = 120
+
+
+def _utf8_chunks(text: str, limit: int = LOGIN_RSA_CHUNK_BYTES) -> list[bytes]:
+    """按字符切分，避免截断多字节字符。"""
+    chunks: list[bytes] = []
+    current = ""
+    size = 0
+    for char in text:
+        width = len(char.encode("utf-8"))
+        if current and size + width > limit:
+            chunks.append(current.encode("utf-8"))
+            current, size = "", 0
+        current += char
+        size += width
+    if current:
+        chunks.append(current.encode("utf-8"))
+    return chunks
+
+
+def _rsa_encrypt_login(public_key_pem: str, plaintext: str) -> str:
+    """Lucky v3 的登录加密：RSA PKCS#1 v1.5，长文本分块后用 "." 连接。"""
+    key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+    parts = [
+        base64.b64encode(key.encrypt(chunk, padding.PKCS1v15())).decode("ascii")
+        for chunk in _utf8_chunks(plaintext)
+    ]
+    return ".".join(parts)
 
 
 _last_signature_stamp = ""
@@ -219,9 +256,10 @@ class LuckyClient:
         json: Any = None,
         params: dict | None = None,
         auth: bool = True,
+        headers: dict | None = None,
         _retry: bool = True,
     ) -> dict:
-        headers = {}
+        headers = dict(headers or {})
         if auth:
             if not self.token:
                 await self.login()
@@ -260,21 +298,71 @@ class LuckyClient:
                         json=json,
                         params=params,
                         auth=auth,
+                        headers=headers,
                         _retry=False,
                     )
                 raise LuckyError("Lucky 登录状态失效，请检查账号密码", 401)
             raise LuckyError(message, 400)
         return data
 
+    async def _login_challenge(self, session: str) -> dict | None:
+        """v3 的登录挑战；v2 没有该接口，返回 None 走旧版登录。"""
+        try:
+            response = await self.client.get(
+                f"{self.base_url}/api/login/challenge",
+                params={"_": _signature_param()},
+                headers={LOGIN_SESSION_HEADER: session},
+            )
+            data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if response.status_code >= 400 or not isinstance(data, dict):
+            return None
+        if data.get("ret") not in (0, "0", None):
+            return None
+        if not all(data.get(key) for key in ("challengeId", "nonce", "publicKey")):
+            return None
+        return data
+
     async def login(self) -> str:
         if not self.username or not self.password:
             raise LuckyError("请填写 Lucky 账号和密码", 400)
-        data = await self._request(
-            "POST",
-            "/api/login",
-            json={"Account": self.username, "Password": self.password},
-            auth=False,
-        )
+        session = os.urandom(32).hex()
+        challenge = await self._login_challenge(session)
+        if challenge is not None:
+            # v3：账号密码先 RSA 加密，明文不再出现在请求体里
+            plaintext = json.dumps(
+                {
+                    "account": self.username,
+                    "password": self.password,
+                    "twoFA": "",
+                    "challengeId": challenge["challengeId"],
+                    "nonce": challenge["nonce"],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            data = await self._request(
+                "POST",
+                "/api/login",
+                json={
+                    "challengeId": challenge["challengeId"],
+                    "cipherText": _rsa_encrypt_login(
+                        challenge["publicKey"], plaintext
+                    ),
+                },
+                auth=False,
+                headers={LOGIN_SESSION_HEADER: session},
+            )
+        else:
+            data = await self._request(
+                "POST",
+                "/api/login",
+                json={"Account": self.username, "Password": self.password},
+                auth=False,
+            )
+        if data.get("need2FA"):
+            raise LuckyError("Lucky 已开启两步验证，暂不支持自动登录", 400)
         token = data.get("token")
         if not token:
             raise LuckyError("Lucky 登录成功但未返回 token", 502)
@@ -515,6 +603,7 @@ def build_proxy_rule(
         "ListenIP": "",
         "ListenPort": listen_port,
         "EnableTLS": enable_tls,
+        "IPFilterRule": DEFAULT_IP_FILTER_RULE,
         "TLSMinVersion": 2,
         "MaxHeaderKBytes": 32,
         "DefaultProxy": _default_sub_rule(),
@@ -552,6 +641,7 @@ def build_redirect_rule(*, https_port: int, network: str = "tcp") -> dict:
         "ListenIP": "",
         "ListenPort": listen_port,
         "EnableTLS": False,
+        "IPFilterRule": DEFAULT_IP_FILTER_RULE,
         "TLSMinVersion": 2,
         "MaxHeaderKBytes": 32,
         # 跳转目标写成变量，Lucky 会按请求域名和端口替换
