@@ -269,7 +269,7 @@ function ddnsFamilyFrom(
   return {
     ...base,
     enabled: family.enabled,
-    domainsText: family.domains.join("\n"),
+    domainsText: (family.manual_domains ?? family.domains).join("\n"),
     interval: family.interval,
     getType: family.get_type,
     url: family.url || base.url,
@@ -363,6 +363,7 @@ interface DdnsFamilyCardProps {
   title: string;
   recordLabel: string;
   value: DdnsFamilyForm;
+  autoDomains: string[];
   onChange: (patch: Partial<DdnsFamilyForm>) => void;
   interfaces: NetworkDdnsInterface[];
 }
@@ -372,6 +373,7 @@ function DdnsFamilyCard({
   title,
   recordLabel,
   value,
+  autoDomains,
   onChange,
   interfaces,
 }: DdnsFamilyCardProps) {
@@ -500,18 +502,46 @@ function DdnsFamilyCard({
         </div>
       )}
 
-      <div className="space-y-1">
-        <Label htmlFor={`${idPrefix}_domains`} className="text-xs">
-          域名列表（每行一个，也可用逗号分隔）
-        </Label>
-        <textarea
-          id={`${idPrefix}_domains`}
-          value={value.domainsText}
-          onChange={(e) => onChange({ domainsText: e.target.value })}
-          rows={2}
-          placeholder={"home.example.com\nmedia.example.com"}
-          className="w-full resize-y rounded-md border border-input bg-white px-2 py-1.5 text-sm shadow-none outline-none focus-visible:border-foreground/60"
-        />
+      <div className="grid gap-3 md:grid-cols-2">
+        <div className="space-y-1">
+          <Label htmlFor={`${idPrefix}_domains`} className="text-xs">
+            手动域名
+          </Label>
+          <textarea
+            id={`${idPrefix}_domains`}
+            value={value.domainsText}
+            onChange={(e) => onChange({ domainsText: e.target.value })}
+            rows={3}
+            placeholder={"home.example.com\nmedia.example.com"}
+            className="w-full resize-y rounded-md border border-input bg-white px-2 py-1.5 text-sm shadow-none outline-none focus-visible:border-foreground/60"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            每行一个，也可用逗号分隔
+          </p>
+        </div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">自动域名</Label>
+            <span className="text-[11px] text-muted-foreground">反向代理</span>
+          </div>
+          <div className="flex min-h-[76px] flex-wrap content-start gap-1.5 rounded-md border bg-muted/30 p-2">
+            {autoDomains.length > 0 ? (
+              autoDomains.map((domain) => (
+                <span
+                  key={domain}
+                  className="h-fit rounded border bg-background px-1.5 py-0.5 font-mono text-[11px] text-foreground"
+                >
+                  {domain}
+                </span>
+              ))
+            ) : (
+              <span className="text-[11px] text-muted-foreground">
+                暂无自动域名
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground">随反向代理增删</p>
+        </div>
       </div>
     </div>
   );
@@ -1515,6 +1545,7 @@ export function NetworkIntegrationTab() {
               title="IPv4 动态域名"
               recordLabel="A 记录"
               value={ddnsForm.ipv4}
+              autoDomains={ddnsState?.ipv4.auto_domains ?? []}
               onChange={(patch) => updateDdnsFamily("ipv4", patch)}
               interfaces={ipv4Interfaces}
             />
@@ -1523,6 +1554,7 @@ export function NetworkIntegrationTab() {
               title="IPv6 动态域名"
               recordLabel="AAAA 记录"
               value={ddnsForm.ipv6}
+              autoDomains={ddnsState?.ipv6.auto_domains ?? []}
               onChange={(patch) => updateDdnsFamily("ipv6", patch)}
               interfaces={ipv6Interfaces}
             />

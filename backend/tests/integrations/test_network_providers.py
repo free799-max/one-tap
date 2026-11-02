@@ -462,8 +462,38 @@ async def test_network_service_npm_proxy(fake_npm, fake_ddnsgo):
         certificates = await integration_service.list_npm_certificates(db)
         assert certificates[0].id == 3
 
+        state = await integration_service.save_network_ddns(
+            db,
+            NetworkDdnsUpdate(
+                enabled=True,
+                ipv4=NetworkDdnsUpdateFamily(
+                    enabled=True,
+                    provider="cloudflare",
+                    access_id="",
+                    secret="cf-token",
+                    domains=["home.example.com"],
+                ),
+            ),
+        )
+        assert state.ipv4.manual_domains == ["home.example.com"]
+        assert state.ipv4.auto_domains == ["media.example.com"]
+        saved = fake_ddnsgo.last_save
+        assert saved is not None
+        entry = next(item for item in saved["DnsConf"] if item["Name"] == "OneTap")
+        assert entry["Ipv4Domains"].splitlines() == [
+            "home.example.com",
+            "media.example.com",
+        ]
+
         await integration_service.delete_network_proxy(db, instance.id)
         assert fake_npm.hosts == []
+        state = await integration_service.network_ddns_state(db)
+        assert state.ipv4.manual_domains == ["home.example.com"]
+        assert state.ipv4.auto_domains == []
+        saved = fake_ddnsgo.last_save
+        assert saved is not None
+        entry = next(item for item in saved["DnsConf"] if item["Name"] == "OneTap")
+        assert entry["Ipv4Domains"] == "home.example.com"
 
         with pytest.raises(APIException, match="自定义应用名称"):
             await integration_service.upsert_network_proxy(

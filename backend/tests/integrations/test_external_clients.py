@@ -781,7 +781,9 @@ async def test_lucky_proxy_and_ddns_service(fake_server):
             ),
         )
         assert state.enabled is True
-        assert state.ipv4.domains == ["home.example.com"]
+        assert state.ipv4.domains == ["home.example.com", "media.example.com"]
+        assert state.ipv4.manual_domains == ["home.example.com"]
+        assert state.ipv4.auto_domains == ["media.example.com"]
         task = fake_server.ddns_tasks[0]
         assert task["TaskName"] == "OneTap 动态域名 IPv4"
         assert task["Records"][0]["SyncRecordData"]["fullDomainName"] == (
@@ -815,6 +817,14 @@ async def test_lucky_proxy_and_ddns_service(fake_server):
         assert [
             rule["Key"] for rule in fake_server.lucky_rules[0]["ProxyList"]
         ] == [f"onetap-{custom.instance_id}"]
+        state = await integration_service.network_ddns_state(db)
+        assert state.ipv4.manual_domains == ["home.example.com"]
+        assert state.ipv4.auto_domains == []
+        assert state.ipv4.domains == ["home.example.com"]
+        assert [
+            record["SyncRecordData"]["fullDomainName"]
+            for record in fake_server.ddns_tasks[0]["Records"]
+        ] == ["home.example.com"]
 
         removed = await integration_service.delete_network_proxy(
             db, custom.instance_id
@@ -1149,28 +1159,88 @@ async def test_proxy_domains_auto_written_to_ddns(fake_server):
         )
 
         assert "media.example.com" in result.message
-        assert "IPv4 + IPv6" in result.message
-        v4 = next(
-            task
-            for task in fake_server.ddns_tasks
-            if task["TaskName"].endswith("IPv4")
+        assert "DDNS 自动域名已更新" in result.message
+
+        def ddns_domains(family: str) -> list[str]:
+            task = next(
+                item
+                for item in fake_server.ddns_tasks
+                if item["TaskName"].endswith(family)
+            )
+            return [
+                record["SyncRecordData"]["fullDomainName"]
+                for record in task["Records"]
+            ]
+
+        state = await integration_service.network_ddns_state(db)
+        assert state.ipv4.manual_domains == ["home.example.com"]
+        assert state.ipv4.auto_domains == ["media.example.com"]
+        assert state.ipv6.manual_domains == ["home6.example.com"]
+        assert state.ipv6.auto_domains == ["media.example.com"]
+        assert "media.example.com" in ddns_domains("IPv4")
+        assert "media.example.com" in ddns_domains("IPv6")
+        assert "media.lan" not in ddns_domains("IPv4")
+        assert "*.media.example.com" not in ddns_domains("IPv6")
+
+        state = await integration_service.save_network_ddns(
+            db,
+            NetworkDdnsUpdate(
+                enabled=True,
+                ipv4=NetworkDdnsUpdateFamily(
+                    enabled=True,
+                    provider="alidns",
+                    access_id="key-id",
+                    secret="key-secret",
+                    domains=[],
+                ),
+                ipv6=NetworkDdnsUpdateFamily(
+                    enabled=True,
+                    provider="cloudflare",
+                    access_id="",
+                    secret="cf-token",
+                    domains=["home6.example.com"],
+                ),
+            ),
         )
-        v6 = next(
-            task
-            for task in fake_server.ddns_tasks
-            if task["TaskName"].endswith("IPv6")
+        assert state.ipv4.manual_domains == []
+        assert state.ipv4.auto_domains == ["media.example.com"]
+
+        await integration_service.upsert_network_proxy(
+            db,
+            NetworkProxyRequest(
+                app_instance_id=instance.id,
+                domains=["new.example.com"],
+                network="tcp4",
+            ),
+            "192.168.1.2",
         )
-        v4_domains = [
-            record["SyncRecordData"]["fullDomainName"]
-            for record in v4["Records"]
-        ]
-        v6_domains = [
-            record["SyncRecordData"]["fullDomainName"]
-            for record in v6["Records"]
-        ]
-        assert "media.example.com" in v4_domains
-        assert "media.example.com" in v6_domains
-        assert "media.lan" not in v4_domains
-        assert "*.media.example.com" not in v6_domains
+        state = await integration_service.network_ddns_state(db)
+        assert state.ipv4.manual_domains == []
+        assert state.ipv4.auto_domains == ["new.example.com"]
+        assert state.ipv6.manual_domains == ["home6.example.com"]
+        assert state.ipv6.auto_domains == []
+        assert ddns_domains("IPv4") == ["new.example.com"]
+        assert ddns_domains("IPv6") == ["home6.example.com"]
+
+        record = await integration_service._get_record(db, "network")
+        assert record is not None
+        config = record.config
+        assert config["ddns"]["ipv4"]["domains"] == ["new.example.com"]
+        for family in ("ipv4", "ipv6"):
+            config["ddns"][family].pop("manual_domains")
+            config["ddns"][family].pop("auto_domains")
+        record.config = config
+        await db.commit()
+
+        await integration_service.delete_network_proxy(db, instance.id)
+        state = await integration_service.network_ddns_state(db)
+        assert state.ipv4.manual_domains == []
+        assert state.ipv4.auto_domains == []
+        assert state.ipv4.domains == []
+        assert state.ipv6.manual_domains == ["home6.example.com"]
+        assert state.ipv6.auto_domains == []
+        assert state.ipv6.domains == ["home6.example.com"]
+        assert ddns_domains("IPv4") == []
+        assert ddns_domains("IPv6") == ["home6.example.com"]
 
     await engine.dispose()

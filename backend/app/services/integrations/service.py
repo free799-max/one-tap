@@ -308,6 +308,8 @@ def _ddns_family_default(family: str) -> dict:
         "access_id": "",
         "secret": "",
         "domains": [],
+        "manual_domains": None,
+        "auto_domains": [],
         "interval": DEFAULT_DDNS_INTERVAL,
         "get_type": "url",
         "url": DEFAULT_IPV4_URLS if family == "IPv4" else DEFAULT_IPV6_URLS,
@@ -321,6 +323,7 @@ def _ddns_family_config(ddns: dict, family: str) -> dict:
     base = _ddns_family_default(family)
     raw = ddns.get(family.lower())
     if isinstance(raw, dict):
+        manual_domains = raw.get("manual_domains")
         return {
             **base,
             "enabled": bool(raw.get("enabled")),
@@ -328,6 +331,14 @@ def _ddns_family_config(ddns: dict, family: str) -> dict:
             "access_id": _text(raw.get("access_id")),
             "secret": _text(raw.get("secret")),
             "domains": [_text(item) for item in (raw.get("domains") or [])],
+            "manual_domains": (
+                [_text(item) for item in manual_domains]
+                if isinstance(manual_domains, list)
+                else None
+            ),
+            "auto_domains": [
+                _text(item) for item in (raw.get("auto_domains") or [])
+            ],
             "interval": int(raw.get("interval") or base["interval"]),
             "get_type": _text(raw.get("get_type")) or "url",
             "url": _text(raw.get("url")),
@@ -350,13 +361,40 @@ def _ddns_family_config(ddns: dict, family: str) -> dict:
     return base
 
 
+def _merge_domains(*groups: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            domain = _text(item)
+            key = domain.lower()
+            if not domain or key in seen:
+                continue
+            seen.add(key)
+            result.append(domain)
+    return result
+
+
 def _ddns_family_out(raw: dict) -> NetworkDdnsFamilyOut:
+    auto_domains = _merge_domains(list(raw.get("auto_domains") or []))
+    raw_manual = raw.get("manual_domains")
+    if isinstance(raw_manual, list):
+        manual_domains = _merge_domains(raw_manual)
+    else:
+        automatic = {item.lower() for item in auto_domains}
+        manual_domains = [
+            item
+            for item in list(raw.get("domains") or [])
+            if _text(item).lower() not in automatic
+        ]
     return NetworkDdnsFamilyOut(
         enabled=bool(raw.get("enabled")),
         provider=_text(raw.get("provider")) or "cloudflare",
         access_id=_text(raw.get("access_id")),
         secret_set=_mask(raw.get("secret")),
-        domains=list(raw.get("domains") or []),
+        domains=_merge_domains(manual_domains, auto_domains),
+        manual_domains=manual_domains,
+        auto_domains=auto_domains,
         interval=int(raw.get("interval") or DEFAULT_DDNS_INTERVAL),
         get_type=_text(raw.get("get_type")) or "url",
         url=_text(raw.get("url")),
@@ -399,6 +437,17 @@ def _is_ddns_domain(domain: str) -> bool:
     if not value or "*" in value or "/" in value or ":" in value:
         return False
     return not is_internal_domain(value)
+
+
+def _proxy_ddns_domains(links: dict[int, dict]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {family: [] for family in DDNS_FAMILIES}
+    for link in links.values():
+        public = [
+            domain for domain in _link_domains(link) if _is_ddns_domain(domain)
+        ]
+        for family in _ddns_families_for_network(_link_network(link)):
+            result[family] = _merge_domains(result[family], public)
+    return result
 
 
 _LUCKY_SYNC_STATUS = {
@@ -924,12 +973,46 @@ class IntegrationService:
             _text(ddnsgo.get("password")),
         )
 
+    def _normalized_ddns_families(
+        self,
+        config: dict,
+        previous_links: dict[int, dict] | None = None,
+    ) -> dict[str, dict]:
+        ddns = config.get("ddns") or {}
+        automatic = _proxy_ddns_domains(self._proxy_links(config))
+        previous_automatic = (
+            _proxy_ddns_domains(previous_links)
+            if previous_links is not None
+            else None
+        )
+        families: dict[str, dict] = {}
+        for family in DDNS_FAMILIES:
+            item = _ddns_family_config(ddns, family)
+            manual = item["manual_domains"]
+            if manual is None:
+                if previous_automatic is not None:
+                    old_auto = previous_automatic[family]
+                else:
+                    old_auto = item["auto_domains"] or automatic[family]
+                old_keys = {domain.lower() for domain in old_auto}
+                manual = [
+                    domain
+                    for domain in item["domains"]
+                    if domain.lower() not in old_keys
+                ]
+            item["manual_domains"] = _merge_domains(manual)
+            item["auto_domains"] = automatic[family]
+            item["domains"] = _merge_domains(manual, automatic[family])
+            families[family] = item
+        return families
+
     def _ddns_out(self, config: dict) -> NetworkDdnsOut:
         ddns = config.get("ddns") or {}
+        families = self._normalized_ddns_families(config)
         return NetworkDdnsOut(
             enabled=bool(ddns.get("enabled")),
-            ipv4=_ddns_family_out(_ddns_family_config(ddns, "IPv4")),
-            ipv6=_ddns_family_out(_ddns_family_config(ddns, "IPv6")),
+            ipv4=_ddns_family_out(families["IPv4"]),
+            ipv6=_ddns_family_out(families["IPv6"]),
         )
 
     async def get_network(self, db: AsyncSession) -> NetworkConfigOut:
@@ -1211,6 +1294,7 @@ class IntegrationService:
             raise APIException("请先保存网络集成连接配置", 400)
 
         links = self._proxy_links(config)
+        previous_links = links.copy()
         is_custom = data.app_instance_id <= 0
         if is_custom:
             existing = links.get(data.app_instance_id) or {}
@@ -1300,16 +1384,14 @@ class IntegrationService:
             )
 
         config["proxy_links"] = {str(k): v for k, v in links.items()}
-        record.config = config
 
         try:
-            note = await self._attach_proxy_domains_to_ddns(
-                config, domains, data.network
-            )
+            note = await self._sync_proxy_ddns(config, previous_links)
         except APIException as exc:
             note = f"；DDNS 域名同步失败：{exc.message}"
         message += note
 
+        record.config = config
         await db.commit()
         return NetworkProxyResult(ok=True, message=message)
 
@@ -1321,6 +1403,7 @@ class IntegrationService:
         config = self._network_config(record)
         provider = _provider(config)
         links = self._proxy_links(config)
+        previous_links = links.copy()
         links.pop(instance_id, None)
 
         if self._network_configured(provider, config):
@@ -1346,9 +1429,14 @@ class IntegrationService:
                         await client.delete_proxy_rules()
 
         config["proxy_links"] = {str(k): v for k, v in links.items()}
+        message = "已移除反向代理"
+        try:
+            message += await self._sync_proxy_ddns(config, previous_links)
+        except APIException as exc:
+            message += f"；DDNS 域名同步失败：{exc.message}"
         record.config = config
         await db.commit()
-        return NetworkProxyResult(ok=True, message="已移除反向代理")
+        return NetworkProxyResult(ok=True, message=message)
 
     async def list_npm_certificates(
         self, db: AsyncSession
@@ -1730,16 +1818,12 @@ class IntegrationService:
         if data.enabled and not record.enabled:
             raise APIException("请先启用网络集成", 400)
 
-        current_ddns = config.get("ddns") or {}
         updates = {"IPv4": data.ipv4, "IPv6": data.ipv6}
         submitted_secret = (
             (data.ipv4.secret or "").strip()
             or (data.ipv6.secret or "").strip()
         )
-        current_families = {
-            family: _ddns_family_config(current_ddns, family)
-            for family in DDNS_FAMILIES
-        }
+        current_families = self._normalized_ddns_families(config)
         shared_secret = (
             current_families["IPv4"]["secret"]
             or current_families["IPv6"]["secret"]
@@ -1754,13 +1838,16 @@ class IntegrationService:
                 or submitted_secret
                 or shared_secret
             )
-            domains: list[str] = []
+            manual_domains: list[str] = []
             for raw in item.domains:
                 if not _text(raw):
                     continue
                 domain = _normalize_domain(raw)
-                if domain not in domains:
-                    domains.append(domain)
+                if domain not in manual_domains:
+                    manual_domains.append(domain)
+            manual_domains = _merge_domains(manual_domains)
+            auto_domains = base["auto_domains"]
+            domains = _merge_domains(manual_domains, auto_domains)
             enabled = bool(data.enabled and item.enabled)
             if item.enabled:
                 if not domains:
@@ -1787,6 +1874,8 @@ class IntegrationService:
                 "access_id": item.access_id.strip(),
                 "secret": secret,
                 "domains": domains,
+                "manual_domains": manual_domains,
+                "auto_domains": auto_domains,
                 "interval": item.interval,
                 "get_type": item.get_type,
                 "url": item.url.strip(),
@@ -1838,59 +1927,29 @@ class IntegrationService:
             "ipv6": families["IPv6"],
         }
 
-    async def _attach_proxy_domains_to_ddns(
+    async def _sync_proxy_ddns(
         self,
         config: dict,
-        domains: list[str],
-        network: str,
+        previous_links: dict[int, dict],
     ) -> str:
-        """新建代理时把公网域名补进对应协议族的 DDNS，返回结果说明。"""
-        if not _ddns_dns_credentials(config):
-            return ""
-        if _provider(config) == "npm" and not self._ddnsgo_configured(config):
-            return ""
-
-        ddns = config.get("ddns") or {}
-        families = {
-            family: _ddns_family_config(ddns, family)
-            for family in DDNS_FAMILIES
+        """按当前代理重算自动域名，保留手动域名并同步已启用的任务。"""
+        current_links = self._proxy_links(config)
+        changed = _proxy_ddns_domains(previous_links) != _proxy_ddns_domains(
+            current_links
+        )
+        families = self._normalized_ddns_families(config, previous_links)
+        enabled = bool((config.get("ddns") or {}).get("enabled"))
+        config["ddns"] = {
+            "enabled": enabled,
+            "ipv4": families["IPv4"],
+            "ipv6": families["IPv6"],
         }
-        targets = [
-            family
-            for family in _ddns_families_for_network(network)
-            if families[family]["secret"]
-        ]
-        public = [domain for domain in domains if _is_ddns_domain(domain)]
-        if not public or not targets:
+        if not changed:
             return ""
-
-        added: list[str] = []
-        for family in targets:
-            current = {
-                item.lower() for item in families[family]["domains"]
-            }
-            for domain in public:
-                if domain.lower() in current:
-                    continue
-                families[family]["domains"].append(domain)
-                current.add(domain.lower())
-                if domain not in added:
-                    added.append(domain)
-        if not added:
-            return ""
-
-        enabled = bool(ddns.get("enabled"))
-        if enabled:
-            await self._push_ddns_families(config, families, enabled=True)
-        else:
-            config["ddns"] = {
-                "enabled": False,
-                "ipv4": families["IPv4"],
-                "ipv6": families["IPv6"],
-            }
-        scope = " + ".join(targets)
-        suffix = "" if enabled else "，DDNS 未启用，启用后生效"
-        return f"；已把 {', '.join(added)} 写入 DDNS（{scope}{suffix}）"
+        if enabled and _ddns_dns_credentials(config):
+            if _provider(config) != "npm" or self._ddnsgo_configured(config):
+                await self._push_ddns_families(config, families, enabled=True)
+        return "；DDNS 自动域名已更新"
 
     async def _save_ddnsgo(
         self,

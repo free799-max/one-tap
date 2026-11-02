@@ -121,6 +121,8 @@ class NetworkDdnsFamilyOut(BaseModel):
     access_id: str = ""
     secret_set: bool = False
     domains: list[str] = []
+    manual_domains: list[str] = []
+    auto_domains: list[str] = []
     interval: int = 300
     get_type: Literal["url", "netInterface"] = "url"
     url: str = ""
