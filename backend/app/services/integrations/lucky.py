@@ -396,7 +396,7 @@ class LuckyClient:
         ]
 
     async def save_proxy_rules(self, payloads: list[dict]) -> None:
-        """按规则名维护规则：删除过时规则，再创建或更新目标规则。
+        """按规则名维护规则，跨端口移动子规则时先释放旧规则标识。
 
         Lucky 新版本在创建时自行生成 RuleKey，所以只能用 RuleName 对应。
         """
@@ -404,13 +404,45 @@ class LuckyClient:
             str(rule.get("RuleName") or ""): rule
             for rule in await self.list_managed_rules()
         }
-        desired = {str(payload.get("RuleName") or "") for payload in payloads}
+        desired_payloads = {
+            str(payload.get("RuleName") or ""): payload for payload in payloads
+        }
+        desired = set(desired_payloads)
+        desired_owners = {
+            str(sub_rule.get("Key") or ""): name
+            for name, payload in desired_payloads.items()
+            for sub_rule in payload.get("ProxyList") or []
+            if sub_rule.get("Key")
+        }
         for name, rule in existing.items():
             if name in desired:
                 continue
             key = str(rule.get("RuleKey") or "")
             if key:
                 await self._request("DELETE", f"/api/webservice/rule/{key}")
+
+        for name, current in existing.items():
+            if name not in desired:
+                continue
+            key = str(current.get("RuleKey") or "")
+            if not key:
+                continue
+            current_keys = {
+                str(sub_rule.get("Key") or "")
+                for sub_rule in current.get("ProxyList") or []
+                if sub_rule.get("Key")
+            }
+            if not any(desired_owners.get(item) != name for item in current_keys):
+                continue
+            payload = desired_payloads[name]
+            retained = [
+                sub_rule
+                for sub_rule in payload.get("ProxyList") or []
+                if str(sub_rule.get("Key") or "") in current_keys
+            ]
+            body = {**payload, "RuleKey": key, "ProxyList": retained}
+            await self._request("PUT", f"/api/webservice/rule/{key}", json=body)
+
         for payload in payloads:
             name = str(payload.get("RuleName") or "")
             current = existing.get(name)

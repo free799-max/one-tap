@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.exceptions import APIException
 from app.database import Base
 from app.models.app_store import App
 from app.models.orchestration import AppInstance, AppOrchestration
@@ -462,6 +463,81 @@ async def test_network_service_npm_proxy(fake_npm, fake_ddnsgo):
         assert certificates[0].id == 3
 
         await integration_service.delete_network_proxy(db, instance.id)
+        assert fake_npm.hosts == []
+
+        with pytest.raises(APIException, match="自定义应用名称"):
+            await integration_service.upsert_network_proxy(
+                db,
+                NetworkProxyRequest(
+                    app_instance_id=0,
+                    domains=["internal.lan"],
+                    target_url="http://192.168.1.30:9000",
+                ),
+                "192.168.1.2",
+            )
+        with pytest.raises(APIException, match="后端地址"):
+            await integration_service.upsert_network_proxy(
+                db,
+                NetworkProxyRequest(
+                    app_instance_id=0,
+                    custom_name="内部服务",
+                    domains=["internal.lan"],
+                ),
+                "192.168.1.2",
+            )
+
+        await integration_service.upsert_network_proxy(
+            db,
+            NetworkProxyRequest(
+                app_instance_id=0,
+                custom_name="内部服务",
+                domains=["internal.lan"],
+                target_url="192.168.1.30:9000",
+            ),
+            "192.168.1.2",
+        )
+        apps = await integration_service.list_network_apps(db, "192.168.1.2")
+        custom = next(item for item in apps if item.is_custom)
+        assert custom.instance_id < 0
+        assert custom.display_name == "内部服务"
+        assert custom.target_url == "http://192.168.1.30:9000"
+        assert custom.proxy_enabled is True
+        assert fake_npm.hosts[0]["meta"]["onetap_instance_id"] == str(
+            custom.instance_id
+        )
+
+        await integration_service.upsert_network_proxy(
+            db,
+            NetworkProxyRequest(
+                app_instance_id=custom.instance_id,
+                custom_name="内部 DNS",
+                domains=["internal.lan"],
+                target_url="http://[fd00::10]:8053",
+            ),
+            "192.168.1.2",
+        )
+        apps = await integration_service.list_network_apps(db, "192.168.1.2")
+        updated = next(item for item in apps if item.is_custom)
+        assert updated.instance_id == custom.instance_id
+        assert updated.display_name == "内部 DNS"
+        assert updated.target_url == "http://[fd00::10]:8053"
+        assert len(fake_npm.hosts) == 1
+        assert fake_npm.hosts[0]["forward_host"] == "fd00::10"
+        assert fake_npm.hosts[0]["forward_port"] == 8053
+
+        with pytest.raises(APIException, match="已被其他应用使用"):
+            await integration_service.upsert_network_proxy(
+                db,
+                NetworkProxyRequest(
+                    app_instance_id=0,
+                    custom_name="另一个服务",
+                    domains=["internal.lan"],
+                    target_url="http://192.168.1.31:9000",
+                ),
+                "192.168.1.2",
+            )
+
+        await integration_service.delete_network_proxy(db, custom.instance_id)
         assert fake_npm.hosts == []
 
         state = await integration_service.save_network_ddns(

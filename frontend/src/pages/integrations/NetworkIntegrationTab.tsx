@@ -1262,8 +1262,6 @@ export function NetworkIntegrationTab() {
               disabled={
                 !config?.enabled ||
                 !config?.configured ||
-                !apps.length ||
-                apps.length === configuredApps.length ||
                 busy
               }
             >
@@ -1276,11 +1274,6 @@ export function NetworkIntegrationTab() {
           {appsLoading ? (
             <div className="py-6 text-center text-sm text-muted-foreground">
               加载应用列表中...
-            </div>
-          ) : apps.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-8">
-              <Route className="h-7 w-7 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">还没有已部署的应用</p>
             </div>
           ) : configuredApps.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-8">
@@ -1295,7 +1288,7 @@ export function NetworkIntegrationTab() {
                 onClick={openCreateProxy}
                 disabled={!config?.enabled || !config?.configured}
               >
-                为应用新建代理
+                新建反向代理
               </Button>
             </div>
           ) : (

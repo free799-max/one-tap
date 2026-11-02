@@ -1137,7 +1137,7 @@ class IntegrationService:
                 project_by_id=project_by_id,
             )
         apps = _network_app_list(apps)
-        result = []
+        result: list[NetworkAppOut] = []
         for app in apps:
             link = links.get(app.instance_id) or {}
             domains = _link_domains(link)
@@ -1149,6 +1149,37 @@ class IntegrationService:
                     target_url=_text(link.get("target_url"))
                     or _apply_target_host(app.url, _text(config.get("target_host"))),
                     proxy_enabled=bool(domains and _text(link.get("target_url"))),
+                    listen_port=_positive_int(link.get("listen_port")) or None,
+                    enable_tls=bool(
+                        link.get("enable_tls", lucky.get("enable_tls"))
+                    ),
+                    network=_link_network(link),
+                    certificate_id=_certificate_int(
+                        link.get("certificate_id", npm.get("certificate_id"))
+                    ),
+                    ssl_forced=bool(
+                        link.get("ssl_forced", npm.get("ssl_forced", True))
+                    ),
+                )
+            )
+        for instance_id, link in sorted(links.items()):
+            if instance_id >= 0:
+                continue
+            domains = _link_domains(link)
+            target_url = _text(link.get("target_url")) or None
+            result.append(
+                NetworkAppOut(
+                    instance_id=instance_id,
+                    app_name="custom",
+                    display_name=_text(link.get("remark")) or "自定义应用",
+                    instance_name="自定义应用",
+                    status="custom",
+                    url=target_url,
+                    domain=domains[0] if domains else None,
+                    domains=domains,
+                    target_url=target_url,
+                    proxy_enabled=bool(domains and target_url),
+                    is_custom=True,
                     listen_port=_positive_int(link.get("listen_port")) or None,
                     enable_tls=bool(
                         link.get("enable_tls", lucky.get("enable_tls"))
@@ -1179,14 +1210,32 @@ class IntegrationService:
         if not self._network_configured(provider, config):
             raise APIException("请先保存网络集成连接配置", 400)
 
-        app = await get_deployed_app(db, data.app_instance_id, host)
-        if app is None:
-            raise APIException("应用实例不存在", 404)
-        target_url = _text(data.target_url) or _apply_target_host(
-            app.url, _text(config.get("target_host"))
-        )
-        if not target_url:
-            raise APIException("无法确定应用访问地址，请手动填写后端地址", 400)
+        links = self._proxy_links(config)
+        is_custom = data.app_instance_id <= 0
+        if is_custom:
+            existing = links.get(data.app_instance_id) or {}
+            if data.app_instance_id < 0 and not existing:
+                raise APIException("自定义代理不存在", 404)
+            display_name = _text(data.custom_name) or _text(existing.get("remark"))
+            if not display_name:
+                raise APIException("请填写自定义应用名称", 400)
+            app_instance_id = data.app_instance_id or (
+                min((key for key in links if key < 0), default=0) - 1
+            )
+            target_url = _text(data.target_url)
+            if not target_url:
+                raise APIException("请填写自定义应用的后端地址", 400)
+        else:
+            app = await get_deployed_app(db, data.app_instance_id, host)
+            if app is None:
+                raise APIException("应用实例不存在", 404)
+            app_instance_id = app.instance_id
+            display_name = app.display_name
+            target_url = _text(data.target_url) or _apply_target_host(
+                app.url, _text(config.get("target_host"))
+            )
+            if not target_url:
+                raise APIException("无法确定应用访问地址，请手动填写后端地址", 400)
         if not target_url.startswith(("http://", "https://")):
             target_url = f"http://{target_url}"
 
@@ -1198,22 +1247,21 @@ class IntegrationService:
         if not domains:
             raise APIException("请至少填写一个域名", 400)
 
-        links = self._proxy_links(config)
         for instance_id, link in links.items():
-            if instance_id == app.instance_id:
+            if instance_id == app_instance_id:
                 continue
-            for existing in _link_domains(link):
-                if existing in domains:
-                    raise APIException(f"域名 {existing} 已被其他应用使用", 400)
+            for existing_domain in _link_domains(link):
+                if existing_domain in domains:
+                    raise APIException(f"域名 {existing_domain} 已被其他应用使用", 400)
 
         lucky = config.get("lucky") or {}
         npm = config.get("npm") or {}
         default_port = _positive_int(lucky.get("listen_port")) or DEFAULT_LISTEN_PORT
         listen_port = data.listen_port or default_port
-        links[app.instance_id] = {
+        links[app_instance_id] = {
             "domains": domains,
             "target_url": target_url,
-            "remark": app.display_name,
+            "remark": display_name,
             "listen_port": listen_port,
             "enable_tls": data.enable_tls,
             "network": data.network,
@@ -1226,7 +1274,7 @@ class IntegrationService:
                 npm.get("certificate_id")
             )
             payload = build_proxy_host(
-                app.instance_id,
+                app_instance_id,
                 domains=domains,
                 target_url=target_url,
                 certificate_id=certificate_id,
@@ -1234,7 +1282,7 @@ class IntegrationService:
             )
             async with self._npm_client(config) as client:
                 await client.login()
-                await client.save_proxy_host(app.instance_id, payload)
+                await client.save_proxy_host(app_instance_id, payload)
             message = (
                 f"已在 Nginx Proxy Manager 创建 {', '.join(domains)} → {target_url}"
             )

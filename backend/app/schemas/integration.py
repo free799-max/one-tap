@@ -248,12 +248,13 @@ class NetworkHostsOut(BaseModel):
 
 
 class NetworkAppOut(IntegrationAppOut):
-    """网络集成反向代理列表中的应用。"""
+    """网络集成反向代理列表中的应用或自定义后端。"""
 
     domain: str | None = None
     domains: list[str] = []
     target_url: str | None = None
     proxy_enabled: bool = False
+    is_custom: bool = False
     listen_port: int | None = None
     enable_tls: bool = False
     network: Literal["tcp", "tcp4", "tcp6"] = "tcp"
@@ -262,13 +263,15 @@ class NetworkAppOut(IntegrationAppOut):
 
 
 class NetworkProxyRequest(BaseModel):
-    """为单个应用创建/更新反向代理。
+    """为应用或自定义后端创建/更新反向代理。
 
+    app_instance_id 为 0 时创建自定义代理，负数时编辑已有自定义代理。
     一个应用一条配置，可同时绑定多个公网/内网域名；Lucky 支持指定
     监听协议和规则级 HTTPS，NPM 支持指定证书与强制 HTTPS。
     """
 
     app_instance_id: int
+    custom_name: str | None = Field(None, max_length=100)
     domains: list[str] = Field(..., min_length=1, max_length=50)
     target_url: str | None = None
     listen_port: int | None = Field(None, ge=1, le=65535)

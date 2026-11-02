@@ -98,6 +98,23 @@ class _FakeServer:
             .decode()
         )
 
+    def duplicate_sub_rule_key(self, body: dict, ignore_rule_key: str = "") -> str:
+        existing = {
+            str(sub_rule.get("Key") or "")
+            for rule in self.lucky_rules
+            if rule.get("RuleKey") != ignore_rule_key
+            for sub_rule in rule.get("ProxyList") or []
+            if sub_rule.get("Key")
+        }
+        return next(
+            (
+                str(sub_rule.get("Key") or "")
+                for sub_rule in body.get("ProxyList") or []
+                if str(sub_rule.get("Key") or "") in existing
+            ),
+            "",
+        )
+
     @property
     def base_url(self) -> str:
         host, port = self._server.server_address
@@ -254,6 +271,11 @@ class _FakeServer:
                         )
                     return self._send({"ret": 0, "token": "lucky-token"})
                 if path == "/api/webservice/rules":
+                    duplicate = outer.duplicate_sub_rule_key(body)
+                    if duplicate:
+                        return self._send(
+                            {"ret": 1, "msg": f"规则标识重复 [{duplicate}]"}
+                        )
                     key = f"srv-key-{len(outer.lucky_rules) + 1}"
                     outer.lucky_rules.append({**body, "RuleKey": key})
                     return self._send({"ret": 0})
@@ -301,6 +323,11 @@ class _FakeServer:
                     return self._send({})
                 if path.startswith("/api/webservice/rule/"):
                     key = path.rsplit("/", 1)[-1]
+                    duplicate = outer.duplicate_sub_rule_key(body, key)
+                    if duplicate:
+                        return self._send(
+                            {"ret": 1, "msg": f"规则标识重复 [{duplicate}]"}
+                        )
                     outer.lucky_rules = [
                         {**body, "RuleKey": key}
                         if rule.get("RuleKey") == key
@@ -421,6 +448,37 @@ async def test_lucky_save_proxy_rule(fake_server):
     assert fake_server.lucky_rules[0]["ProxyList"][0]["Locations"] == [
         "http://192.168.1.2:9096"
     ]
+
+
+@pytest.mark.asyncio
+async def test_lucky_move_sub_rule_to_another_port(fake_server):
+    links = {
+        7: {
+            "domains": ["media.example.com"],
+            "target_url": "http://192.168.1.2:8096",
+            "remark": "Jellyfin",
+        },
+        -1: {
+            "domains": ["custom.lan"],
+            "target_url": "http://192.168.1.30:9000",
+            "remark": "自定义应用",
+        },
+    }
+    initial = build_proxy_rule(listen_port=443, enable_tls=True, links=links)
+    moved = build_proxy_rule(
+        listen_port=80, enable_tls=False, links={-1: links[-1]}
+    )
+    remaining = build_proxy_rule(
+        listen_port=443, enable_tls=True, links={7: links[7]}
+    )
+
+    async with LuckyClient(fake_server.base_url, "666", "666") as client:
+        await client.save_proxy_rules([initial])
+        await client.save_proxy_rules([moved, remaining])
+
+    rules = {rule["ListenPort"]: rule for rule in fake_server.lucky_rules}
+    assert [item["Key"] for item in rules[80]["ProxyList"]] == ["onetap--1"]
+    assert [item["Key"] for item in rules[443]["ProxyList"]] == ["onetap-7"]
 
 
 @pytest.mark.asyncio
@@ -730,8 +788,36 @@ async def test_lucky_proxy_and_ddns_service(fake_server):
             "home.example.com"
         )
 
+        await integration_service.upsert_network_proxy(
+            db,
+            NetworkProxyRequest(
+                app_instance_id=0,
+                custom_name="内部 DNS",
+                domains=["dns.lan"],
+                target_url="http://[fd00::10]:8053",
+            ),
+            "192.168.1.2",
+        )
+        apps = await integration_service.list_network_apps(db, "192.168.1.2")
+        custom = next(item for item in apps if item.is_custom)
+        assert custom.instance_id < 0
+        assert custom.target_url == "http://[fd00::10]:8053"
+        custom_rule = next(
+            rule
+            for rule in fake_server.lucky_rules[0]["ProxyList"]
+            if rule["Key"] == f"onetap-{custom.instance_id}"
+        )
+        assert custom_rule["Locations"] == ["http://[fd00::10]:8053"]
+        assert custom_rule["Remark"] == "内部 DNS"
+
+        removed = await integration_service.delete_network_proxy(db, first.id)
+        assert removed.ok is True
+        assert [
+            rule["Key"] for rule in fake_server.lucky_rules[0]["ProxyList"]
+        ] == [f"onetap-{custom.instance_id}"]
+
         removed = await integration_service.delete_network_proxy(
-            db, first.id
+            db, custom.instance_id
         )
         assert removed.ok is True
         assert fake_server.lucky_rules == []
