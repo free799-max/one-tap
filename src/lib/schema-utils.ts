@@ -274,6 +274,79 @@ function markSharedItems(
 }
 
 /**
+ * 把应用配置中的相对挂载路径补上「实例名」目录。
+ *
+ * 部署后的目录结构为 `<应用数据目录>/<实例名>/<应用名>/<子目录>`，
+ * 例如 `comic/comic-auto/data`。因此表单初始化时把 schema 里的相对默认值
+ * 物化为 `<应用数据目录>/<实例名>/...` 的绝对路径，用户可直接编辑整条路径；
+ * 实例改名时把已有的旧实例名前缀替换成新实例名。
+ *
+ * 幂等：已经是绝对路径（且不属于旧实例名前缀）的值不会被重复处理。
+ */
+export function applyInstanceDirPrefix(
+  schema: Record<string, unknown> | undefined,
+  config: Record<string, unknown>,
+  prevSlug: string,
+  nextSlug: string,
+  appDataMount: string
+): { config: Record<string, unknown>; changed: boolean } {
+  const mount = (appDataMount || "").replace(/\/+$/, "");
+  if (!mount || !nextSlug) return { config, changed: false };
+
+  const properties = (schema?.properties ?? {}) as Record<
+    string,
+    SchemaPropertyWithItems
+  >;
+  const base = `${mount}/${nextSlug}`;
+  const prevBase = prevSlug ? `${mount}/${prevSlug}` : "";
+
+  let changed = false;
+  const nextConfig = { ...config };
+  for (const [key, prop] of Object.entries(properties)) {
+    const rows = nextConfig[key];
+    if (!Array.isArray(rows)) continue;
+    const itemProps = (prop?.items?.properties ?? {}) as Record<
+      string,
+      SchemaPropertyWithItems
+    >;
+    if (itemProps.host_path?.format !== "directory") continue;
+
+    let propChanged = false;
+    const nextRows = rows.map((row) => {
+      if (!row || typeof row !== "object") return row;
+      const record = row as Record<string, unknown>;
+      const host = record.host_path;
+      if (typeof host !== "string" || !host) return row;
+
+      let nextHost = host;
+      if (host.startsWith("/")) {
+        // 实例改名：替换旧的 `<应用数据目录>/<旧实例名>/` 前缀
+        if (
+          prevBase &&
+          prevBase !== base &&
+          (host === prevBase || host.startsWith(`${prevBase}/`))
+        ) {
+          nextHost = `${base}${host.slice(prevBase.length)}`;
+        }
+      } else {
+        // 相对默认值：物化为 `<应用数据目录>/<实例名>/<相对路径>`
+        nextHost = `${base}/${host.replace(/^\/+/, "")}`;
+      }
+      if (nextHost === host) return row;
+      propChanged = true;
+      return { ...record, host_path: nextHost };
+    });
+
+    if (propChanged) {
+      nextConfig[key] = nextRows;
+      changed = true;
+    }
+  }
+
+  return changed ? { config: nextConfig, changed: true } : { config, changed: false };
+}
+
+/**
  * 将编排共享配置合并进单个应用的配置。
  *
  * 与浅合并不同，共享的 volumes（存储映射）/ env（环境变量）数组会追加到

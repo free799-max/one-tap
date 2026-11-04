@@ -25,14 +25,16 @@ import {
   useDeployOrchestration,
   useRedeployOrchestrationInstance,
   useUpgradeOrchestrationInstance,
+  type AppCompositionItem,
   type AppOrchestration,
   type OrchestrationInstanceDetail,
 } from "@/hooks/useOrchestrations";
-import { useApps } from "@/hooks/useApps";
+import { useApp, useApps, type App } from "@/hooks/useApps";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
-import { usePortSuggestions } from "@/hooks/useSettings";
+import { usePortSuggestions, useStorageDirectories } from "@/hooks/useSettings";
 import { cn, sanitizeInstanceName, slugify } from "@/lib/utils";
 import {
+  applyInstanceDirPrefix,
   applyPortSuggestions,
   countSchemaPorts,
   extractDefaults,
@@ -60,6 +62,57 @@ interface AutomationDeployWizardProps {
   redeployGroup?: OrchestrationInstanceDetail | null;
   /** 提供时进入升级模式：把实例组升级到当前方案版本 */
   upgradeGroup?: OrchestrationInstanceDetail | null;
+}
+
+/**
+ * 按方案条目计算组件级镜像，规则与后端 `_resolve_composition_image` 一致：
+ * image 为空时用应用默认镜像；image 最后一段不带 : 时拼上 tag。
+ */
+function resolveCompositionImage(
+  item?: AppCompositionItem
+): string | undefined {
+  const image = (item?.image || "").trim();
+  if (!image) return undefined;
+  const tag = (item?.tag || "").trim();
+  const lastSegment = image.slice(image.lastIndexOf("/") + 1);
+  if (tag && !lastSegment.includes(":")) return `${image}:${tag}`;
+  return image;
+}
+
+/**
+ * 单个应用的配置面板。
+ *
+ * 列表接口不携带逐容器默认镜像，这里按应用名补拉详情。
+ * 镜像默认值优先用管理端方案里配置的镜像，其次才是应用市场默认镜像，
+ * 保证表单里看到的版本与实际部署一致。
+ */
+function AppConfigSection({
+  appName,
+  app,
+  defaultImage,
+  config,
+  onChange,
+}: {
+  appName: string;
+  app: App;
+  defaultImage?: string;
+  config: Record<string, unknown>;
+  onChange: (data: Record<string, unknown>) => void;
+}) {
+  const { data: detail } = useApp(appName);
+  const source = detail ?? app;
+  return (
+    <div className="rounded-xl border bg-card p-4 shadow-sm">
+      <h4 className="text-sm font-semibold mb-3">{source.display_name}</h4>
+      <SchemaForm
+        schema={source.config_schema as never}
+        data={config}
+        onChange={onChange}
+        image={defaultImage || source.image || undefined}
+        containerImages={detail?.container_images}
+      />
+    </div>
+  );
 }
 
 export function AutomationDeployWizard({
@@ -214,6 +267,50 @@ export function AutomationDeployWizard({
     });
   }, [orchestration, appsLoading, allApps, appDetailsMap]);
 
+  // 存储路径：新部署时把 schema 的相对默认值物化为
+  // `<应用数据目录>/<实例名>/<应用名>/<子目录>`（如 comic/comic-auto/data），
+  // 实例改名时同步旧前缀；修复/升级沿用已有路径不动
+  const { data: storageDirectoriesData } = useStorageDirectories();
+  const appDataMount =
+    (storageDirectoriesData ?? []).find((d) => d.enabled && d.is_app_data)
+      ?.mount_path ?? "";
+  const instanceSlug = slugify(instanceName);
+  const appliedSlugRef = useRef("");
+
+  useEffect(() => {
+    if (redeployGroup || upgradeGroup) return;
+    if (!appDataMount || !instanceSlug) return;
+    const prevSlug = appliedSlugRef.current;
+    appliedSlugRef.current = instanceSlug;
+    setAppConfigs((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [name, config] of Object.entries(prev)) {
+        const app = appDetailsMap[name];
+        if (!app) continue;
+        const result = applyInstanceDirPrefix(
+          app.config_schema,
+          config,
+          prevSlug,
+          instanceSlug,
+          appDataMount
+        );
+        if (result.changed) {
+          next[name] = result.config;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [
+    appDataMount,
+    instanceSlug,
+    appDetailsMap,
+    appConfigs,
+    redeployGroup,
+    upgradeGroup,
+  ]);
+
   const compositionByName = useMemo(() => {
     if (!orchestration) return {};
     return Object.fromEntries(
@@ -338,6 +435,11 @@ export function AutomationDeployWizard({
           app.config_schema as Record<string, unknown>,
           appName
         );
+        // 与后端部署时的镜像解析保持一致：方案条目里的 image/tag 覆盖应用默认镜像
+        const imageOverride = resolveCompositionImage(
+          compositionByName[appName]
+        );
+        if (imageOverride) mergedConfig.image = imageOverride;
         const subInstanceName = `${projectName}-${appName}`;
         try {
           const res = await previewApp(
@@ -383,7 +485,7 @@ export function AutomationDeployWizard({
       cancelled = true;
       controller.abort();
     };
-  }, [step, instanceName, selectedAppList, appDetailsMap, appConfigs, sharedConfig, orchestration]);
+  }, [step, instanceName, selectedAppList, appDetailsMap, appConfigs, sharedConfig, orchestration, compositionByName]);
 
   if (!orchestration) return null;
 
@@ -699,13 +801,8 @@ export function AutomationDeployWizard({
       }
     )?.properties;
     const hasSchema = Object.keys(sharedProperties || {}).length > 0;
-    // 仅单个共享目录的组合（如漫画）用实例名作为默认子路径，
-    // 多目录组合（如影视的 media/downloads）仍由用户分别填写
-    const volumeDefaults = sharedProperties?.volumes?.default;
-    const defaultDirectorySubPath =
-      Array.isArray(volumeDefaults) && volumeDefaults.length === 1
-        ? slugify(instanceName)
-        : undefined;
+    // 共享目录的子路径不做默认填充：沿用方案里配置的默认值，由用户自行选择目录来源
+    const defaultDirectorySubPath = undefined;
 
     return (
       <div className="space-y-4">
@@ -743,19 +840,18 @@ export function AutomationDeployWizard({
               </div>
             );
           }
-
+          // 编排部署时每个应用是独立 Compose 项目：<实例名>-<应用名>
           return (
-            <div key={appName} className="rounded-xl border bg-card p-4 shadow-sm">
-              <h4 className="text-sm font-semibold mb-3">{app.display_name}</h4>
-              <SchemaForm
-                schema={app.config_schema as never}
-                data={appConfigs[appName] || {}}
-                onChange={(data) =>
-                  setAppConfigs((prev) => ({ ...prev, [appName]: data }))
-                }
-                image={app.image || undefined}
-              />
-            </div>
+            <AppConfigSection
+              key={appName}
+              appName={appName}
+              app={app}
+              defaultImage={resolveCompositionImage(compositionByName[appName])}
+              config={appConfigs[appName] || {}}
+              onChange={(data) =>
+                setAppConfigs((prev) => ({ ...prev, [appName]: data }))
+              }
+            />
           );
         })
       )}
@@ -876,7 +972,7 @@ export function AutomationDeployWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+      <DialogContent className="sm:max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
         <DialogHeader className="flex-shrink-0">
           <DialogTitle>
             {modeLabel} {orchestration.display_name}

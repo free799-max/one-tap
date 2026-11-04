@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { DataDirPathInput } from "@/components/DataDirPathInput";
+import { DataDirPathInput, SOURCE_SELECT_WIDTH } from "@/components/DataDirPathInput";
 import {
   ContainerImageField,
   type ContainerImageConfig,
@@ -17,7 +17,7 @@ import {
 import { generatePassword } from "@/lib/utils";
 import { useStorageDirectories } from "@/hooks/useSettings";
 import type { StorageDirectory } from "@/api/settings";
-import { Minus, Plus, ChevronUp, ChevronDown, RefreshCw, Package } from "lucide-react";
+import { Minus, Plus, ChevronUp, ChevronDown, RefreshCw } from "lucide-react";
 
 /** 数组字段是否包含目录选择（本地路径列需要更宽） */
 function hasDirectoryItem(prop: SchemaProperty): boolean {
@@ -27,11 +27,15 @@ function hasDirectoryItem(prop: SchemaProperty): boolean {
   );
 }
 
-/** 数组行网格：含目录字段时本地路径列更宽，保证容器路径列清晰可见 */
-function arrayGridClass(hasDirectory: boolean): string {
-  return hasDirectory
-    ? "grid-cols-[minmax(0,3fr)_minmax(0,2fr)_90px_auto]"
-    : "grid-cols-[1fr_1fr_90px_auto]";
+/** 数组行网格：含目录字段时本地路径列更宽；设备映射只有两列，用三列网格 */
+function arrayGridClass(hasDirectory: boolean, settingType?: string): string {
+  if (hasDirectory) {
+    return "grid-cols-[minmax(0,5fr)_minmax(0,2.3fr)_90px_auto]";
+  }
+  if (settingType === "devices") {
+    return "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]";
+  }
+  return "grid-cols-[1fr_1fr_90px_auto]";
 }
 
 /** Schema 属性定义 */
@@ -78,12 +82,8 @@ interface SchemaFormProps {
   data: Record<string, unknown>;
   /** 表单数据变化回调 */
   onChange: (data: Record<string, unknown>) => void;
-  /** 应用镜像名，用于渲染镜像标签选择 */
+  /** 主容器的默认镜像（管理端方案或应用市场默认值） */
   image?: string;
-  /** 可用镜像标签列表 */
-  imageTags?: string[];
-  /** 是否正在加载镜像标签 */
-  imageTagsLoading?: boolean;
   /** 各 Compose 服务的默认镜像，用于逐容器镜像配置 */
   containerImages?: Record<string, string>;
   /** 目录字段选中来源后子路径为空时自动填入的默认值（如实例名称） */
@@ -300,6 +300,31 @@ function FieldInput({
   );
 }
 
+/** 数组字段的标准列顺序；本地路径优先于容器路径，权限放最后。 */
+const ARRAY_DISPLAY_ORDERS = [
+  ["local_port", "container_port", "protocol"],
+  ["host_path", "container_path", "mode"],
+  ["host_path", "container_path"],
+  ["key", "value"],
+];
+
+function orderedArrayEntries(
+  itemProps: Record<string, SchemaProperty>
+): [string, SchemaProperty][] {
+  const entries = Object.entries(itemProps);
+  const keys = new Set(entries.map(([key]) => key));
+  const preferred = ARRAY_DISPLAY_ORDERS.find(
+    (order) =>
+      order.length === entries.length && order.every((key) => keys.has(key))
+  );
+  if (preferred) {
+    return preferred.map(
+      (key) => [key, itemProps[key]] as [string, SchemaProperty]
+    );
+  }
+  return entries.length <= 1 ? entries : [...entries.slice(1), entries[0]];
+}
+
 interface ArrayFieldProps {
   propKey: string;
   prop: SchemaProperty;
@@ -360,11 +385,7 @@ function ArrayField({
 
   const itemPropEntries = Object.entries(itemProps);
   const isTwoColumnRow = itemPropEntries.length === 2;
-  // 3 字段布局（ports/volumes）把协议/权限字段放到最后，
-  // 前面依次是（本地端口、容器端口）/（本地路径、容器路径）。
-  const displayEntries = isTwoColumnRow
-    ? itemPropEntries
-    : [...itemPropEntries.slice(1), itemPropEntries[0]];
+  const displayEntries = orderedArrayEntries(itemProps);
 
   // 使用 display: contents 让每行子元素直接参与外层统一 grid：
   // grid-cols-[1fr_1fr_90px_auto]
@@ -381,11 +402,36 @@ function ArrayField({
                 isTwoColumnRow && key === "value" ? "col-span-2" : "col-span-1"
               }`}
             >
-              {p.title || key}
-              {itemRequired.has(key) && (
-                <span className="ml-0.5 text-destructive" aria-hidden="true">
-                  *
-                </span>
+              {p.format === "directory" ? (
+                // 目录字段拆成「来源下拉 + 子路径」两段，表头按同样比例对齐
+                <div className="flex items-center gap-2">
+                  <span
+                    className="shrink-0 truncate"
+                    style={{ width: SOURCE_SELECT_WIDTH }}
+                  >
+                    {p.title || key}
+                    {itemRequired.has(key) && (
+                      <span className="ml-0.5 text-destructive" aria-hidden="true">
+                        *
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    className="min-w-0 flex-1 truncate"
+                    title="本地路径 = 应用数据目录 / Compose 项目名 / 子目录；项目名由实例名称决定，用于区分同一应用的多个部署"
+                  >
+                    子目录
+                  </span>
+                </div>
+              ) : (
+                <>
+                  {p.title || key}
+                  {itemRequired.has(key) && (
+                    <span className="ml-0.5 text-destructive" aria-hidden="true">
+                      *
+                    </span>
+                  )}
+                </>
               )}
             </div>
           ))}
@@ -466,57 +512,12 @@ function ArrayField({
   );
 }
 
-/** 镜像标签选择：镜像名 + 标签下拉 */
-function ImageTagField({
-  image,
-  value,
-  imageTags,
-  imageTagsLoading,
-  onChange,
-}: {
-  image?: string;
-  value: string;
-  imageTags?: string[];
-  imageTagsLoading?: boolean;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="mb-3 flex items-center gap-2 text-sm">
-      <div className="flex items-center gap-1.5">
-        <Package className="h-3.5 w-3.5 text-muted-foreground" />
-        <span
-          className="max-w-[200px] truncate text-base font-medium"
-          title={image}
-        >
-          {image}
-        </span>
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={imageTagsLoading || !imageTags || imageTags.length === 0}
-        className="h-7 rounded-md border border-input bg-white px-2 py-0 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-      >
-        <option value={value}>{value}</option>
-        {!imageTagsLoading &&
-          imageTags?.map((tag) => (
-            <option key={tag} value={tag}>
-              {tag}
-            </option>
-          ))}
-      </select>
-    </div>
-  );
-}
-
 /** 新格式：按容器分组渲染 */
 function ContainerSchemaForm({
   schema,
   data,
   onChange,
   image,
-  imageTags,
-  imageTagsLoading,
   containerImages,
   directoryServices,
   defaultDirectorySubPath,
@@ -525,8 +526,6 @@ function ContainerSchemaForm({
   data: Record<string, unknown>;
   onChange: (data: Record<string, unknown>) => void;
   image?: string;
-  imageTags?: string[];
-  imageTagsLoading?: boolean;
   containerImages?: Record<string, string>;
   directoryServices: DirectoryServices;
   defaultDirectorySubPath?: string;
@@ -552,25 +551,16 @@ function ContainerSchemaForm({
     onChange({ ...data, [key]: value });
   };
 
-  const renderImageTag = () => (
-    <ImageTagField
-      image={image}
-      value={String(data.image_tag || "")}
-      imageTags={imageTags}
-      imageTagsLoading={imageTagsLoading}
-      onChange={(v) => handleChange("image_tag", v)}
-    />
-  );
-
-  const renderFields = (fields: string[]) => {
+  const renderFields = (fields: string[], settingType?: string) => {
     // 端口/存储空间：3 字段，协议/权限列占 90px，按钮在 auto 列
     // 环境变量：2 字段，按钮直接放 auto 列，由相同按钮组自然对齐，不留空白列
+    // 设备映射：2 字段且没有协议列，用两列 + 按钮的三列网格
     // 存储空间含目录选择，第一列需要更宽，避免目录来源和子路径被挤得看不清
     const hasDirectory = fields.some((key) => {
       const prop = properties[key];
       return prop?.type === "array" && prop.items && hasDirectoryItem(prop);
     });
-    const gridClass = arrayGridClass(Boolean(hasDirectory));
+    const gridClass = arrayGridClass(Boolean(hasDirectory), settingType);
     return (
       <div className={`grid ${gridClass} gap-2`}>
         {fields
@@ -613,14 +603,14 @@ function ContainerSchemaForm({
   return (
     <div className="space-y-4">
       {containers.map((container) => {
-        const defaultContainerImage = containerImages?.[container.name];
-        const hasImageTag =
-          defaultContainerImage === undefined &&
-          Boolean(image) &&
-          container.settings.some(
-            (s) =>
-              s.type === "advanced" && s.fields && s.fields.includes("image_tag")
-          );
+        // 逐容器镜像：主容器（第一个服务）优先用外部传入的默认镜像
+        // （管理端方案或应用市场默认值），其余容器用模板解析出的镜像
+        const mainContainerName = containers[0]?.name;
+        const defaultContainerImage =
+          container.name === mainContainerName && image
+            ? image
+            : containerImages?.[container.name] ??
+              (containers.length === 1 ? image : undefined);
 
         return (
           <section
@@ -638,7 +628,7 @@ function ContainerSchemaForm({
               )}
             </div>
 
-            {defaultContainerImage !== undefined ? (
+            {defaultContainerImage !== undefined && (
               <ContainerImageField
                 containerName={container.name}
                 defaultImage={defaultContainerImage}
@@ -651,8 +641,6 @@ function ContainerSchemaForm({
                   onChange(withContainerImage(data, container.name, value))
                 }
               />
-            ) : (
-              hasImageTag && renderImageTag()
             )}
 
             <div className="divide-y">
@@ -697,7 +685,7 @@ function ContainerSchemaForm({
                               {setting.description}
                             </p>
                           )}
-                          {renderFields(fields)}
+                          {renderFields(fields, setting.type)}
                         </div>
                       )}
                     </div>
@@ -717,8 +705,6 @@ function PlainSchemaForm({
   data,
   onChange,
   image,
-  imageTags,
-  imageTagsLoading,
   containerImages,
   directoryServices,
   defaultDirectorySubPath,
@@ -727,8 +713,6 @@ function PlainSchemaForm({
   data: Record<string, unknown>;
   onChange: (data: Record<string, unknown>) => void;
   image?: string;
-  imageTags?: string[];
-  imageTagsLoading?: boolean;
   containerImages?: Record<string, string>;
   directoryServices: DirectoryServices;
   defaultDirectorySubPath?: string;
@@ -741,40 +725,27 @@ function PlainSchemaForm({
   };
 
   const defaultContainerImage = Object.entries(containerImages || {})[0];
-  const hasImageTag =
-    !defaultContainerImage && Boolean(properties.image_tag) && Boolean(image);
+  const imageContainerName = defaultContainerImage?.[0] ?? "main";
+  const defaultImage = image ?? defaultContainerImage?.[1];
 
   return (
     <div className="space-y-4">
-      {defaultContainerImage ? (
+      {defaultImage && (
         <ContainerImageField
-          containerName={defaultContainerImage[0]}
-          defaultImage={defaultContainerImage[1]}
+          containerName={imageContainerName}
+          defaultImage={defaultImage}
           value={
             (data.container_images as
               | Record<string, ContainerImageConfig>
-              | undefined)?.[defaultContainerImage[0]]
+              | undefined)?.[imageContainerName]
           }
           onChange={(value) =>
-            onChange(withContainerImage(data, defaultContainerImage[0], value))
+            onChange(withContainerImage(data, imageContainerName, value))
           }
         />
-      ) : (
-        hasImageTag && (
-          <ImageTagField
-            image={image}
-            value={String(data.image_tag || "")}
-            imageTags={imageTags}
-            imageTagsLoading={imageTagsLoading}
-            onChange={(v) => handleChange("image_tag", v)}
-          />
-        )
       )}
       {Object.entries(properties)
-        .filter(
-          ([key]) =>
-            key !== "image_tag" || (!hasImageTag && !defaultContainerImage)
-        )
+        .filter(([key]) => key !== "image_tag" || !defaultImage)
         .map(([key, prop]) => {
           // 数组类型（如环境变量、端口映射）走 ArrayField，避免被当成普通文本渲染
           if (prop.type === "array" && prop.items) {
@@ -836,8 +807,6 @@ export function SchemaForm({
   data,
   onChange,
   image,
-  imageTags,
-  imageTagsLoading,
   containerImages,
   defaultDirectorySubPath,
   relativeToAppDataDir = true,
@@ -863,8 +832,6 @@ export function SchemaForm({
         data={data}
         onChange={onChange}
         image={image}
-        imageTags={imageTags}
-        imageTagsLoading={imageTagsLoading}
         containerImages={containerImages}
         directoryServices={directoryServices}
         defaultDirectorySubPath={defaultDirectorySubPath}
@@ -878,8 +845,6 @@ export function SchemaForm({
       data={data}
       onChange={onChange}
       image={image}
-      imageTags={imageTags}
-      imageTagsLoading={imageTagsLoading}
       containerImages={containerImages}
       directoryServices={directoryServices}
       defaultDirectorySubPath={defaultDirectorySubPath}
