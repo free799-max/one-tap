@@ -20,13 +20,14 @@ import { useToast } from "@/components/ui/toast";
 import { getApp, type AppDetail } from "@/api/apps";
 import { sanitizeInstanceName, slugify } from "@/lib/utils";
 import {
+  applyInstanceDirPrefix,
   applyPortSuggestions,
   countSchemaPorts,
   extractDefaults,
   fillEmptyPasswords,
 } from "@/lib/schema-utils";
 import { useAppPreview, type AppPreviewRequest } from "@/hooks/useApps";
-import { usePortSuggestions } from "@/hooks/useSettings";
+import { usePortSuggestions, useStorageDirectories } from "@/hooks/useSettings";
 import type { App } from "@/hooks/useApps";
 import type { SchemaProperty } from "@/components/SchemaForm";
 
@@ -147,13 +148,39 @@ export function AppDeployDialog({
   );
   const { data: portSuggestions } = usePortSuggestions(totalPorts);
   const portsFilledRef = useRef(false);
+  const appliedSlugRef = useRef("");
 
   useEffect(() => {
     setInstanceName(slugify(appDisplayName));
     const defaults = extractDefaults(appConfigSchema);
     setConfig(fillEmptyPasswords(appConfigSchema, defaults));
     portsFilledRef.current = false;
+    appliedSlugRef.current = "";
   }, [appDisplayName, appConfigSchema]);
+
+  // 存储路径：把 schema 的相对默认值物化为
+  // `<应用数据目录>/<实例名>/<应用名>/<子目录>`，实例改名时同步旧前缀
+  const { data: storageDirectoriesData } = useStorageDirectories();
+  const appDataMount =
+    (storageDirectoriesData ?? []).find((d) => d.enabled && d.is_app_data)
+      ?.mount_path ?? "";
+  const instanceSlug = slugify(instanceName);
+
+  useEffect(() => {
+    if (!appDataMount || !instanceSlug) return;
+    const prevSlug = appliedSlugRef.current;
+    appliedSlugRef.current = instanceSlug;
+    setConfig((prev) => {
+      const result = applyInstanceDirPrefix(
+        appConfigSchema,
+        prev,
+        prevSlug,
+        instanceSlug,
+        appDataMount
+      );
+      return result.changed ? result.config : prev;
+    });
+  }, [appDataMount, instanceSlug, appConfigSchema]);
 
   // 建议端口到达后一次性预填，之后不再覆盖用户输入
   useEffect(() => {
@@ -232,7 +259,7 @@ export function AppDeployDialog({
 
   return (
     <Dialog key={app.name} open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-4xl max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
+      <DialogContent className="sm:max-w-5xl max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
         <DialogHeader className="px-6 pt-5 pb-3 flex-shrink-0">
           <DialogTitle>部署 {app.display_name}</DialogTitle>
         </DialogHeader>
@@ -265,6 +292,7 @@ export function AppDeployDialog({
                 }
                 data={config}
                 onChange={setConfig}
+                image={app.image || undefined}
                 containerImages={app.container_images}
               />
             </div>
