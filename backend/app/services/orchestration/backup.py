@@ -1,16 +1,17 @@
 """删除编排实例组时的应用数据目录备份。
 
 删除实例组时，各应用自身的持久化数据（宿主机上位于应用数据目录下、
-以 Compose 项目名命名的目录）不会被 ``docker compose down`` 清理。
+按实例名或 Compose 项目名命名的目录）不会被 ``docker compose down`` 清理。
 若直接保留，同名重建会复用旧数据（如 PostgreSQL 密码已初始化），
 导致新部署无法连接数据库。
 
 因此删除时把这些目录移入备份目录而不是留在原地：
 
 - 备份目录固定为 ``<应用数据目录>/_backups/<时间戳>-<实例组名>/``；
-- 每个应用的数据目录按原 Compose 项目名移动，保留内部结构；
-- 只处理应用自身的数据目录，共享存储（媒体/下载）与应用数据目录之外的
-  路径保持不动；
+- 新布局的应用数据目录形如 ``<实例名>/<应用名>/...``，按实例名目录整体移动；
+  旧布局按 Compose 项目名目录移动，两种都保留内部结构；
+- 只处理应用配置里声明的数据目录，共享存储（媒体/下载）与应用数据目录
+  之外的路径保持不动；
 - 备份目录内写入 ``backup.json`` 清单，记录来源、各目录映射与部署配置，
   用于“恢复”时把目录移回并按原配置重新部署。
 """
@@ -75,6 +76,39 @@ def _backup_destination(root: Path, group_name: str, now: datetime) -> Path:
     return candidate
 
 
+def _managed_dir_names(entry: "AppDataEntry", root: Path) -> list[str]:
+    """从应用配置的 volumes 推导应用数据目录下的直接子目录名。
+
+    新部署的挂载路径形如 ``<应用数据目录>/<实例名>/<应用名>/<子目录>``，
+    旧部署是 ``<应用数据目录>/<Compose 项目名>/...``。这里取每条绝对挂载
+    相对应用数据目录的首段，供备份时整体移动这些目录；相对路径由调用方
+    按 Compose 项目名兼容处理。
+    """
+    root_str = str(root).rstrip("/")
+    names: list[str] = []
+    volumes = (entry.config or {}).get("volumes")
+    if not isinstance(volumes, list):
+        return names
+    for volume in volumes:
+        if not isinstance(volume, dict):
+            continue
+        host = str(volume.get("host_path") or "").strip().rstrip("/")
+        if not host or not host.startswith("/"):
+            continue
+        if not root_str or root_str == "/":
+            rel = host.strip("/")
+        elif host.startswith(f"{root_str}/"):
+            rel = host[len(root_str) :].strip("/")
+        else:
+            continue
+        if not rel:
+            continue
+        first = rel.split("/", 1)[0]
+        if first and first != BACKUP_DIR_NAME and first not in names:
+            names.append(first)
+    return names
+
+
 async def resolve_app_data_paths(db: AsyncSession) -> tuple[Path, Path] | None:
     """读取应用数据目录的宿主机路径与后端容器内路径。"""
     pair = await storage_directory_service.get_app_data_pair(db)
@@ -130,58 +164,71 @@ async def backup_app_data_dirs(
     moved: list[dict] = []
     failures: list[BackupFailure] = []
     seen: set[str] = set()
+    instance_dir_name: str | None = None
 
     for entry in entries:
         project_name = (entry.project_name or "").strip()
-        if not project_name or project_name in seen:
-            continue
-        seen.add(project_name)
+        # 候选目录：旧布局的 Compose 项目名目录 + 新布局按实例名组织的首段目录
+        candidates: list[tuple[str, str]] = []
+        if project_name:
+            candidates.append((project_name, "project"))
+        for name in _managed_dir_names(entry, root):
+            if name != project_name:
+                candidates.append((name, "instance"))
 
-        source = root / project_name
-        try:
-            if source.is_symlink() or not source.is_dir():
+        for dir_name, kind in candidates:
+            if dir_name in seen:
                 continue
-            if source.resolve().parent != root_resolved:
-                continue
-        except OSError:
-            continue
+            seen.add(dir_name)
 
-        if backup_dir is None:
-            backup_dir = _backup_destination(root, group_name, now)
-        destination = backup_dir / project_name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            await asyncio.to_thread(os.rename, str(source), str(destination))
-        except OSError as exc:
-            logger.warning(
-                "备份应用数据目录失败 %s -> %s: %s", source, destination, exc
-            )
-            # rename 失败不会留下半成品；防御性清理可能残留的目标目录
+            source = root / dir_name
             try:
-                if destination.exists():
-                    await asyncio.to_thread(shutil.rmtree, str(destination))
+                if source.is_symlink() or not source.is_dir():
+                    continue
+                if source.resolve().parent != root_resolved:
+                    continue
             except OSError:
-                pass
-            failures.append(
-                BackupFailure(
-                    instance_name=entry.instance_name,
-                    project_name=project_name,
-                    reason=str(exc),
-                )
-            )
-            continue
+                continue
 
-        moved.append(
-            {
-                "instance_name": entry.instance_name,
-                "app_name": entry.app_name,
-                "project_name": project_name,
-                "path": destination.name,
-                "config": entry.config or {},
-            }
-        )
-        logger.info("应用数据目录已备份: %s -> %s", source, destination)
+            if backup_dir is None:
+                backup_dir = _backup_destination(root, group_name, now)
+            destination = backup_dir / dir_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                await asyncio.to_thread(os.rename, str(source), str(destination))
+            except OSError as exc:
+                logger.warning(
+                    "备份应用数据目录失败 %s -> %s: %s", source, destination, exc
+                )
+                # rename 失败不会留下半成品；防御性清理可能残留的目标目录
+                try:
+                    if destination.exists():
+                        await asyncio.to_thread(shutil.rmtree, str(destination))
+                except OSError:
+                    pass
+                failures.append(
+                    BackupFailure(
+                        instance_name=entry.instance_name,
+                        project_name=dir_name,
+                        reason=str(exc),
+                    )
+                )
+                continue
+
+            moved.append(
+                {
+                    "instance_name": entry.instance_name,
+                    "app_name": entry.app_name,
+                    "project_name": project_name,
+                    "path": destination.name,
+                    "kind": kind,
+                    "config": entry.config or {},
+                }
+            )
+            if kind == "instance":
+                instance_dir_name = dir_name
+            logger.info("应用数据目录已备份: %s -> %s", source, destination)
 
     if backup_dir is None or not moved:
         if backup_dir is not None:
@@ -198,6 +245,7 @@ async def backup_app_data_dirs(
         "orchestration": orchestration_name,
         "deleted_at": now.isoformat(timespec="seconds"),
         "app_data_root": str(host_root),
+        "instance_dir": instance_dir_name,
         "shared_config": shared_config or {},
         "app_configs": app_configs or {},
         "apps": moved,
@@ -264,12 +312,15 @@ async def restore_app_data_dirs(
     db: AsyncSession,
     backup_name: str,
     target_projects: dict[str, str],
+    target_instance: str | None = None,
 ) -> tuple[dict, list[dict]]:
     """把备份中的应用数据目录移回应用数据目录。
 
     Args:
         backup_name: ``_backups`` 下的备份目录名
-        target_projects: 应用名 -> 目标 Compose 项目名
+        target_projects: 应用名 -> 目标 Compose 项目名（旧布局按项目名恢复）
+        target_instance: 目标实例名；新布局的``<实例名>/...`` 目录按它重命名，
+            为空时沿用备份中的实例名
 
     Returns:
         ``(manifest, restored)``，restored 为已移动目录的映射列表
@@ -296,14 +347,57 @@ async def restore_app_data_dirs(
     # 先校验全部目标路径，避免移动到一半才失败
     moves: list[tuple[Path, Path]] = []
     restored: list[dict] = []
+    handled: set[str] = set()
+
+    # 新布局：整个实例名目录移回（恢复时可改名为新的实例名）
+    instance_dir = str(manifest.get("instance_dir") or "").strip()
+    if instance_dir:
+        if Path(instance_dir).name != instance_dir or instance_dir in {".", ".."}:
+            raise APIException("备份中的实例目录名无效", 400)
+        instance_target = (target_instance or instance_dir).strip()
+        if (
+            not instance_target
+            or Path(instance_target).name != instance_target
+            or instance_target in {".", ".."}
+        ):
+            raise APIException("目标实例名称无效", 400)
+        source = backup_dir / instance_dir
+        try:
+            valid = (
+                not source.is_symlink()
+                and source.is_dir()
+                and source.resolve().parent == backup_resolved
+            )
+        except OSError:
+            valid = False
+        if valid:
+            target = root / instance_target
+            if target.exists() or target.is_symlink():
+                raise APIException(f"目标数据目录已存在，无法恢复：{target}", 409)
+            if target.resolve().parent != root_resolved:
+                raise APIException(f"目标路径非法：{target}", 400)
+            moves.append((source, target))
+            restored.append(
+                {
+                    "app_name": None,
+                    "instance_name": manifest.get("instance_name"),
+                    "source": str(source),
+                    "target": str(target),
+                }
+            )
+            handled.add(instance_dir)
+
     for entry in manifest.get("apps") or []:
         if not isinstance(entry, dict):
             continue
         app_name = str(entry.get("app_name") or "")
         project_name = target_projects.get(app_name)
+        record_path = str(entry.get("path") or entry.get("project_name") or "")
+        if record_path in handled:
+            continue
         if not project_name:
             continue
-        source = backup_dir / str(entry.get("path") or entry.get("project_name") or "")
+        source = backup_dir / record_path
         try:
             if source.is_symlink() or not source.is_dir():
                 continue

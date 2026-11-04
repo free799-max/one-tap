@@ -256,6 +256,51 @@ async def test_restore_backup_not_found(db, orchestration, monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_restore_app_data_dirs_moves_instance_dir(
+    db, monkeypatch, tmp_path
+):
+    """新布局按实例名目录移回，恢复时可按新实例名重命名。"""
+    _set_app_data_root(monkeypatch, str(tmp_path))
+
+    backup_dir = tmp_path / BACKUP_DIR_NAME / "20260101-120000-comic"
+    data_dir = backup_dir / "comic" / "comic-auto" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "PG_VERSION").write_text("16")
+    manifest = {
+        "instance_name": "comic",
+        "orchestration": "comics-stack",
+        "app_data_root": str(tmp_path),
+        "instance_dir": "comic",
+        "shared_config": {},
+        "app_configs": {},
+        "apps": [
+            {
+                "instance_name": "comic-comic-auto",
+                "app_name": "comic-auto",
+                "project_name": "comic-comic-auto",
+                "path": "comic",
+                "kind": "instance",
+                "config": {},
+            }
+        ],
+    }
+    (backup_dir / MANIFEST_NAME).write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+    await restore_app_data_dirs(
+        db,
+        backup_dir.name,
+        {"comic-auto": "comic2-comic-auto"},
+        target_instance="comic2",
+    )
+
+    restored = tmp_path / "comic2" / "comic-auto" / "data" / "PG_VERSION"
+    assert restored.read_text() == "16"
+    assert not (tmp_path / "comic").exists()
+
+
+@pytest.mark.asyncio
 async def test_restore_app_data_dirs_rejects_traversal(
     db, monkeypatch, tmp_path
 ):

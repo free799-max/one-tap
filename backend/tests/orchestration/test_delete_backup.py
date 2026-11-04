@@ -204,6 +204,54 @@ async def test_delete_instance_backs_up_orphan_instance_dir(
 
 
 @pytest.mark.asyncio
+async def test_delete_instance_backs_up_instance_dir_layout(
+    db, group, monkeypatch, tmp_path
+):
+    """新布局 <实例名>/<应用名>/... 按实例名目录整体备份。"""
+    _set_app_data_root(monkeypatch, "/srv/onetap/app-data", str(tmp_path))
+    monkeypatch.setattr(
+        compose_manager, "delete_project", _fake_delete_project(db)
+    )
+
+    instance = (
+        await db.execute(select(AppInstance).where(AppInstance.app_id.isnot(None)))
+    ).scalars().first()
+    instance.config = {
+        "volumes": [
+            {
+                "host_path": f"{tmp_path}/comic/comic-auto/data",
+                "container_path": "/var/lib/postgresql/16/main",
+                "mode": "rw",
+            }
+        ]
+    }
+    await db.commit()
+
+    data_dir = tmp_path / "comic" / "comic-auto" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "PG_VERSION").write_text("16")
+    # 组名同名目录属于共享存储，不能因为存在就被搬走
+    shared_dir = tmp_path / "test-stack"
+    shared_dir.mkdir()
+    (shared_dir / "media.txt").write_text("keep")
+
+    await orchestration_service.delete_instance(db, group.id)
+
+    assert not (tmp_path / "comic").exists()
+    assert (shared_dir / "media.txt").read_text() == "keep"
+
+    backups = list((tmp_path / "_backups").iterdir())
+    assert len(backups) == 1
+    backup_dir = backups[0]
+    assert (backup_dir / "comic" / "comic-auto" / "data" / "PG_VERSION").read_text() == "16"
+
+    manifest = json.loads((backup_dir / "backup.json").read_text())
+    assert manifest["instance_dir"] == "comic"
+    kinds = {entry["kind"] for entry in manifest["apps"]}
+    assert "instance" in kinds
+
+
+@pytest.mark.asyncio
 async def test_delete_instance_reports_progress(
     db, group, monkeypatch, tmp_path
 ):

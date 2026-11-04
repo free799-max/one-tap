@@ -167,7 +167,7 @@ DockerComposeProject 1--1 DockerComposeStack
 ## 存储目录约定
 
 - **存储目录**统一由 `storage_directories` 表管理（CRUD 在 `/api/settings/storage-directories`），每条维护 `host_path`（宿主机路径，compose bind source）↔ `mount_path`（容器内/表单视角路径）对应关系；保存时校验 `mount_path` 在应用容器内可见，其宿主机路径需按相同路径挂载进 `app` 容器（见 docker-compose.yml 注释示例）。
-- **应用数据目录**（`is_app_data=True`，全局至多一条）是特殊的存储目录，存应用自身持久化小数据，自动按 `<dir>/<app>/<service>/<mount>` 生成挂载；其余为普通**数据目录**（多条），供大数据量应用使用。
+- **应用数据目录**（`is_app_data=True`，全局至多一条）是特殊的存储目录，存应用自身持久化小数据。部署表单把应用挂载的相对默认值物化为 `<应用数据目录>/<实例名>/<应用名>/<子目录>`（如 `comic/comic-auto/data`），路径在表单里可直接编辑；实例改名时同步替换旧的实例名前缀（`frontend/src/lib/schema-utils.ts` 的 `applyInstanceDirPrefix`）。编排的共享目录默认落在 `<实例名>/media`，与各应用目录同级。其余为普通**数据目录**（多条），供大数据量应用使用。
 - 部署表单的目录字段强制落在应用数据目录或某个启用数据目录下；部署时 volumes 的绝对 `host_path` 会经 `StoragePathResolver.is_managed_path` 校验。
 
 ## API 响应格式规范
@@ -202,11 +202,11 @@ DockerComposeProject 1--1 DockerComposeStack
 
 ## 删除实例组与数据备份/恢复
 
-- `DELETE /api/orchestrations/instances/{id}` 改为后台任务：立即返回 `{task_id}`，进度通过部署任务 SSE 推送（阶段 `preparing → stopping_services → backing_up_data → cleaning_records → completed`），前端复用全局任务进度弹窗。删除逻辑本身先用 `stop`/移除容器，再把各应用自身的数据目录移入 `<应用数据目录>/_backups/<时间戳>-<实例组名>/<Compose 项目名>/`，最后删除数据库记录；实现见 `services/orchestration/backup.py`。
+- `DELETE /api/orchestrations/instances/{id}` 改为后台任务：立即返回 `{task_id}`，进度通过部署任务 SSE 推送（阶段 `preparing → stopping_services → backing_up_data → cleaning_records → completed`），前端复用全局任务进度弹窗。删除逻辑本身先用 `stop`/移除容器，再把各应用自身的数据目录移入 `<应用数据目录>/_backups/<时间戳>-<实例组名>/`，最后删除数据库记录；实现见 `services/orchestration/backup.py`。
 - 删除前会检查组内是否有进行中的部署任务；有则返回 409，避免删除正在部署的实例。
-- 只备份应用自身的数据目录（应用数据目录下、以 Compose 项目名命名的直接子目录）；共享存储（媒体/下载等）与应用数据目录之外的路径不动。若未配置应用数据目录则跳过备份。
+- 只备份应用自身的数据目录：新布局按应用配置中的绝对挂载推导 `<应用数据目录>/<实例名>` 整体移动，旧布局按 Compose 项目名目录移动；共享存储（媒体/下载等）与应用数据目录之外的路径不动。若未配置应用数据目录则跳过备份。
 - 备份目录内写入 `backup.json`（实例组、编排、删除时间、各应用 `config`、`app_configs` 凭据、`shared_config`、目录映射），用于恢复。
-- 恢复：`GET /api/orchestrations/backups?orchestration=<name>` 列出备份，`POST /api/orchestrations/backups/restore`（`{backup, instance_name?}`）把数据目录移回并按备份配置重新部署，凭据沿用备份（系统统一密码变化时用 `previous_password` 登录旧密码再改密）；实现见 `services/orchestration/restore.py`，前端入口为自动化页右上角「恢复」按钮（`pages/automation/AutomationRestoreDialog.tsx`）。恢复成功后备份目录被消费。恢复后的账号自动配置与集成装配由 `orchestration_provision` 进度任务持续展示，完成后自动刷新实例详情。
+- 恢复：`GET /api/orchestrations/backups?orchestration=<name>` 列出备份，`POST /api/orchestrations/backups/restore`（`{backup, instance_name?}`）把数据目录移回并按备份配置重新部署；新布局按实例名目录移回，换实例名恢复时同步改写配置里的路径前缀。凭据沿用备份（系统统一密码变化时用 `previous_password` 登录旧密码再改密）；实现见 `services/orchestration/restore.py`，前端入口为自动化页右上角「恢复」按钮（`pages/automation/AutomationRestoreDialog.tsx`）。恢复成功后备份目录被消费。恢复后的账号自动配置与集成装配由 `orchestration_provision` 进度任务持续展示，完成后自动刷新实例详情。
 - 重新部署（修复）不走备份：它有意保留数据卷，并继承上次部署的密钥类 env。修复时可只勾选需要重部署的应用（包括取消必选应用），未勾选的应用保持运行；后端 `_validate_composition(require_required=False)` 只校验所选应用。
 
 ## 离线资源（客户端内置档案）

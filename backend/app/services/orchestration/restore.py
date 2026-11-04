@@ -146,9 +146,30 @@ class RestoreMixin:
             if name in app_names and isinstance(value, dict)
         }
 
+        # 新布局的挂载路径以实例名目录开头，恢复时换了实例名需要同步改写
+        origin_slug = _slugify(origin_name) if origin_name else ""
+        if origin_slug and target_name != origin_slug:
+            from app.services.orchestration.backup import resolve_app_data_paths
+
+            paths = await resolve_app_data_paths(db)
+            if paths is not None:
+                mount = str(paths[1]).rstrip("/")
+                old_prefix = f"{mount}/{origin_slug}/"
+                new_prefix = f"{mount}/{target_name}/"
+                for config in deploy_configs.values():
+                    volumes = config.get("volumes")
+                    if not isinstance(volumes, list):
+                        continue
+                    for volume in volumes:
+                        if not isinstance(volume, dict):
+                            continue
+                        host = str(volume.get("host_path") or "")
+                        if host.startswith(old_prefix):
+                            volume["host_path"] = new_prefix + host[len(old_prefix) :]
+
         # 把数据目录移回；目标目录冲突会在此处拒绝，不会动任何文件
         manifest, _restored = await restore_app_data_dirs(
-            db, backup_name, target_projects
+            db, backup_name, target_projects, target_instance=target_name
         )
 
         # 沿用备份中的账号凭据；系统统一密码变化时通过 previous_password
