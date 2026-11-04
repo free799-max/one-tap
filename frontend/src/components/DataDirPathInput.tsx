@@ -3,7 +3,7 @@
  *
  * 结构：目录来源下拉 + 子路径输入框 + 浏览按钮。
  * 值约定（受控 value/onChange 传完整路径字符串）：
- * - 选中存储目录（含应用数据目录）：value = `mount_path/子路径`（容器视角绝对路径）
+ * - 命中存储目录（含应用数据目录）：展示 `mount_path` 之后的子路径，编辑后还原为绝对路径
  * - 相对路径：默认按应用数据目录下的子路径处理，与后端部署解析保持一致；
  *   共享目录场景（relativeToAppDataDir=false）下拉留空，相对值仅作为子路径展示
  * - 无法匹配任何已配置目录的绝对路径：下拉留空，原样保留不静默改写
@@ -33,6 +33,9 @@ type ParsedSource =
 function trimTrailingSlash(path: string): string {
   return path.replace(/\/+$/, "") || "/";
 }
+
+/** 目录来源下拉占本地路径列的宽度，表头按同一比例拆分说明文字 */
+export const SOURCE_SELECT_WIDTH = "46%";
 
 /** 判断 value 是否等于 base 或位于 base 之下，是则返回剩余子路径 */
 function matchPrefix(value: string, base: string): string | null {
@@ -134,19 +137,19 @@ export function DataDirPathInput({
       ? "app"
       : String(source.dir.id);
 
-  // 子路径输入框展示值：自定义模式展示原始值（不静默改写），
-  // 存储目录/应用数据目录模式展示去掉 mount_path 前缀后的子路径
+  // 子路径输入框展示值：自定义模式展示原始值，已匹配目录时展示去掉挂载前缀后的子路径
   const subPath = source.kind === "custom" ? value : source.subPath;
 
-  /** 由来源与子路径拼装完整 value */
+  /** 由来源与子路径拼装完整 value；absolute=false 时保留相对路径 */
   const buildValue = useCallback(
-    (nextSource: string, nextSub: string): string => {
+    (nextSource: string, nextSub: string, absolute: boolean): string => {
       const sub = nextSub.replace(/^\/+/, "");
       const dir =
         nextSource === "app"
           ? appDataDir
           : storageDirectories.find((d) => String(d.id) === nextSource);
       if (!dir) return nextSub;
+      if (!absolute) return sub;
       const base = trimTrailingSlash(dir.mount_path);
       return sub ? `${base}/${sub}` : base;
     },
@@ -156,23 +159,29 @@ export function DataDirPathInput({
   const handleSourceChange = (nextSource: string) => {
     if (!nextSource) return;
     // 切换来源时保留已有子路径：相对值（如共享目录的 host_path）可直接作为新来源的子路径；
-    // 自定义绝对路径无法映射到新来源，才回退到默认子路径
+    // 自定义绝对路径无法映射到新来源，才回退到默认子路径。
+    // 主动选择来源后一律写成绝对路径，否则相对值会被当成自定义路径，下拉框选不中
     const currentSub =
       source.kind === "custom"
         ? value.startsWith("/")
           ? defaultSubPath ?? ""
           : value.replace(/^\/+/, "") || defaultSubPath || ""
         : source.subPath || defaultSubPath || "";
-    onChange(buildValue(nextSource, currentSub));
+    onChange(buildValue(nextSource, currentSub, true));
   };
 
   const handleSubPathChange = (nextSub: string) => {
+    // 直接输入绝对路径时按自定义路径处理，不受目录来源约束
+    if (nextSub.startsWith("/")) {
+      onChange(nextSub);
+      return;
+    }
     if (source.kind === "custom") {
       // 自定义路径：子路径输入框即完整值，原样保留
       onChange(nextSub);
       return;
     }
-    onChange(buildValue(selectValue, nextSub));
+    onChange(buildValue(selectValue, nextSub, value.startsWith("/")));
   };
 
   // 已选目录来源但子路径为空时，首次进入自动补上默认子路径（如实例名称）；
@@ -195,13 +204,13 @@ export function DataDirPathInput({
       // 相对路径属于应用数据目录，等目录列表加载后再替换默认子路径
       if (!appDataDir) return;
       defaultSubPathApplied.current = true;
-      onChange(buildValue("app", defaultSubPath));
+      onChange(buildValue("app", defaultSubPath, value.startsWith("/")));
       return;
     }
     defaultSubPathApplied.current = true;
     // 相对默认值或空子路径都替换为实例名称，用户已填写的路径保持不变
     if (!source.subPath || !value.startsWith("/")) {
-      onChange(buildValue(selectValue, defaultSubPath));
+      onChange(buildValue(selectValue, defaultSubPath, value.startsWith("/")));
     }
   }, [
     value,
@@ -220,6 +229,14 @@ export function DataDirPathInput({
       ? ""
       : `${source.dir.name}（${source.dir.mount_path}）`;
 
+  // 已选目录时，完整路径 = 目录挂载路径 + 子路径
+  const resolvedPath =
+    source.kind === "custom"
+      ? value
+      : `${trimTrailingSlash(source.dir.mount_path)}/${
+          subPath.replace(/^\/+/, "")
+        }`;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
@@ -228,7 +245,8 @@ export function DataDirPathInput({
           title={sourceLabel}
           value={selectValue}
           onChange={(e) => handleSourceChange(e.target.value)}
-          className="h-8 min-w-0 w-[58%] shrink-0 rounded-md border border-input bg-white px-2 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          style={{ width: SOURCE_SELECT_WIDTH }}
+          className="h-8 min-w-0 shrink-0 rounded-md border border-input bg-white px-2 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {appDataDir && (
             <option value="app">应用数据目录（{appDataDir.mount_path}）</option>
@@ -238,18 +256,20 @@ export function DataDirPathInput({
               {dir.name}（{dir.mount_path}）
             </option>
           ))}
-          {source.kind === "custom" && <option value="" hidden />}
+          {source.kind === "custom" && (
+            <option value="" disabled>
+              {value.startsWith("/") ? "自定义路径" : "请选择目录来源"}
+            </option>
+          )}
         </select>
         <Input
           id={id}
           type="text"
-          title={value}
+          title={resolvedPath}
           value={subPath}
           onChange={(e) => handleSubPathChange(e.target.value)}
           placeholder={
-            source.kind === "custom"
-              ? placeholder
-              : "子路径（可选）"
+            source.kind === "custom" ? placeholder : "子目录（可选）"
           }
           className="h-8 min-w-0 flex-1 rounded-md border-input bg-white px-2 text-sm shadow-none"
         />
