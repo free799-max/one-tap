@@ -290,10 +290,16 @@ async def container_terminal_websocket(
         return
 
     try:
+        resolved_shell = await asyncio.to_thread(
+            docker_manager.resolve_terminal_shell,
+            container_id,
+            shell,
+            user=user,
+        )
         exec_id, exec_socket = await asyncio.to_thread(
             docker_manager.exec_container_interactive,
             container_id,
-            command=[shell],
+            command=[resolved_shell],
             workdir=workdir,
             user=user,
         )
@@ -311,6 +317,10 @@ async def container_terminal_websocket(
         return
 
     await websocket.accept()
+    if resolved_shell != shell:
+        await websocket.send_text(
+            f"\x1b[33m[容器未提供 {shell}，已自动切换到 {resolved_shell}]\x1b[0m\r\n"
+        )
 
     output_queue: queue.Queue = queue.Queue(maxsize=1000)
 
@@ -379,8 +389,15 @@ async def container_terminal_websocket(
                 break
             await websocket.send_text(item)
 
+    tasks = [
+        asyncio.create_task(_forward_to_container()),
+        asyncio.create_task(_forward_to_client()),
+    ]
     try:
-        await asyncio.gather(_forward_to_container(), _forward_to_client())
+        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         try:
             exec_socket.close()

@@ -326,6 +326,39 @@ class ContainerService(common.BaseDockerService):
             output_chunks.append(chunk.decode("utf-8", errors="replace"))
         return result.exit_code, "".join(output_chunks)
 
+    def resolve_terminal_shell(
+        self,
+        container_id: str,
+        shell: str,
+        user: str | None = None,
+    ) -> str:
+        """选择容器内可执行的 shell，优先保留用户选择。"""
+        if not self._client:
+            raise RuntimeError("Docker not available")
+        container = self._client.containers.get(container_id)
+        candidates = [shell]
+        fallback = "/bin/bash" if shell == "/bin/sh" else "/bin/sh"
+        if fallback != shell:
+            candidates.append(fallback)
+
+        for candidate in candidates:
+            kwargs = {"stdout": False, "stderr": False}
+            if user:
+                kwargs["user"] = user
+            try:
+                result = container.exec_run(
+                    [candidate, "-c", "exit 0"],
+                    **kwargs,
+                )
+            except common.docker.errors.APIError as e:
+                if "no such file or directory" not in str(e):
+                    raise
+                continue
+            if result.exit_code == 0:
+                return candidate
+
+        raise RuntimeError(f"容器内没有可用的 shell：{shell} 或 {fallback}")
+
     def exec_container_interactive(
         self,
         container_id: str,
