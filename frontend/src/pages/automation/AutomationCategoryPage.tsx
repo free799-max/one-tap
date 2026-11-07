@@ -1,22 +1,23 @@
 /**
  * 自动化分类详情页面
  *
- * 未部署时：以「应用组合模板 + 流程展示」居中展示分类下的自动化流程；
- * 已部署时：以「左侧应用列表 + 右侧详情面板」管理实例组内的应用。
+ * 同一分类下可以有多套方案（如「影视自动化（本地）」与「影视自动化（网盘）」）。
+ * 未部署时并列展示方案卡片；已部署时按方案切换，左侧实例树、右侧应用详情。
  */
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { AppIcon } from "../apps/AppIcon";
 import { AutomationDeployWizard } from "./AutomationDeployWizard";
 import { AutomationImportDialog } from "./AutomationImportDialog";
 import { AutomationRestoreDialog } from "./AutomationRestoreDialog";
 import { AutomationUpdateEventsDialog } from "./AutomationUpdateEventsDialog";
 import { AutomationUpgradeDialog } from "./AutomationUpgradeDialog";
-import { OrchestrationInstanceManager } from "./OrchestrationInstanceManager";
+import { AutomationPlanSection } from "./AutomationPlanSection";
 import { OrchestrationVersionBadge } from "./OrchestrationVersionBadge";
+import { OrchestrationInstanceManager } from "./OrchestrationInstanceManager";
 import { AppConfigPanel } from "./AppConfigPanel";
 import { RELATION_LABELS } from "./composition-meta";
 import {
@@ -91,18 +92,18 @@ function AppNode({
 }) {
   const app = appMap[item.app_name];
   return (
-    <div className="flex flex-col items-center gap-2 w-20">
+    <div className="flex w-20 flex-col items-center gap-2">
       {app ? (
         <AppIcon
           app={app}
           className="h-14 w-14 rounded-[22%] object-cover shadow-md"
         />
       ) : (
-        <div className="h-14 w-14 rounded-[22%] bg-gradient-to-br from-primary/15 to-primary/5 flex items-center justify-center text-2xl shadow-md">
+        <div className="flex h-14 w-14 items-center justify-center rounded-[22%] bg-gradient-to-br from-primary/15 to-primary/5 text-2xl shadow-md">
           🚀
         </div>
       )}
-      <span className="text-xs font-medium text-foreground/80 text-center leading-tight line-clamp-2">
+      <span className="line-clamp-2 text-center text-xs font-medium leading-tight text-foreground/80">
         {app?.display_name || item.app_name}
       </span>
     </div>
@@ -132,14 +133,14 @@ function StageFlow({
         return (
           <Fragment key={`${stage.group ?? "single"}-${index}`}>
             {index > 0 && (
-              <ArrowRight className="h-4 w-4 shrink-0 self-start mt-5 text-muted-foreground/40" />
+              <ArrowRight className="mt-5 h-4 w-4 shrink-0 self-start text-muted-foreground/40" />
             )}
             <div className="flex flex-col items-center gap-2.5">
               <div className="flex items-start gap-2.5">
                 {stage.items.map((item, itemIndex) => (
                   <Fragment key={item.app_name}>
                     {itemIndex > 0 && (
-                      <span className="self-start mt-5 text-[11px] font-medium text-muted-foreground/60">
+                      <span className="mt-5 self-start text-[11px] font-medium text-muted-foreground/60">
                         或
                       </span>
                     )}
@@ -158,71 +159,6 @@ function StageFlow({
           </Fragment>
         );
       })}
-    </div>
-  );
-}
-
-function OrchestrationShowcase({
-  label,
-  category,
-  orchestrations,
-  appMap,
-}: {
-  label: string;
-  category: string;
-  orchestrations: AppOrchestration[];
-  appMap: Record<string, App>;
-}) {
-  const config = getAutomationCategoryMeta(category);
-  const Icon = config.icon;
-  const multiple = orchestrations.length > 1;
-  const isEmpty = orchestrations.length === 0;
-
-  return (
-    <div className="relative flex-1 flex flex-col px-6 pt-20 pb-8 overflow-y-auto">
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] h-[360px] rounded-full bg-primary/[0.04] blur-3xl" />
-      </div>
-
-      <div className="relative z-10 mx-auto mt-16 flex flex-col items-center text-center max-w-3xl w-full">
-        <div className="h-20 w-20 rounded-2xl bg-gradient-to-br from-primary/15 to-primary/5 flex items-center justify-center mb-5 shadow-sm ring-1 ring-primary/10">
-          <Icon className="h-10 w-10 text-primary" />
-        </div>
-
-        <h3 className="text-lg font-semibold text-foreground">{label}自动化</h3>
-        <p className="text-sm text-muted-foreground mt-2 leading-relaxed max-w-lg">
-          {isEmpty ? `暂无 ${label} 自动化组合模板` : config.description}
-        </p>
-
-        {!isEmpty && (
-          <div className="mt-8 w-full flex flex-col items-center gap-10">
-            {orchestrations.map((orchestration) => (
-              <div
-                key={orchestration.name}
-                className="group w-full flex flex-col items-center gap-5"
-              >
-                {multiple && (
-                  <div className="space-y-1">
-                    <h4 className="text-sm font-semibold text-foreground">
-                      {orchestration.display_name}
-                    </h4>
-                    {orchestration.description && (
-                      <p className="text-xs text-muted-foreground max-w-md">
-                        {orchestration.description}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <StageFlow
-                  composition={orchestration.app_composition}
-                  appMap={appMap}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -251,18 +187,60 @@ export function AutomationCategoryPage() {
     null
   );
   const [isSwitching, setIsSwitching] = useState(false);
+  const [activeRecipeName, setActiveRecipeName] = useState<string | null>(null);
   const switchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const meta = getAutomationCategoryMeta(category);
   const label = meta.label;
 
+  const instanceCountByRecipe = Object.fromEntries(
+    orchestrations.map((orchestration) => [
+      orchestration.name,
+      instances.filter(
+        (instance) => instance.orchestration_name === orchestration.name
+      ).length,
+    ])
+  );
+
+  // 默认选中：优先沿用当前方案；否则取第一个有实例的方案，再退回第一个方案
+  useEffect(() => {
+    if (orchestrations.length === 0) {
+      setActiveRecipeName(null);
+      return;
+    }
+    setActiveRecipeName((prev) => {
+      if (prev && orchestrations.some((item) => item.name === prev)) {
+        return prev;
+      }
+      const firstWithInstances = instances.find((instance) =>
+        orchestrations.some(
+          (item) => item.name === instance.orchestration_name
+        )
+      );
+      return firstWithInstances?.orchestration_name ?? orchestrations[0].name;
+    });
+  }, [orchestrations, instances]);
+
+  const activeOrchestration =
+    orchestrations.find((item) => item.name === activeRecipeName) ??
+    orchestrations[0] ??
+    null;
+  const activeInstances = activeOrchestration
+    ? instances.filter(
+        (instance) => instance.orchestration_name === activeOrchestration.name
+      )
+    : [];
+  const hasInstances = activeInstances.length > 0;
+
+  // 切换方案后，选中该方案下的第一个实例
   useEffect(() => {
     setSelectedInstanceId((prev) => {
-      const stillExists = instances.some((i) => i.id === prev);
-      if (stillExists) return prev;
-      return instances.length > 0 ? instances[0].id : null;
+      if (prev && activeInstances.some((instance) => instance.id === prev)) {
+        return prev;
+      }
+      return activeInstances[0]?.id ?? null;
     });
-  }, [instances]);
+  }, [activeOrchestration?.name, instances]);
 
   useEffect(() => {
     setDisplayInstanceId(selectedInstanceId);
@@ -281,7 +259,7 @@ export function AutomationCategoryPage() {
   );
   const currentOrchestration =
     orchestrations.find(
-      (o) => o.name === selectedDetail?.orchestration_name
+      (item) => item.name === selectedDetail?.orchestration_name
     ) ?? null;
   const updateMutation = useUpdateOrchestrationInstance();
   const deleteMutation = useDeleteOrchestrationInstance();
@@ -309,89 +287,221 @@ export function AutomationCategoryPage() {
     }, 120);
   };
 
-  // 修复：加载目标实例组详情，并找到对应的编排模板
+  const switchRecipe = (name: string) => {
+    if (name === activeRecipeName) return;
+    setActiveRecipeName(name);
+    const first = instances.find(
+      (instance) => instance.orchestration_name === name
+    );
+    setSelectedInstanceId(first?.id ?? null);
+  };
+
+  // 修复/升级：按实例组加载详情与对应模板
   const { data: redeployDetail } = useOrchestrationInstanceDetail(redeployId);
   const redeployOrchestration = redeployDetail
-    ? (orchestrations.find((o) => o.name === redeployDetail.orchestration_name) ??
-      null)
+    ? (orchestrations.find(
+        (item) => item.name === redeployDetail.orchestration_name
+      ) ?? null)
     : null;
 
-  // 升级：同样按实例组加载详情与对应模板
   const { data: upgradeDetail } = useOrchestrationInstanceDetail(upgradeId);
   const upgradeOrchestration = upgradeDetail
-    ? (orchestrations.find((o) => o.name === upgradeDetail.orchestration_name) ??
-      null)
+    ? (orchestrations.find(
+        (item) => item.name === upgradeDetail.orchestration_name
+      ) ?? null)
     : null;
 
-  const hasInstances = instances.length > 0;
   const apps = selectedDetail?.apps ?? [];
 
+  // 同分类其他方案里已在运行的应用：部署时提示可复用，避免重复安装播放器/挂载
+  const siblingApps = useMemo(
+    () =>
+      new Set(
+        instances
+          .filter(
+            (instance) =>
+              instance.orchestration_name !== activeOrchestration?.name
+          )
+          .flatMap((instance) =>
+            instance.apps
+              .filter((app) => app.status === "running")
+              .map((app) => app.app_name)
+          )
+      ),
+    [instances, activeOrchestration?.name]
+  );
+
+  const renderPlanFlow = (orchestration: AppOrchestration) => (
+    <StageFlow composition={orchestration.app_composition} appMap={appMap} />
+  );
+
+  // 未部署时的展示：单个方案在页面中间展示，多个方案纵向排列。
+  const renderPlanList = () => {
+    const single = orchestrations.length === 1;
+    return (
+      <div className="flex flex-1 flex-col overflow-y-auto px-4 py-8 sm:px-6 sm:py-10">
+        <div
+          className={cn(
+            "mx-auto w-full max-w-3xl",
+            single
+              ? "pt-16"
+              : "flex flex-col divide-y divide-border/60"
+          )}
+        >
+          {orchestrations.map((orchestration) => (
+            <AutomationPlanSection
+              key={orchestration.name}
+              variant={single ? "single" : "stacked"}
+              orchestration={orchestration}
+              instanceCount={instanceCountByRecipe[orchestration.name] ?? 0}
+              onDeploy={setDeployOrchestration}
+              onImport={setImportOrchestration}
+              flow={renderPlanFlow(orchestration)}
+              className={single ? "" : "py-9 first:pt-0 last:pb-0"}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  // 已部署其他方案、当前方案还没有实例时，同样按流程展示该方案。
+  const renderActivePlanEmpty = () =>
+    activeOrchestration && (
+      <div className="flex flex-1 flex-col overflow-y-auto px-4 py-8 sm:px-6 sm:py-10">
+        <div className="mx-auto w-full max-w-3xl">
+          <AutomationPlanSection
+            orchestration={activeOrchestration}
+            instanceCount={0}
+            onDeploy={setDeployOrchestration}
+            onImport={setImportOrchestration}
+            flow={renderPlanFlow(activeOrchestration)}
+          />
+        </div>
+      </div>
+    );
+
   return (
-    <div className="h-full flex flex-col space-y-4">
-      {hasInstances && orchestrations.length > 0 ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-          {/* 页面标题与操作 */}
-          <div className="flex flex-wrap items-center gap-3 border-b border-border/70 px-4 py-4 sm:px-5">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-primary/10">
-              <meta.icon className="h-5 w-5 text-primary" />
-            </div>
-            <div className="min-w-0 flex-1">
+    <div className="flex h-full flex-col space-y-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        <div className="flex flex-wrap items-center gap-3 border-b border-border/70 px-4 py-4 sm:px-5">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-primary/10">
+            <meta.icon className="h-5 w-5 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl font-semibold tracking-tight text-foreground">
                 {`${label}自动化`}
               </h1>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                {meta.description}
-              </p>
-            </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              {orchestrations.map((orchestration) => (
+              {orchestrations.length === 1 && activeOrchestration && (
                 <OrchestrationVersionBadge
-                  key={orchestration.name}
-                  orchestration={orchestration}
-                  showName={orchestrations.length > 1}
+                  orchestration={activeOrchestration}
+                  className="h-5 text-[11px]"
                 />
-              ))}
+              )}
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setUpdateEventsOpen(true)}
-                className="gap-1.5"
-              >
-                <History className="h-3.5 w-3.5" />
-                更新记录
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setRestoreOrchestration(orchestrations[0])}
-                className="gap-1.5"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                恢复
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setImportOrchestration(orchestrations[0])}
-                className="gap-1.5"
-              >
-                <Import className="h-3.5 w-3.5" />
-                导入
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => setDeployOrchestration(orchestrations[0])}
-                className="gap-1.5"
-              >
-                <Rocket className="h-3.5 w-3.5" />
-                部署
-              </Button>
-            </div>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {meta.description}
+            </p>
           </div>
 
-          {/* 主从布局：左侧实例组树，右侧应用详情 */}
+          {instances.length > 0 && orchestrations.length > 1 && (
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              {orchestrations.map((orchestration) => {
+                const active = orchestration.name === activeOrchestration?.name;
+                const count = instanceCountByRecipe[orchestration.name] ?? 0;
+                return (
+                  <button
+                    key={orchestration.name}
+                    type="button"
+                    onClick={() => switchRecipe(orchestration.name)}
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors",
+                      active
+                        ? "border-primary/40 bg-primary/10 font-medium text-primary"
+                        : "border-border bg-background text-muted-foreground hover:bg-muted/50"
+                    )}
+                  >
+                    {orchestration.display_name}
+                    <span className="tabular-nums opacity-70">
+                      {formatVersion(orchestration.version)}
+                    </span>
+                    {count > 0 && (
+                      <Badge
+                        variant="secondary"
+                        className="h-4 px-1.5 py-0 text-[10px] font-normal"
+                      >
+                        {count}
+                      </Badge>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setUpdateEventsOpen(true)}
+              className="gap-1.5"
+            >
+              <History className="h-3.5 w-3.5" />
+              更新记录
+            </Button>
+            {hasInstances && activeOrchestration && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setRestoreOrchestration(activeOrchestration)}
+                  className="gap-1.5"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  恢复
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setImportOrchestration(activeOrchestration)}
+                  className="gap-1.5"
+                >
+                  <Import className="h-3.5 w-3.5" />
+                  导入
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setDeployOrchestration(activeOrchestration)}
+                  className="gap-1.5"
+                >
+                  <Rocket className="h-3.5 w-3.5" />
+                  部署
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="flex flex-1 items-center justify-center">
+            <span className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              加载中…
+            </span>
+          </div>
+        ) : orchestrations.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+            <Boxes className="h-6 w-6 text-muted-foreground/50" />
+            <p className="text-sm text-muted-foreground">
+              暂无 {label} 自动化组合模板
+            </p>
+          </div>
+        ) : instances.length === 0 ? (
+          renderPlanList()
+        ) : !hasInstances ? (
+          renderActivePlanEmpty()
+        ) : (
           <div
             key={displayInstanceId ?? "empty"}
             className={cn(
@@ -402,7 +512,7 @@ export function AutomationCategoryPage() {
             <aside className="shrink-0 border-b border-border/70 bg-muted/20 lg:flex lg:w-[288px] lg:flex-col lg:border-b-0 lg:border-r">
               <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
                 <OrchestrationInstanceManager
-                  instances={instances}
+                  instances={activeInstances}
                   selectedId={selectedInstanceId}
                   selectedAppId={selectedApp?.id ?? null}
                   appMap={appMap}
@@ -422,8 +532,7 @@ export function AutomationCategoryPage() {
                   }
                   onDelete={(id) =>
                     deleteMutation.mutate(id, {
-                      onSuccess: (response) =>
-                        startTask(response.task_id),
+                      onSuccess: (response) => startTask(response.task_id),
                     })
                   }
                   onRedeploy={(id) => setRedeployId(id)}
@@ -505,85 +614,14 @@ export function AutomationCategoryPage() {
               )}
             </section>
           </div>
-        </div>
-      ) : (
-        <Card className="rounded-xl flex-1 flex flex-col">
-          <CardHeader className="flex flex-row items-start justify-between gap-3 py-1 px-4 pb-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <CardTitle className="text-base font-medium">
-                {label}自动化
-              </CardTitle>
-              {orchestrations.map((orchestration) => (
-                <OrchestrationVersionBadge
-                  key={orchestration.name}
-                  orchestration={orchestration}
-                  showName={orchestrations.length > 1}
-                />
-              ))}
-            </div>
-            {orchestrations.length > 0 && (
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setUpdateEventsOpen(true)}
-                  className="gap-1.5 rounded-lg h-9"
-                >
-                  <History className="h-4 w-4" />
-                  更新记录
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setRestoreOrchestration(orchestrations[0])}
-                  className="gap-1.5 rounded-lg h-9"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  恢复
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setImportOrchestration(orchestrations[0])}
-                  className="gap-1.5 rounded-lg h-9"
-                >
-                  <Import className="h-4 w-4" />
-                  导入
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setDeployOrchestration(orchestrations[0])}
-                  className="gap-1.5 rounded-lg h-9"
-                >
-                  <Rocket className="h-4 w-4" />
-                  部署
-                </Button>
-              </div>
-            )}
-          </CardHeader>
-
-          <CardContent className="flex-1 flex flex-col px-4 pb-4 pt-0 overflow-y-auto">
-            {isLoading ? (
-              <div className="text-sm text-muted-foreground py-12 text-center">
-                加载中…
-              </div>
-            ) : (
-              <OrchestrationShowcase
-                label={label}
-                category={category || "media"}
-                orchestrations={orchestrations}
-                appMap={appMap}
-              />
-            )}
-          </CardContent>
-        </Card>
-      )}
+        )}
+      </div>
 
       <AutomationDeployWizard
         orchestration={deployOrchestration}
         open={!!deployOrchestration}
         onOpenChange={(open) => !open && setDeployOrchestration(null)}
+        siblingApps={siblingApps}
       />
 
       <AutomationDeployWizard
@@ -591,6 +629,7 @@ export function AutomationCategoryPage() {
         open={!!redeployOrchestration}
         onOpenChange={(open) => !open && setRedeployId(null)}
         redeployGroup={redeployDetail ?? null}
+        siblingApps={siblingApps}
       />
 
       <AutomationUpgradeDialog

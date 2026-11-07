@@ -54,6 +54,8 @@ import {
 
 type Step = "select" | "shared" | "apps" | "confirm";
 
+const EMPTY_APP_SET = new Set<string>();
+
 interface AutomationDeployWizardProps {
   orchestration: AppOrchestration | null;
   open: boolean;
@@ -62,6 +64,8 @@ interface AutomationDeployWizardProps {
   redeployGroup?: OrchestrationInstanceDetail | null;
   /** 提供时进入升级模式：把实例组升级到当前方案版本 */
   upgradeGroup?: OrchestrationInstanceDetail | null;
+  /** 同分类其他方案中已在运行的应用，用于提示复用、避免重复部署 */
+  siblingApps?: Set<string>;
 }
 
 /**
@@ -121,6 +125,7 @@ export function AutomationDeployWizard({
   onOpenChange,
   redeployGroup,
   upgradeGroup,
+  siblingApps = EMPTY_APP_SET,
 }: AutomationDeployWizardProps) {
   const toast = useToast();
   const deployMutation = useDeployOrchestration();
@@ -233,13 +238,16 @@ export function AutomationDeployWizard({
 
     const initialSelected = new Set<string>();
     for (const item of orchestration.app_composition) {
-      if (item.relation === "required" || item.relation === "suggested") {
+      const sibling = siblingApps.has(item.app_name);
+      if (item.relation === "required") {
+        initialSelected.add(item.app_name);
+      } else if (item.relation === "suggested" && !sibling) {
         initialSelected.add(item.app_name);
       }
     }
 
     setSelectedApps(initialSelected);
-  }, [open, orchestration, redeployGroup, upgradeGroup]);
+  }, [open, orchestration, redeployGroup, upgradeGroup, siblingApps]);
 
   // 获取所有应用商店应用，用于渲染选中应用的配置表单
   const { data: allApps = [], isLoading: appsLoading } = useApps();
@@ -426,6 +434,9 @@ export function AutomationDeployWizard({
         const app = appDetailsMap[appName];
         if (!app) {
           return { appName, yaml: "", error: "未找到应用信息" };
+        }
+        if (app.type === "external") {
+          return { appName, yaml: "", error: null };
         }
         const config = appConfigs[appName] || {};
         const mergedConfig = mergeSharedConfig(
@@ -696,6 +707,13 @@ export function AutomationDeployWizard({
 
       <div className="space-y-2">
         <Label>{upgradeGroup ? "确认要升级的应用" : "选择要部署的应用"}</Label>
+        {orchestration.app_composition.some((item) =>
+          siblingApps.has(item.app_name)
+        ) && (
+          <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs leading-relaxed text-sky-700 dark:text-sky-300">
+            同分类的其他方案里已有应用在运行。标为「已有实例」的组件可取消勾选直接复用，重复勾选会再部署一套。
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           {orchestration.app_composition.map((item) => {
             const app = appDetailsMap[item.app_name];
@@ -705,6 +723,7 @@ export function AutomationDeployWizard({
               !!upgradeGroup && !upgradeDeployedApps.has(item.app_name);
             const isDeployed =
               !!upgradeGroup && upgradeDeployedApps.has(item.app_name);
+            const isSibling = siblingApps.has(item.app_name);
             return (
               <Card
                 key={item.app_name}
@@ -763,6 +782,14 @@ export function AutomationDeployWizard({
                           className="h-4 shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
                         >
                           已部署
+                        </Badge>
+                      )}
+                      {isSibling && (
+                        <Badge
+                          variant="outline"
+                          className="h-4 shrink-0 border-sky-500/40 px-1.5 py-0 text-[10px] font-normal text-sky-600 dark:text-sky-400"
+                        >
+                          已有实例
                         </Badge>
                       )}
                     </div>
@@ -916,7 +943,9 @@ export function AutomationDeployWizard({
         {previewsLoading ? (
           <div className="text-sm text-muted-foreground py-4">加载预览中…</div>
         ) : (
-          selectedAppList.map((appName) => {
+          selectedAppList
+            .filter((appName) => appDetailsMap[appName]?.type !== "external")
+            .map((appName) => {
             const app = appDetailsMap[appName];
             const preview = previews[appName];
             const expanded = expandedPreviews.has(appName);
