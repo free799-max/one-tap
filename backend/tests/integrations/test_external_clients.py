@@ -448,6 +448,8 @@ async def test_lucky_save_proxy_rule(fake_server):
     assert fake_server.lucky_rules[0]["ProxyList"][0]["Locations"] == [
         "http://192.168.1.2:9096"
     ]
+    assert fake_server.lucky_rules[0]["ProxyList"][0]["EasyLucky"] is True
+    assert fake_server.lucky_rules[0]["DefaultProxy"]["EasyLucky"] is True
 
 
 @pytest.mark.asyncio
@@ -538,6 +540,8 @@ def test_lucky_build_proxy_rules_groups_by_port():
     redirect_443 = by_port[(80, False)]
     assert redirect_443["RuleName"] == "OneTap 443 HTTP"
     assert redirect_443["DefaultProxy"]["WebServiceType"] == "redirect"
+    assert by_port[(443, True)]["ProxyList"][0]["EasyLucky"] is True
+    assert redirect_443["DefaultProxy"]["EasyLucky"] is True
     assert redirect_443["DefaultProxy"]["Locations"] == [
         "https://{host}{path}{args}"
     ]

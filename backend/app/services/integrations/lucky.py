@@ -558,6 +558,8 @@ def _sub_rule(
         "Domains": domains,
         "Locations": [target_url],
         "LocationInsecureSkipVerify": True,
+        # Lucky 的「万事大吉」：自动补全反代所需请求头
+        "EasyLucky": True,
         "EnableAccessLog": True,
         "LogLevel": 4,
         "LogOutputToConsole": False,
@@ -588,6 +590,7 @@ def _default_sub_rule(
         "WebServiceType": service_type,
         "Locations": list(locations or []),
         "LocationInsecureSkipVerify": True,
+        "EasyLucky": True,
         "EnableAccessLog": True,
         "LogLevel": 4,
         "LogOutputToConsole": False,
