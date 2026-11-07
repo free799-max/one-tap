@@ -563,6 +563,10 @@ class AppService:
         返回 (AppInstance, task_id)，调用方应立即将 task_id 返回给前端。
         """
         db_app = await self.get_app(db, app_name)
+        if db_app.type == "external":
+            raise APIException(
+                "外部服务不创建容器，请在自动化方案中登记访问地址", 400
+            )
 
         # 0. 读取并校验存储配置（应用数据目录 + 启用的数据目录）
         system_config = await system_config_service.get_or_create(db)

@@ -195,8 +195,9 @@ async def sync_apps() -> dict:
     async with async_session() as session:
         for item in items:
             name = str(item.get("slug") or "").strip()
-            yaml_template = item.get("compose_template")
-            if not name or not yaml_template:
+            app_type = str(item.get("type") or "compose")
+            yaml_template = item.get("compose_template") or ""
+            if not name or (app_type != "external" and not yaml_template):
                 logger.warning(
                     "管理端应用缺少 slug 或 compose_template，已跳过：%s",
                     item.get("slug") or item.get("name"),
@@ -209,14 +210,15 @@ async def sync_apps() -> dict:
                 continue
 
             config_schema = item.get("config_schema") or {}
-            try:
-                validate_app_definition(
-                    yaml_template, config_schema, item.get("image") or ""
-                )
-            except APIException as exc:
-                logger.warning("管理端应用 '%s' 校验失败，已跳过：%s", name, exc.message)
-                skipped += 1
-                continue
+            if app_type != "external":
+                try:
+                    validate_app_definition(
+                        yaml_template, config_schema, item.get("image") or ""
+                    )
+                except APIException as exc:
+                    logger.warning("管理端应用 '%s' 校验失败，已跳过：%s", name, exc.message)
+                    skipped += 1
+                    continue
 
             result = await session.execute(select(App).where(App.name == name))
             app = result.scalar_one_or_none()

@@ -296,7 +296,10 @@ class ImportMixin:
 
         优先匹配 App.default_ports 中描述含 "Web" 的容器端口对应的本地端口，
         其次取应用第一个 TCP 默认端口，最后回退到配置里的第一个 TCP 映射。
+        外部服务（type=external）直接使用用户填写的 ``url``。
         """
+        if str(getattr(app, "type", "") or "").lower() == "external":
+            return str(config.get("url") or "").strip() or None
         ports = config.get("ports") or []
         tcp_ports = [
             p

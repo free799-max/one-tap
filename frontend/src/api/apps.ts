@@ -27,7 +27,7 @@ export interface App {
   config_schema: Record<string, unknown>;
   version: string;
   is_builtin: boolean;
-  type: "compose" | "container";
+  type: "compose" | "container" | "external";
   changelog: string | null;
   backup_paths: string[];
   is_paid?: boolean;

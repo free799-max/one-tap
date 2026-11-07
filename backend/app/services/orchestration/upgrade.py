@@ -38,6 +38,10 @@ from app.services.orchestration.credentials import prepare_app_credentials
 from app.services.orchestration.deploy import _resolve_composition_image
 from app.services.orchestration.deploy_task_service import deploy_task_manager
 from app.services.orchestration.events import add_update_event
+from app.services.orchestration.external import (
+    is_external_app,
+    register_external_instance,
+)
 from app.services.orchestration.shared_config import merge_shared_config
 
 logger = logging.getLogger(__name__)
@@ -232,7 +236,9 @@ class UpgradeMixin:
         missing_projects = [
             name
             for name in selected_apps
-            if name in existing_by_name and not existing_by_name[name].project_id
+            if name in existing_by_name
+            and not existing_by_name[name].project_id
+            and not is_external_app(app_map[name])
         ]
         if missing_projects:
             raise APIException(
@@ -336,6 +342,35 @@ class UpgradeMixin:
                     start = 5 + int(85 * (index - 1) / max(total, 1))
                     end = 5 + int(85 * index / max(total, 1))
                     db_app = app_map[app_name]
+
+                    if is_external_app(db_app):
+                        external_config = dict(app_configs.get(app_name) or {})
+                        existing = existing_by_name.get(app_name)
+                        if existing is not None:
+                            existing.config = {"external": True, **external_config}
+                            existing.status = "running"
+                            group.app_configs = {
+                                **(group.app_configs or {}),
+                                app_name: external_config,
+                            }
+                            await db.commit()
+                        else:
+                            await register_external_instance(
+                                db,
+                                group=group,
+                                orchestration_id=template.id,
+                                instance_name=group.instance_name,
+                                app=db_app,
+                                app_config=external_config,
+                                version=template.version,
+                            )
+                            await db.commit()
+                        report(
+                            "completed",
+                            end,
+                            f"{db_app.display_name} 外部服务已登记",
+                        )
+                        continue
 
                     if app_name in existing_by_name:
                         report(
@@ -451,6 +486,10 @@ class UpgradeMixin:
         模板、不合并 Schema 默认值。这样挂载目录、端口、环境变量与旧部署
         完全一致，即使新模板改了字段默认值也不会影响现有实例。
         """
+        if is_external_app(db_app):
+            instance.status = "running"
+            await db.commit()
+            return
         target_image = resolve_target_image(
             composition_item, db_app, instance.config
         )
@@ -616,6 +655,8 @@ class UpgradeMixin:
         db_app = instance.app
         if db_app is None:
             raise APIException("应用不存在", 404)
+        if is_external_app(db_app):
+            raise APIException("外部服务不创建容器，无需升级", 400)
         if instance.orchestration_group_id is not None:
             raise APIException("编排部署的应用请在实例组中升级", 400)
         if (instance.config or {}).get("imported"):

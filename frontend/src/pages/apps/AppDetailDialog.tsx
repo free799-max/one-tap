@@ -78,7 +78,11 @@ export function AppDetailDialog({
                   版本 {formatVersion(app.version)}
                 </Badge>
                 <Badge variant="outline" className="text-xs font-normal capitalize">
-                  {app.type === "compose" ? "多容器编排" : "单容器"}
+                  {app.type === "compose"
+                    ? "多容器编排"
+                    : app.type === "external"
+                      ? "外部服务"
+                      : "单容器"}
                 </Badge>
                 {app.image && (
                   <Badge variant="outline" className="text-xs font-normal hidden sm:inline-flex">
@@ -88,16 +92,25 @@ export function AppDetailDialog({
               </div>
             </div>
 
-            <Button
-              className="rounded-full px-6 shrink-0 shadow-none"
-              style={{ boxShadow: "none" }}
-              onClick={() => {
-                onOpenChange(false);
-                onDeploy(app);
-              }}
-            >
-              安装
-            </Button>
+            {app.type === "external" ? (
+              <Badge
+                variant="outline"
+                className="shrink-0 rounded-full px-5 py-2 text-xs font-normal text-muted-foreground"
+              >
+                在自动化方案中使用
+              </Badge>
+            ) : (
+              <Button
+                className="rounded-full px-6 shrink-0 shadow-none"
+                style={{ boxShadow: "none" }}
+                onClick={() => {
+                  onOpenChange(false);
+                  onDeploy(app);
+                }}
+              >
+                安装
+              </Button>
+            )}
           </div>
         </div>
 

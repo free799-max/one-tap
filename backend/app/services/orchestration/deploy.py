@@ -20,6 +20,10 @@ from app.services.orchestration.credentials import (
 )
 from app.services.orchestration.deploy_task_service import deploy_task_manager
 from app.services.orchestration.events import add_update_event
+from app.services.orchestration.external import (
+    is_external_app,
+    register_external_instance,
+)
 from app.services.orchestration.shared_config import merge_shared_config
 
 logger = logging.getLogger(__name__)
@@ -115,8 +119,11 @@ class DeployMixin:
 
         # 全局互斥检测
         await self._check_global_conflicts(db, composition, selected_apps)
-        self._ensure_deploy_capacity(len(selected_apps))
-        await self._ensure_project_names_free(db, instance_name, selected_apps)
+        container_apps = [
+            name for name in selected_apps if not is_external_app(app_map[name])
+        ]
+        self._ensure_deploy_capacity(len(container_apps))
+        await self._ensure_project_names_free(db, instance_name, container_apps)
 
         # 创建组合部署记录
         group = AppOrchestrationInstance(
@@ -139,6 +146,7 @@ class DeployMixin:
         await db.commit()
 
         task_ids: list[str] = []
+        task_app_names: list[str] = []
         deployed_instances: dict[str, AppInstance] = {}
         pending_credentials: dict[str, dict] = {}
         composition_by_name = {item.get("app_name"): item for item in composition}
@@ -146,6 +154,20 @@ class DeployMixin:
         try:
             for app_name in selected_apps:
                 app_config = app_configs.get(app_name) or {}
+                db_app = app_map[app_name]
+                if is_external_app(db_app):
+                    instance = await register_external_instance(
+                        db,
+                        group=group,
+                        orchestration_id=db_orchestration.id,
+                        instance_name=instance_name,
+                        app=db_app,
+                        app_config=app_config,
+                        version=db_orchestration.version,
+                    )
+                    await db.commit()
+                    deployed_instances[app_name] = instance
+                    continue
                 # 注入共享配置：volumes/env 数组追加合并，标量字段应用配置优先
                 merged_config = merge_shared_config(
                     shared_config=shared_config,
@@ -184,6 +206,7 @@ class DeployMixin:
                 await db.commit()
 
                 task_ids.append(task_id)
+                task_app_names.append(app_name)
                 deployed_instances[app_name] = instance
 
             # 端口此时已分配完成，按实际端口写入各应用访问地址
@@ -198,7 +221,7 @@ class DeployMixin:
         # 部署任务完成后把统一账号配置进真实服务（后台执行，不阻塞响应）；
         # 跟踪任务的 ID 一并返回，前端据此继续展示配置与装配进度
         provision_task_id = self._schedule_provisioning(
-            group.id, instance_name, selected_apps, task_ids, pending_credentials
+            group.id, instance_name, task_app_names, task_ids, pending_credentials
         )
         if provision_task_id:
             task_ids.append(provision_task_id)
@@ -286,8 +309,11 @@ class DeployMixin:
 
         # 全局互斥检测（旧实例已清理，不会误判自身）
         await self._check_global_conflicts(db, composition, selected_apps)
-        self._ensure_deploy_capacity(len(selected_apps))
-        await self._ensure_project_names_free(db, instance_name, selected_apps)
+        container_apps = [
+            name for name in selected_apps if not is_external_app(app_map[name])
+        ]
+        self._ensure_deploy_capacity(len(container_apps))
+        await self._ensure_project_names_free(db, instance_name, container_apps)
 
         # 在原组上按与 deploy 相同的路径重建实例与部署任务
         group.instance_name = instance_name
@@ -296,6 +322,7 @@ class DeployMixin:
         await db.commit()
 
         task_ids: list[str] = []
+        task_app_names: list[str] = []
         deployed_instances: dict[str, AppInstance] = {}
         pending_credentials: dict[str, dict] = {}
         composition_by_name = {item.get("app_name"): item for item in composition}
@@ -303,6 +330,20 @@ class DeployMixin:
         try:
             for app_name in selected_apps:
                 app_config = app_configs.get(app_name) or {}
+                db_app = app_map[app_name]
+                if is_external_app(db_app):
+                    instance = await register_external_instance(
+                        db,
+                        group=group,
+                        orchestration_id=db_orchestration.id,
+                        instance_name=instance_name,
+                        app=db_app,
+                        app_config=app_config,
+                        version=db_orchestration.version,
+                    )
+                    await db.commit()
+                    deployed_instances[app_name] = instance
+                    continue
                 # 注入共享配置：volumes/env 数组追加合并，标量字段应用配置优先
                 merged_config = merge_shared_config(
                     shared_config=shared_config,
@@ -347,6 +388,7 @@ class DeployMixin:
                 await db.commit()
 
                 task_ids.append(task_id)
+                task_app_names.append(app_name)
                 deployed_instances[app_name] = instance
 
             # 端口可能已重新分配，按最新配置刷新各应用访问地址，
@@ -365,7 +407,7 @@ class DeployMixin:
         # 部署任务完成后把统一账号配置进真实服务（后台执行，不阻塞响应）；
         # 跟踪任务的 ID 一并返回，前端据此继续展示配置与装配进度
         provision_task_id = self._schedule_provisioning(
-            group.id, instance_name, selected_apps, task_ids, pending_credentials
+            group.id, instance_name, task_app_names, task_ids, pending_credentials
         )
         if provision_task_id:
             task_ids.append(provision_task_id)
@@ -483,11 +525,14 @@ class DeployMixin:
             for item in (orchestration.app_composition or [])
         }
         for app_name in selected_apps:
+            db_app = app_map[app_name]
+            if is_external_app(db_app):
+                continue
             merged_config = merge_shared_config(
                 shared_config=shared_config,
                 app_config=app_configs.get(app_name) or {},
                 shared_schema=orchestration.shared_config_schema,
-                app_schema=app_map[app_name].config_schema,
+                app_schema=db_app.config_schema,
                 app_name=app_name,
             )
             image_override = _resolve_composition_image(
@@ -495,7 +540,7 @@ class DeployMixin:
             )
             if image_override:
                 merged_config["image"] = image_override
-            validate_app_config(app_map[app_name], merged_config)
+            validate_app_config(db_app, merged_config)
 
     def _validate_composition(
         self,
