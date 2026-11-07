@@ -315,6 +315,16 @@ export function AppConfigPanel({
             <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">
               {app.display_name}
             </h2>
+            {Boolean(
+              (app.config as Record<string, unknown> | undefined)?.external
+            ) && (
+              <Badge
+                variant="outline"
+                className="h-5 shrink-0 border-sky-500/40 px-1.5 text-[10px] font-normal text-sky-600 dark:text-sky-400"
+              >
+                外部服务
+              </Badge>
+            )}
             <span
               className={cn(
                 "flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",

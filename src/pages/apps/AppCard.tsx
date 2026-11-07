@@ -75,17 +75,26 @@ export function AppCard({ app, onDeploy, onDetail }: AppCardProps) {
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeploy(app);
-                }}
-                className="rounded-full px-4 h-7 text-xs border-primary/30 text-primary hover:bg-primary/5 hover:text-primary hover:border-primary/40"
-              >
-                安装
-              </Button>
+              {app.type === "external" ? (
+                <Badge
+                  variant="outline"
+                  className="rounded-full px-3 h-7 text-xs font-normal text-muted-foreground"
+                >
+                  方案内使用
+                </Badge>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeploy(app);
+                  }}
+                  className="rounded-full px-4 h-7 text-xs border-primary/30 text-primary hover:bg-primary/5 hover:text-primary hover:border-primary/40"
+                >
+                  安装
+                </Button>
+              )}
             </div>
           </div>
         </div>

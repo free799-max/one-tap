@@ -27,7 +27,7 @@ const AUTOMATION_CATEGORY_META: Record<string, AutomationCategoryMeta> = {
     label: "影视",
     icon: Film,
     description:
-      "全流程影视自动化：搜索、下载、刮削、播放一体化，打造专属私人影库。",
+      "本地方案用 MoviePilot + qBittorrent 下载刮削；网盘方案用巡影把资源转存到自己的网盘，不占本地空间。两套可同时部署。",
   },
   漫画: {
     label: "漫画",
