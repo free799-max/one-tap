@@ -44,6 +44,40 @@ export function StackEditorDialog({
   onOpenChange,
   onTaskCreated,
 }: StackEditorDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-hidden flex flex-col p-0">
+        <StackEditorForm
+          key={`${mode}-${project?.id ?? "new"}`}
+          mode={mode}
+          project={project}
+          onOpenChange={onOpenChange}
+          onTaskCreated={onTaskCreated}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface StackEditorFormProps {
+  mode: "create" | "edit";
+  project: ComposeProject | null;
+  onOpenChange: (open: boolean) => void;
+  onTaskCreated?: (taskId: string) => void;
+}
+
+/**
+ * 表单主体。
+ *
+ * 表单状态必须随弹窗关闭/项目切换一起销毁，否则上一个项目手动修改过的
+ * 内容会残留到下一个项目。因此这里独立成组件，并由外部以 mode + 项目 id 作 key。
+ */
+function StackEditorForm({
+  mode,
+  project,
+  onOpenChange,
+  onTaskCreated,
+}: StackEditorFormProps) {
   // 编辑模式下拉取完整项目详情，确保拿到真实 YAML 内容
   const { data: detail, isLoading: isDetailLoading } = useComposeProject(
     mode === "edit" ? project?.id ?? null : null
@@ -114,16 +148,10 @@ export function StackEditorDialog({
   const isLoading = isPending || (mode === "edit" && isDetailLoading);
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      key={`${mode}-${project?.id ?? "new"}-${open}`}
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col flex-1 overflow-hidden"
     >
-      <DialogContent className="sm:max-w-4xl max-h-[85vh] overflow-hidden flex flex-col p-0">
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col flex-1 overflow-hidden"
-        >
           <DialogHeader className="px-6 pt-5 pb-2 border-b shrink-0">
             <DialogTitle>{title}</DialogTitle>
           </DialogHeader>
@@ -217,8 +245,6 @@ export function StackEditorDialog({
               {submitLabel}
             </Button>
           </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    </form>
   );
 }
