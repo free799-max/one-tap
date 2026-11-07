@@ -72,7 +72,10 @@ git ls-remote origin refs/heads/main           # 前端快照已到 GitHub
 流水线在 `https://git.cacty.top/nas/one-tap/-/pipelines`，只有 tag 流水线：`app-image` 以
 `harbor.cacty.top/library/onetap-base` 为基础镜像（由 `docker/base.Dockerfile` 手动构建，流水线不构建），
 推送 `harbor.cacty.top/library/onetap:<tag>`，正式版本同时打 `latest`；腾讯云
-`ccr.ccs.tencentyun.com/one-tap/one-tap` 同样只推 `<tag>` 与 `latest`。
+`ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`
+同样只推 `<tag>` 与 `latest`。Docker Hub 推送需要 GitLab CI/CD 变量
+`DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`（可用 Access Token），或 Runner 宿主机已有
+Docker Hub 登录状态。
 部署侧按标签升级：
 
 ```bash

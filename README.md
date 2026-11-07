@@ -72,6 +72,7 @@ docker compose ps
 2. 在 Runner 宿主机上执行 `docker login harbor.cacty.top`，流水线直接复用该登录状态（不再需要 `HARBOR_USER` / `HARBOR_PASSWORD`）。
 3. Runner 使用 shell executor，宿主机需安装 Docker 与 buildx，并以有权限调用 Docker 的用户运行（若改用 docker executor，需要自行恢复 `docker:dind` 服务与 `DOCKER_HOST`）。
 4. `PLATFORMS` 默认 `linux/amd64`；NAS 是 ARM 时在 CI/CD 变量中改为 `linux/arm64`，并用同一平台重建基础镜像。
+5. 同步推送 Docker Hub `free5104/one-tap`：在 GitLab 项目设置里配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`（值可用 Access Token）；未配置时沿用 Runner 宿主机上已有的 Docker Hub 登录状态。
 
 发布新版本：
 
@@ -93,7 +94,7 @@ docker push harbor.cacty.top/library/onetap-base:latest
 
 | 阶段 | 产物 | 说明 |
 |---|---|---|
-| `image` | `harbor.cacty.top/library/onetap:<tag>`；正式版本另打 `v主.次`、`v主`、`latest` | 以 `onetap-base` 为起点，只构建后端代码与前端，配合 buildx registry 缓存 |
+| `image` | `harbor.cacty.top/library/onetap:<tag>`，同时推送腾讯云 CCR `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`；正式版本另打 `latest` | 以 `onetap-base` 为起点，只构建后端代码与前端，配合 buildx registry 缓存 |
 
 `onetap:buildcache` 是 buildx 的层缓存标签，不是可部署镜像。
 

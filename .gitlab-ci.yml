@@ -16,7 +16,12 @@
 # 项目设置里配置 TENCENT_REGISTRY_USERNAME / TENCENT_REGISTRY_PASSWORD 两个
 # CI/CD 变量即可；未配置时沿用 Runner 宿主机上已有的 docker login 状态。
 #
-# 构建只用 Harbor 上的镜像（基础镜像与 baseimg 上游镜像），Runner 不访问 docker.io。
+# 同步推送 Docker Hub（docker.io/free5104/one-tap）：Docker Hub 不支持匿名推送，
+# 需要在 GitLab 项目设置里配置 DOCKERHUB_USERNAME / DOCKERHUB_PASSWORD（值可用
+# Access Token）；未配置时沿用 Runner 宿主机上已有的 Docker Hub 登录状态。
+#
+# 构建拉取只用 Harbor 上的镜像（基础镜像与 baseimg 上游镜像），Runner 不访问
+# docker.io 拉取；Docker Hub 仅用于推送产物镜像。
 
 stages:
   - image
@@ -28,6 +33,8 @@ variables:
   TENCENT_REGISTRY: ccr.ccs.tencentyun.com
   TENCENT_PROJECT: one-tap
   TENCENT_IMAGE_NAME: one-tap
+  DOCKERHUB_REGISTRY: docker.io
+  DOCKERHUB_IMAGE: free5104/one-tap
   BASE_IMAGE: harbor.cacty.top/library/onetap-base:latest
   NODE_IMAGE: harbor.cacty.top/baseimg/node:22-alpine
   # 构建前替换后端配置默认值；运行时环境变量仍可覆盖
@@ -56,16 +63,21 @@ app-image:
     - |
       APP_REF="$HARBOR_REGISTRY/$HARBOR_PROJECT/$APP_IMAGE_NAME"
       TENCENT_REF="$TENCENT_REGISTRY/$TENCENT_PROJECT/$TENCENT_IMAGE_NAME"
+      DOCKERHUB_REF="$DOCKERHUB_REGISTRY/$DOCKERHUB_IMAGE"
       TAG="$CI_COMMIT_TAG"
-      TAGS="--tag $APP_REF:$TAG --tag $TENCENT_REF:$TAG"
+      TAGS="--tag $APP_REF:$TAG --tag $TENCENT_REF:$TAG --tag $DOCKERHUB_REF:$TAG"
       # 正式版本额外打 latest；预发布标签（如 v1.0.0-rc.1）只保留自身
       if printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-        TAGS="$TAGS --tag $APP_REF:latest --tag $TENCENT_REF:latest"
+        TAGS="$TAGS --tag $APP_REF:latest --tag $TENCENT_REF:latest --tag $DOCKERHUB_REF:latest"
       fi
       echo "本次构建标签：$TAGS"
       # 腾讯云 CCR 需要登录：优先用 CI/CD 变量，未配置时沿用宿主机的登录状态
       if [ -n "${TENCENT_REGISTRY_USERNAME:-}" ] && [ -n "${TENCENT_REGISTRY_PASSWORD:-}" ]; then
         printf '%s' "$TENCENT_REGISTRY_PASSWORD" | docker login "$TENCENT_REGISTRY" -u "$TENCENT_REGISTRY_USERNAME" --password-stdin
+      fi
+      # Docker Hub 不支持匿名推送：优先用 CI/CD 变量，未配置时沿用宿主机的登录状态
+      if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_PASSWORD:-}" ]; then
+        printf '%s' "$DOCKERHUB_PASSWORD" | docker login "$DOCKERHUB_REGISTRY" -u "$DOCKERHUB_USERNAME" --password-stdin
       fi
       sed -i \
         -e "s|^    MANAGE_BASE_URL: str = .*|    MANAGE_BASE_URL: str = \"$MANAGE_BASE_URL\"|" \
@@ -87,3 +99,4 @@ app-image:
         --push .
       echo "已推送：$APP_REF:$TAG"
       echo "已推送：$TENCENT_REF:$TAG"
+      echo "已推送：$DOCKERHUB_REF:$TAG"

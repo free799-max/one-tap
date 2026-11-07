@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 发布新版本：按提交记录递增语义化版本，写 CHANGELOG、打 v* 标签并推送。
 # GitLab 接收完整项目与标签；GitHub 只接收 frontend/ 独立快照。
-# 推送标签会触发 GitLab CI（.gitlab-ci.yml 只响应 tag），构建并推送 Harbor 镜像。
+# 推送标签会触发 GitLab CI（.gitlab-ci.yml 只响应 tag），构建并推送 Harbor、
+# 腾讯云 CCR 与 Docker Hub（free5104/one-tap）镜像。
 set -euo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -244,4 +245,5 @@ echo
 echo "版本：$NEW_TAG"
 echo "镜像：harbor.cacty.top/library/onetap:$NEW_TAG（稳定版另打 latest）"
 echo "      ccr.ccs.tencentyun.com/one-tap/one-tap:$NEW_TAG（稳定版另打 latest）"
+echo "      docker.io/free5104/one-tap:$NEW_TAG（稳定版另打 latest）"
 echo "流水线：https://git.cacty.top/nas/one-tap/-/pipelines"
