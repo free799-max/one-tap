@@ -1213,12 +1213,25 @@ class IntegrationService:
                 )
             )
             project_by_id = {row[0]: row[1] for row in rows.all()}
-            apps = _deployed_in_docker(
+            alive = _deployed_in_docker(
                 apps,
                 project_names=project_names,
                 container_keys=container_keys,
                 project_by_id=project_by_id,
             )
+            # 已配置代理的应用即使容器被关闭/删除，也要继续展示，
+            # 否则规则仍留在 Lucky/NPM 中却无法编辑或清理。
+            alive_ids = {app.instance_id for app in alive}
+            linked_ids = {
+                instance_id
+                for instance_id, link in links.items()
+                if instance_id >= 0 and _link_domains(link)
+            }
+            apps = alive + [
+                app
+                for app in apps
+                if app.instance_id in linked_ids and app.instance_id not in alive_ids
+            ]
         apps = _network_app_list(apps)
         result: list[NetworkAppOut] = []
         for app in apps:

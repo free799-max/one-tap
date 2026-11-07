@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.exceptions import APIException
 from app.database import Base
 from app.models.app_store import App
+from app.models.integration import IntegrationConfig
 from app.models.orchestration import AppInstance, AppOrchestration
 from app.schemas.integration import (
     DdnsGoConnectionUpdate,
@@ -670,6 +671,64 @@ def test_deployed_in_docker_keeps_only_live_records():
     )
 
     assert [item.instance_id for item in result] == [173, 163, 165, 174]
+
+
+@pytest.mark.asyncio
+async def test_network_apps_keep_proxy_of_closed_app(monkeypatch):
+    """容器已关闭或被移除时，已配置代理的应用仍需展示，便于编辑或清理。"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def _no_matching_container():
+        return set(), set()
+
+    monkeypatch.setattr(
+        "app.services.integrations.service._docker_app_keys",
+        _no_matching_container,
+    )
+
+    async with Session() as db:
+        app = App(
+            name="vaultwarden",
+            display_name="Vaultwarden",
+            category="tools",
+            yaml_template="",
+        )
+        instance = AppInstance(
+            app=app,
+            instance_name="vaultwarden",
+            config={"url": "http://192.168.1.20:8002"},
+            status="stopped",
+        )
+        db.add_all([app, instance])
+        await db.commit()
+
+        db.add(
+            IntegrationConfig(
+                kind="network",
+                enabled=True,
+                config={
+                    "provider": "lucky",
+                    "proxy_links": {
+                        str(instance.id): {
+                            "domains": ["vault.example.com"],
+                            "target_url": "http://192.168.1.20:8002",
+                            "listen_port": 443,
+                            "enable_tls": True,
+                        }
+                    },
+                },
+            )
+        )
+        await db.commit()
+
+        apps = await integration_service.list_network_apps(db, "192.168.1.20")
+
+    saved = next(item for item in apps if item.instance_id == instance.id)
+    assert saved.domains == ["vault.example.com"]
+    assert saved.proxy_enabled is True
 
 
 def test_ddns_domain_filter_and_family_mapping():
