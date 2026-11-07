@@ -13,7 +13,7 @@ import { getToken } from "@/lib/api";
 /**
  * @param containerId 容器 ID，为 null 时不建立连接
  * @param options shell、workdir、user 等选项
- * @returns terminalRef、connected、error、fitTerminal、clearTerminal、reconnect
+ * @returns terminalRef、connected、error、fitTerminal、clearTerminal、connect、disconnect
  */
 export function useContainerTerminal(
   containerId: string | null,
@@ -149,9 +149,14 @@ export function useContainerTerminal(
     terminalInstanceRef.current?.clear();
   }, []);
 
-  const reconnect = useCallback(() => {
+  const connect = useCallback(() => {
     wsRef.current?.close();
     setConnectKey((k) => k + 1);
+  }, []);
+
+  const disconnect = useCallback(() => {
+    wsRef.current?.close();
+    setConnected(false);
   }, []);
 
   return {
@@ -161,6 +166,7 @@ export function useContainerTerminal(
     fitTerminal,
     focusTerminal,
     clearTerminal,
-    reconnect,
+    connect,
+    disconnect,
   };
 }

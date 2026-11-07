@@ -35,8 +35,16 @@ export function ContainerTerminalDialog({
   containerName,
 }: ContainerTerminalDialogProps) {
   const [shell, setShell] = useState("/bin/sh");
-  const { terminalRef, connected, error, fitTerminal, focusTerminal, clearTerminal, reconnect } =
-    useContainerTerminal(containerId, { shell });
+  const {
+    terminalRef,
+    connected,
+    error,
+    fitTerminal,
+    focusTerminal,
+    clearTerminal,
+    connect,
+    disconnect,
+  } = useContainerTerminal(containerId, { shell });
 
   // 弹窗打开后给布局一点过渡时间再 fit 并聚焦，避免尺寸计算错误
   useEffect(() => {
@@ -117,19 +125,21 @@ export function ContainerTerminalDialog({
               size="sm"
               variant="outline"
               className="h-7 text-xs"
-              onClick={reconnect}
+              onClick={connect}
+              disabled={connected}
             >
               <RotateCcw className="h-3.5 w-3.5 mr-1" />
-              重连
+              连接
             </Button>
             <Button
               size="sm"
               variant="outline"
               className="h-7 text-xs"
-              onClick={() => handleOpenChange(false)}
+              onClick={disconnect}
+              disabled={!connected}
             >
               <X className="h-3.5 w-3.5 mr-1" />
-              关闭
+              断开
             </Button>
           </div>
         </div>
