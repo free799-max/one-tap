@@ -50,7 +50,7 @@ docker compose logs -f app     # 查看应用、迁移与定时任务日志
 
 生产环境只有 `app` 与 `postgres` 两个容器；`app` 内的 Nginx 对外监听 80，FastAPI 只监听容器内回环地址 5001，前端与 API 使用同一端口。
 
-镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）只接收 `frontend/` 的独立快照，不接收其他目录或标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`，同时推送到腾讯云 CCR `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`（正式版本另打 `latest`；Docker Hub 需在 CI/CD 变量配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`）。`MANAGE_BASE_URL` 等管理端同步配置在构建前由 CI 替换 `backend/app/config.py` 中的默认值（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
+镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）与 `gitlab` 都接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`，同时推送到腾讯云 CCR `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`（正式版本另打 `latest`；Docker Hub 需在 CI/CD 变量配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`）。`MANAGE_BASE_URL` 等管理端同步配置在构建前由 CI 替换 `backend/app/config.py` 中的默认值（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
 
 ## 架构
 

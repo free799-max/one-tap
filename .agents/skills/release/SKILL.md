@@ -42,31 +42,27 @@ scripts/release.sh --dry-run
 scripts/release.sh minor --dry-run
 ```
 
-3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag，并按远端发布不同内容）：
+3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag，并推送完整项目与标签）：
 
 ```bash
 scripts/release.sh
 ```
 
-脚本默认发布到两个远端：
+脚本默认发布到两个远端，二者内容一致，都接收完整 `main` 与版本标签：
 
-- `origin`（GitHub，`git@github.com:free799-max/one-tap.git`）：只把 `frontend/` 的内容作为独立快照推到 `main`，不包含后端、其他目录、完整项目历史或版本标签。
-- `gitlab`：推送完整 `main` 与版本标签，标签触发 CI。
+- `origin`（GitHub，`https://github.com/free799-max/one-tap`）
+- `gitlab`：标签触发 CI。
 
-只推其中一个时用 `RELEASE_REMOTES="gitlab" scripts/release.sh` 或 `RELEASE_REMOTES="origin" scripts/release.sh`。单独补推 GitHub 前端：
-
-```bash
-scripts/push-frontend.sh HEAD
-```
-
-该命令以 GitHub 前端仓库现有 `main` 为父提交做普通快进推送，不 force push；前端无变化时直接退出。
+只推其中一个时用 `RELEASE_REMOTES="gitlab" scripts/release.sh` 或 `RELEASE_REMOTES="origin" scripts/release.sh`。
 
 4. 验证：
 
 ```bash
 git tag -n1 --sort=-v:refname | head -3
 git ls-remote --tags gitlab | tail -5          # 标签已到 GitLab
-git ls-remote origin refs/heads/main           # 前端快照已到 GitHub
+git ls-remote --tags origin | tail -5          # 标签已到 GitHub
+git ls-remote gitlab refs/heads/main
+git ls-remote origin refs/heads/main
 ```
 
 流水线在 `https://git.cacty.top/nas/one-tap/-/pipelines`，只有 tag 流水线：`app-image` 以
@@ -89,7 +85,7 @@ APP_IMAGE=harbor.cacty.top/library/onetap:v1.2.3 docker compose up -d app
 
 ```bash
 git push gitlab HEAD:main && git push gitlab vX.Y.Z
-scripts/push-frontend.sh HEAD
+git push origin HEAD:main && git push origin vX.Y.Z
 ```
 
 - 需要交互输入 HTTPS 密码时：`GIT_TERMINAL_PROMPT=1 scripts/release.sh`。
@@ -101,5 +97,4 @@ scripts/push-frontend.sh HEAD
 - 工作区必须干净；脚本会拒绝脏工作区和非 `main` 分支。
 - 版本号只增不减，不修改已推送的标签和历史。
 - 不改 `CHANGELOG.md` 里已有版本的条目。
-- 不要执行 `git push origin HEAD:main` 或向 `origin` 推版本标签；GitHub 只能走 `scripts/push-frontend.sh`。
 - 不读、不打印 `.env` 与任何密钥。

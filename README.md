@@ -81,7 +81,7 @@ scripts/release.sh --dry-run   # 预览版本号与更新说明，不改动任�
 scripts/release.sh             # GitHub 发布前端，GitLab 发布完整项目与标签
 ```
 
-版本号按提交信息自动递增（`feat` → minor，`fix` 等 → patch，`feat!` / `BREAKING CHANGE` → major，首次发布为 `v0.1.0`），也可以显式指定 `major|minor|patch`。脚本把更新说明写入 `CHANGELOG.md`，提交 `chore(release): vX.Y.Z` 后打 annotated tag。`origin`（GitHub）只接收 `frontend/` 的独立快照，不接收其他目录或标签；`gitlab` 接收完整 `main` 与标签并触发流水线。只推一个远端时用 `RELEASE_REMOTES="gitlab" scripts/release.sh`，单独补推前端用 `scripts/push-frontend.sh HEAD`。
+版本号按提交信息自动递增（`feat` → minor，`fix` 等 → patch，`feat!` / `BREAKING CHANGE` → major，首次发布为 `v0.1.0`），也可以显式指定 `major|minor|patch`。脚本把更新说明写入 `CHANGELOG.md`，提交 `chore(release): vX.Y.Z` 后打 annotated tag。`origin`（GitHub）与 `gitlab` 都接收完整 `main` 与标签；GitLab 的标签触发流水线。只推一个远端时用 `RELEASE_REMOTES="gitlab" scripts/release.sh` 或 `RELEASE_REMOTES="origin" scripts/release.sh`。
 
 基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建并推送，流水线只拉取使用：
 
