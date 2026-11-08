@@ -8,7 +8,6 @@
 统一管理容器、镜像与 Compose 编排，一键部署常用应用和整套自动化工作流。</p>
 
 <p>
-  <a href="https://github.com/free799-max/one-tap/releases"><img src="https://img.shields.io/github/v/tag/free799-max/one-tap?style=flat-square&color=7c3aed&label=version" alt="version" /></a>
   <a href="https://hub.docker.com/r/free5104/one-tap"><img src="https://img.shields.io/docker/pulls/free5104/one-tap?style=flat-square&color=7c3aed" alt="docker pulls" /></a>
   <a href="https://github.com/free799-max/one-tap/stargazers"><img src="https://img.shields.io/github/stars/free799-max/one-tap?style=flat-square&color=7c3aed" alt="stars" /></a>
   <img src="https://img.shields.io/badge/platform-x86__64-7c3aed?style=flat-square" alt="platform" />

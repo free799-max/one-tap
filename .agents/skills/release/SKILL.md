@@ -42,16 +42,16 @@ scripts/release.sh --dry-run
 scripts/release.sh minor --dry-run
 ```
 
-3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag，并推送完整项目与标签）：
+3. 正式发布（自动写 CHANGELOG、提交 `chore(release): vX.Y.Z`、打 annotated tag，并推送项目）：
 
 ```bash
 scripts/release.sh
 ```
 
-脚本默认发布到两个远端，二者内容一致，都接收完整 `main` 与版本标签：
+脚本默认发布到两个远端：
 
-- `origin`（GitHub，`https://github.com/free799-max/one-tap`）
-- `gitlab`：标签触发 CI。
+- `origin`（GitHub，`https://github.com/free799-max/one-tap`）：推送完整源码快照，但排除 `.gitlab-ci.yml`，也不推版本标签。
+- `gitlab`：推送完整 `main` 与版本标签，标签触发 CI。
 
 只推其中一个时用 `RELEASE_REMOTES="gitlab" scripts/release.sh` 或 `RELEASE_REMOTES="origin" scripts/release.sh`。
 
@@ -60,7 +60,6 @@ scripts/release.sh
 ```bash
 git tag -n1 --sort=-v:refname | head -3
 git ls-remote --tags gitlab | tail -5          # 标签已到 GitLab
-git ls-remote --tags origin | tail -5          # 标签已到 GitHub
 git ls-remote gitlab refs/heads/main
 git ls-remote origin refs/heads/main
 ```
@@ -85,7 +84,7 @@ APP_IMAGE=harbor.cacty.top/library/onetap:v1.2.3 docker compose up -d app
 
 ```bash
 git push gitlab HEAD:main && git push gitlab vX.Y.Z
-git push origin HEAD:main && git push origin vX.Y.Z
+scripts/push-github.sh HEAD
 ```
 
 - 需要交互输入 HTTPS 密码时：`GIT_TERMINAL_PROMPT=1 scripts/release.sh`。

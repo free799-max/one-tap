@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 发布新版本：按提交记录递增语义化版本，写 CHANGELOG、打 v* 标签并推送。
-# 所有远端都接收完整项目与版本标签；GitHub 与 GitLab 内容一致。
+# 所有远端都接收完整项目源码；GitLab 额外接收版本标签并触发 CI。
+# GitHub 快照会排除 .gitlab-ci.yml（见 scripts/push-github.sh）。
 # 推送标签会触发 GitLab CI（.gitlab-ci.yml 只响应 tag），构建并推送 Harbor、
 # 腾讯云 CCR 与 Docker Hub（free5104/one-tap）镜像。
 set -euo pipefail
@@ -197,11 +198,19 @@ git tag -a "$NEW_TAG" -F "$TMP_DIR/tag-message"
 echo "已提交并打标签 $NEW_TAG"
 
 manual_push_command() {
-  echo "  git push $1 HEAD:$BRANCH && git push $1 $NEW_TAG"
+  if [ "$1" = "origin" ]; then
+    echo "  scripts/push-github.sh HEAD"
+  else
+    echo "  git push $1 HEAD:$BRANCH && git push $1 $NEW_TAG"
+  fi
 }
 
 push_remote() {
-  git push "$1" "HEAD:$BRANCH" && git push "$1" "$NEW_TAG"
+  if [ "$1" = "origin" ]; then
+    scripts/push-github.sh HEAD
+  else
+    git push "$1" "HEAD:$BRANCH" && git push "$1" "$NEW_TAG"
+  fi
 }
 
 if [ "$PUSH" -eq 0 ]; then
@@ -219,7 +228,11 @@ for remote in $REMOTES; do
     continue
   fi
   if push_remote "$remote"; then
-    echo "已推送：$remote（完整项目与标签）"
+    if [ "$remote" = "origin" ]; then
+      echo "已推送：$remote（源码快照，不含 .gitlab-ci.yml）"
+    else
+      echo "已推送：$remote（完整项目与标签）"
+    fi
   else
     PUSH_FAILED=1
     echo "推送 $remote 失败。修复凭据后执行：" >&2
