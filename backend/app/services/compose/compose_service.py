@@ -348,6 +348,147 @@ class ComposeService:
                     "预拉取镜像失败，交给 compose 重试：%s", image, exc_info=True
                 )
 
+    @staticmethod
+    def _has_ip_conflict(result: dict) -> bool:
+        """判断 compose 输出是否为容器网络地址冲突。"""
+        text = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".lower()
+        return "address already in use" in text
+
+    async def _static_ip_targets(
+        self, project: DockerComposeProject
+    ) -> list[dict[str, str]]:
+        """解析 Compose 中固定的容器 IPv4 地址。"""
+        result = await self._run(project, "config", "--format", "json", timeout=60)
+        if result["returncode"] != 0:
+            return []
+        try:
+            data = json.loads(result["stdout"] or "{}")
+        except ValueError:
+            return []
+        services = data.get("services")
+        if not isinstance(services, dict):
+            return []
+        targets: list[dict[str, str]] = []
+        for name, service in services.items():
+            if not isinstance(service, dict):
+                continue
+            networks = service.get("networks")
+            if not isinstance(networks, dict):
+                continue
+            container_name = (
+                service.get("container_name")
+                or f"{project.project_name}-{name}-1"
+            )
+            for network_name, network_config in networks.items():
+                if not isinstance(network_config, dict):
+                    continue
+                ip = network_config.get("ipv4_address")
+                if not ip:
+                    continue
+                targets.append(
+                    {
+                        "service": str(name),
+                        "container_name": str(container_name),
+                        "network": str(network_name),
+                        "ip": str(ip),
+                    }
+                )
+        return targets
+
+    @staticmethod
+    def _static_ip_holders_sync(
+        targets: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """查询占用固定容器地址的容器信息。"""
+        from app.services.docker import docker_manager
+
+        client = docker_manager._client
+        if client is None:
+            return []
+        holders: list[dict[str, str]] = []
+        for target in targets:
+            try:
+                network = client.networks.get(target["network"])
+            except Exception:
+                continue
+            for container_id, endpoint in (
+                network.attrs.get("Containers") or {}
+            ).items():
+                address = str((endpoint or {}).get("IPv4Address") or "").split("/")[0]
+                if address != target["ip"]:
+                    continue
+                try:
+                    container = client.containers.get(container_id)
+                except Exception:
+                    continue
+                labels = container.labels or {}
+                holders.append(
+                    {
+                        "id": container_id,
+                        "name": container.name,
+                        "status": container.status,
+                        "project": str(
+                            labels.get("com.docker.compose.project") or ""
+                        ),
+                        "network": target["network"],
+                        "ip": target["ip"],
+                        "expected": target["container_name"],
+                    }
+                )
+        return holders
+
+    @staticmethod
+    def _remove_container_sync(container_id: str) -> None:
+        """强制删除容器。"""
+        from app.services.docker import docker_manager
+
+        client = docker_manager._client
+        if client is None:
+            return
+        client.containers.get(container_id).remove(force=True)
+
+    async def _heal_static_ip_conflicts(
+        self, project: DockerComposeProject
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """清理本项目残留的固定地址占用，返回沿未解决的外部冲突。"""
+        targets = await self._static_ip_targets(project)
+        if not targets:
+            return [], []
+        holders = await asyncio.to_thread(self._static_ip_holders_sync, targets)
+        removed: list[str] = []
+        foreign: list[dict[str, str]] = []
+        for holder in holders:
+            if holder["project"] != project.project_name:
+                foreign.append(holder)
+                continue
+            # 正常运行的目标容器交给 compose 自己重建。
+            if holder["name"] == holder["expected"] and holder["status"] == "running":
+                continue
+            try:
+                await asyncio.to_thread(self._remove_container_sync, holder["id"])
+                removed.append(holder["name"])
+                logger.info(
+                    "清理静态地址残留容器 %s (%s)", holder["name"], holder["ip"]
+                )
+            except Exception as exc:
+                logger.warning("清理残留容器 %s 失败：%s", holder["name"], exc)
+                foreign.append(holder)
+        return removed, foreign
+
+    @staticmethod
+    def _format_ip_conflicts(conflicts: list[dict[str, str]]) -> str:
+        """构造固定地址冲突的错误信息，保留 Docker 原始关键字便于上层识别。"""
+        detail = "；".join(
+            f"{item['ip']} 已被容器 {item['name']}"
+            + (f"（Compose 项目 {item['project']}）" if item["project"] else "")
+            + " 占用"
+            for item in conflicts
+        )
+        return (
+            f"容器网络地址冲突（Address already in use）：{detail}。"
+            "请先停止占用地址的容器，或修改本项目的固定 IP 后重试"
+        )
+
     async def _run_up_with_progress(
         self,
         project: DockerComposeProject,
@@ -357,6 +498,8 @@ class ComposeService:
         """统一执行 docker compose up -d 并推送进度。
 
         若未提供 progress_callback，则退化为非流式执行。
+        固定容器 IP 被占用时清理本项目残留容器并重试一次，避免
+        Docker 的 ``Address already in use`` 直接导致部署失败。
         """
         def _progress(stage: str, percentage: int, message: str, detail: str | None = None):
             if progress_callback:
@@ -368,32 +511,52 @@ class ComposeService:
         current_stage = "pulling_images"
         last_progress_at = 0.0
 
-        if progress_callback:
-            def _on_line(line: str, name: str):
-                detected = detect_stage(line)
-                nonlocal current_stage, last_progress_at
-                if detected:
-                    current_stage = detected
-                if is_progress_line(line):
-                    # 分层下载进度刷新极快，节流转发，避免刷屏
-                    now = time.monotonic()
-                    if now - last_progress_at < 2:
-                        return
-                    last_progress_at = now
-                _progress(
-                    current_stage,
-                    50,
-                    "拉取镜像中" if current_stage == "pulling_images" else "启动服务中",
-                    line,
-                )
-
-            result = await self._run_streaming(
-                project, "up", "-d", on_line=_on_line, timeout=timeout
+        def _on_line(line: str, name: str):
+            detected = detect_stage(line)
+            nonlocal current_stage, last_progress_at
+            if detected:
+                current_stage = detected
+            if is_progress_line(line):
+                # 分层下载进度刷新极快，节流转发，避免刷屏
+                now = time.monotonic()
+                if now - last_progress_at < 2:
+                    return
+                last_progress_at = now
+            _progress(
+                current_stage,
+                50,
+                "拉取镜像中" if current_stage == "pulling_images" else "启动服务中",
+                line,
             )
-        else:
-            result = await self._run(project, "up", "-d", timeout=timeout)
+
+        async def _up() -> dict:
+            if progress_callback:
+                return await self._run_streaming(
+                    project, "up", "-d", on_line=_on_line, timeout=timeout
+                )
+            return await self._run(project, "up", "-d", timeout=timeout)
+
+        # 开跑前先处理残留的静态地址占用，避免启动阶段才失败。
+        _, foreign = await self._heal_static_ip_conflicts(project)
+        if foreign:
+            raise RuntimeError(self._format_ip_conflicts(foreign))
+
+        result = await _up()
+        if result["returncode"] != 0 and self._has_ip_conflict(result):
+            removed, foreign = await self._heal_static_ip_conflicts(project)
+            if foreign:
+                raise RuntimeError(self._format_ip_conflicts(foreign))
+            if removed:
+                logger.info("清理残留容器后重试 compose up: %s", removed)
+                _progress("starting_services", 60, "清理残留容器后重试")
+                result = await _up()
 
         if result["returncode"] != 0:
+            if self._has_ip_conflict(result):
+                # 无法定位占用者时也保留关键字，方便上层按地址冲突处理。
+                _, foreign = await self._heal_static_ip_conflicts(project)
+                if foreign:
+                    raise RuntimeError(self._format_ip_conflicts(foreign))
             error = summarize_compose_error(result.get("stderr", ""))
             raise RuntimeError(error or "docker compose up -d 执行失败")
 

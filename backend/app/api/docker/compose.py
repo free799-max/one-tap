@@ -310,6 +310,8 @@ async def edit_compose_project(
 ):
     """编辑 Compose 项目并自动部署（异步）。"""
     project = await _get_compose_project(db, project_id)
+    if deploy_task_manager.has_active_task(project_id=project.id):
+        raise APIException("该项目有进行中的部署任务，请等待完成后再试", 409)
 
     content = data.content
     comment = data.comment
@@ -444,6 +446,8 @@ async def compose_action(
 ):
     """对 Compose 项目执行 up / down / restart 操作（异步）。"""
     project = await _get_compose_project(db, project_id)
+    if deploy_task_manager.has_active_task(project_id=project.id):
+        raise APIException("该项目有进行中的部署任务，请等待完成后再试", 409)
     action = data.action
 
     try:

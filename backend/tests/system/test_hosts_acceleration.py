@@ -1,6 +1,7 @@
 """应用级 DNS 加速与管理端规则测试。"""
 
 import asyncio
+import ipaddress
 import json
 from types import SimpleNamespace
 
@@ -23,7 +24,9 @@ from app.services.system.hosts_acceleration_service import (
     ACCEL_FALLBACK_DNS,
     ADGUARD_CONTAINER,
     ADGUARD_NETWORK,
+    _dynamic_pool_range,
     _eligible_services,
+    _is_ip_conflict_error,
     apply_acceleration,
     remove_acceleration,
 )
@@ -1092,3 +1095,216 @@ async def test_apply_managed_credentials_skips_restart_before_init(
     await hosts_acceleration_service.apply_managed_credentials(_managed_config())
 
     assert actions == []
+
+
+def test_dynamic_pool_range_keeps_low_addresses_free():
+    """动态分配池从子网后半段开始，低地址留给 AdGuard 固定 IP。"""
+    assert (
+        _dynamic_pool_range(ipaddress.ip_network("172.31.254.0/24"))
+        == "172.31.254.128/25"
+    )
+    assert _dynamic_pool_range(ipaddress.ip_network("172.31.254.0/30")) is None
+
+
+def _accel_network(containers: dict[str, str] | None = None) -> SimpleNamespace:
+    containers = containers or {}
+    return SimpleNamespace(
+        attrs={
+            "IPAM": {
+                "Config": [
+                    {
+                        "Subnet": "172.31.254.0/24",
+                        "Gateway": "172.31.254.1",
+                        "IPRange": "172.31.254.128/25",
+                    }
+                ]
+            },
+            "Containers": {
+                f"id-{name}": {"Name": name, "IPv4Address": f"{ip}/24"}
+                for name, ip in containers.items()
+            },
+        }
+    )
+
+
+def test_pick_network_ip_avoids_dynamic_pool():
+    """固定地址优先使用动态池之外的地址，且跳过已占用地址。"""
+    assert (
+        hosts_acceleration_service._pick_network_ip(_accel_network())
+        == "172.31.254.2"
+    )
+    assert (
+        hosts_acceleration_service._pick_network_ip(
+            _accel_network({"other": "172.31.254.2"})
+        )
+        == "172.31.254.3"
+    )
+
+
+def test_is_ip_conflict_error_detects_docker_message():
+    assert _is_ip_conflict_error(
+        "Error response from daemon: failed to set up container networking: "
+        "Address already in use"
+    )
+    assert not _is_ip_conflict_error("Bind for 0.0.0.0:9007 failed: port is already allocated")
+
+
+@pytest.mark.asyncio
+async def test_ensure_network_creates_dynamic_pool(monkeypatch):
+    """新建加速网络时为动态分配划出地址池。"""
+    created: dict = {}
+
+    class FakeNetworks:
+        def list(self):
+            return []
+
+        def create(self, name, driver=None, ipam=None, labels=None):
+            created["ipam"] = ipam
+
+        def get(self, name):
+            ipam = {
+                "Config": [
+                    {
+                        **created["ipam"]["Config"][0],
+                        "Gateway": "172.31.254.1",
+                    }
+                ]
+            }
+            return SimpleNamespace(attrs={"IPAM": ipam, "Containers": {}})
+
+    class FakeClient:
+        networks = FakeNetworks()
+
+    monkeypatch.setattr(docker_manager, "_client_obj", FakeClient())
+
+    ip = await hosts_acceleration_service.ensure_network()
+
+    assert ip == "172.31.254.2"
+    assert created["ipam"]["Config"][0]["IPRange"] == "172.31.254.128/25"
+
+
+@pytest.mark.asyncio
+async def test_recover_conflicting_ip_removes_project_and_reallocates(monkeypatch):
+    """地址冲突时先删除旧项目，再挑选新的空闲地址。"""
+    calls: list = []
+
+    async def fake_remove(db, backup_data=False):
+        calls.append("remove")
+
+    async def fake_ensure(preferred_ip=None):
+        calls.append(("ensure", preferred_ip))
+        return "172.31.254.7"
+
+    monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(hosts_acceleration_service, "ensure_network", fake_ensure)
+
+    ip = await hosts_acceleration_service._recover_conflicting_ip(
+        SimpleNamespace(), "172.31.254.2"
+    )
+
+    assert ip == "172.31.254.7"
+    assert calls == ["remove", ("ensure", None)]
+
+
+@pytest.mark.asyncio
+async def test_deploy_via_app_store_retries_on_ip_conflict(monkeypatch):
+    """部署遇到地址冲突时重新分配 DNS 地址并重试一次。"""
+    from app.core.exceptions import APIException
+    from app.services.app_store import app_service
+
+    app = App(
+        id=7,
+        name="adguardhome",
+        image="adguard/adguardhome",
+        config_schema={"containers": [{"name": "adguardhome"}]},
+        yaml_template="services:\n  adguardhome:\n    image: adguard/adguardhome\n",
+        display_name="AdGuard Home",
+    )
+    deployed_ips: list[str] = []
+    actions: list = []
+
+    async def fake_deploy(db, **kwargs):
+        deployed_ips.append(
+            kwargs["compose_overrides"]["services"]["adguardhome"]["networks"][
+                ADGUARD_NETWORK
+            ]["ipv4_address"]
+        )
+        return object(), f"task-{len(deployed_ips)}"
+
+    async def fake_wait(task_id, timeout=None, progress=None):
+        if task_id == "task-1":
+            raise APIException(
+                "AdGuard Home 部署失败：failed to set up container networking: "
+                "Address already in use",
+                502,
+            )
+
+    async def fake_remove(db, backup_data=False):
+        actions.append("remove")
+
+    async def fake_recover(db, dns_ip):
+        actions.append(("recover", dns_ip))
+        return "172.31.254.7"
+
+    monkeypatch.setattr(app_service, "deploy", fake_deploy)
+    monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
+    monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(
+        hosts_acceleration_service, "_recover_conflicting_ip", fake_recover
+    )
+    monkeypatch.setattr(
+        hosts_acceleration_service,
+        "_migrate_legacy_data",
+        lambda host_base: None,
+    )
+
+    ip = await hosts_acceleration_service._deploy_via_app_store(
+        None, app, "/tmp/host", 9006, 9007, "172.31.254.2"
+    )
+
+    assert ip == "172.31.254.7"
+    assert deployed_ips == ["172.31.254.2", "172.31.254.7"]
+    assert ("recover", "172.31.254.2") in actions
+
+
+@pytest.mark.asyncio
+async def test_deploy_via_app_store_does_not_retry_other_errors(monkeypatch):
+    """非地址冲突的部署错误直接抛出，不做重试。"""
+    from app.core.exceptions import APIException
+    from app.services.app_store import app_service
+
+    app = App(
+        id=7,
+        name="adguardhome",
+        image="adguard/adguardhome",
+        config_schema={"containers": [{"name": "adguardhome"}]},
+        yaml_template="services:\n  adguardhome:\n    image: adguard/adguardhome\n",
+        display_name="AdGuard Home",
+    )
+    deployed = []
+
+    async def fake_deploy(db, **kwargs):
+        deployed.append(1)
+        return object(), "task-1"
+
+    async def fake_wait(task_id, timeout=None, progress=None):
+        raise APIException("拉取镜像失败", 502)
+
+    async def fake_remove(db, backup_data=False):
+        return None
+
+    monkeypatch.setattr(app_service, "deploy", fake_deploy)
+    monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
+    monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(
+        hosts_acceleration_service,
+        "_migrate_legacy_data",
+        lambda host_base: None,
+    )
+
+    with pytest.raises(APIException, match="拉取镜像失败"):
+        await hosts_acceleration_service._deploy_via_app_store(
+            None, app, "/tmp/host", 9006, 9007, "172.31.254.2"
+        )
+
+    assert deployed == [1]

@@ -26,6 +26,12 @@ FROM ${BASE_IMAGE} AS runtime
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
+# 管理端地址（应用市场同步、授权与专属加速）：CI 可用同名构建参数写入镜像默认值，
+# 运行时 .env 的同名变量优先。公开镜像建议留空，由部署方在 .env 中填写，
+# 避免把内网地址固化进推送到公共仓库的镜像。
+ARG MANAGE_BASE_URL=""
+ENV MANAGE_BASE_URL=${MANAGE_BASE_URL}
+
 # 只复制运行时文件，避免把本地的 backend/data、测试和虚拟环境带进镜像
 COPY backend/app ./app
 COPY backend/alembic ./alembic

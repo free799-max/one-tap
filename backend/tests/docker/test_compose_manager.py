@@ -344,3 +344,102 @@ def test_compose_command_without_mapping_keeps_legacy_paths(compose_manager):
 
     assert cmd[3] == "/data/compose/demo/docker-compose.yml"
     assert cwd == "/data/compose/demo"
+
+
+def _static_ip_project(tmp_path) -> DockerComposeProject:
+    return DockerComposeProject(
+        id=1,
+        project_name="demo",
+        config_files='["' + str(tmp_path / "demo" / "docker-compose.yml") + '"]',
+        working_dir=str(tmp_path / "demo"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_up_retries_after_cleaning_stale_static_ip(compose_manager, tmp_path):
+    """固定 IP 被本项目残留容器占用时，清理后自动重试一次。"""
+    project = _static_ip_project(tmp_path)
+    target = {
+        "service": "adguardhome",
+        "container_name": "onetap-adguardhome",
+        "network": "onetap-accel",
+        "ip": "172.31.254.2",
+    }
+    holder = {
+        "id": "old",
+        "name": "onetap-adguardhome",
+        "status": "created",
+        "project": "demo",
+        "network": "onetap-accel",
+        "ip": "172.31.254.2",
+        "expected": "onetap-adguardhome",
+    }
+    conflict = {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": (
+            "Container onetap-adguardhome Starting\n"
+            "Error response from daemon: failed to set up container networking: "
+            "Address already in use"
+        ),
+    }
+    ok = {"returncode": 0, "stdout": "", "stderr": ""}
+
+    with (
+        patch.object(compose_manager, "_prepull_images", AsyncMock()),
+        patch.object(compose_manager, "_copy_offline_assets", AsyncMock()),
+        patch.object(
+            compose_manager, "_static_ip_targets", AsyncMock(return_value=[target])
+        ),
+        patch.object(
+            compose_manager, "_static_ip_holders_sync", return_value=[holder]
+        ),
+        patch.object(compose_manager, "_remove_container_sync") as mock_remove,
+        patch.object(
+            compose_manager, "_run", AsyncMock(side_effect=[conflict, ok])
+        ) as mock_run,
+    ):
+        await compose_manager._run_up_with_progress(project, None)
+
+    up_calls = [
+        call for call in mock_run.await_args_list if call.args[1:3] == ("up", "-d")
+    ]
+    assert len(up_calls) == 2
+    assert mock_remove.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_up_reports_foreign_static_ip_conflict(compose_manager, tmp_path):
+    """固定 IP 被其它项目容器占用时，给出明确错误而不是直接启动失败。"""
+    project = _static_ip_project(tmp_path)
+    target = {
+        "service": "adguardhome",
+        "container_name": "onetap-adguardhome",
+        "network": "onetap-accel",
+        "ip": "172.31.254.2",
+    }
+    holder = {
+        "id": "other",
+        "name": "movie-moviepilot",
+        "status": "running",
+        "project": "movie-moviepilot",
+        "network": "onetap-accel",
+        "ip": "172.31.254.2",
+        "expected": "onetap-adguardhome",
+    }
+
+    with (
+        patch.object(compose_manager, "_prepull_images", AsyncMock()),
+        patch.object(
+            compose_manager, "_static_ip_targets", AsyncMock(return_value=[target])
+        ),
+        patch.object(
+            compose_manager, "_static_ip_holders_sync", return_value=[holder]
+        ),
+        patch.object(compose_manager, "_run", AsyncMock()) as mock_run,
+    ):
+        with pytest.raises(RuntimeError, match="Address already in use") as excinfo:
+            await compose_manager._run_up_with_progress(project, None)
+
+    assert "movie-moviepilot" in str(excinfo.value)
+    mock_run.assert_not_awaited()

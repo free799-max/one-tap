@@ -4,7 +4,8 @@
 其他应用。首次开启时自动部署一台专用 AdGuard Home：
 
 - AdGuard 与加速应用加入同一个独立 Docker 网络 ``onetap-accel``，使用固定
-  容器 IP，不需要占用宿主机的 53 端口；
+  容器 IP，不需要占用宿主机的 53 端口；网络的动态地址池会避开固定地址，
+  避免其它容器在 AdGuard 重建期间抢占；
 - 直接改写应用自己的 Compose 文件（单一文件源），每次开启/关闭都生成一个
   新的 Compose 版本；被改动的原始值记录在 ``x-onetap-accel`` 扩展字段里，
   关闭时按记录还原；
@@ -84,6 +85,52 @@ ADGUARD_SETUP_TIMEOUT = 90.0
 ADGUARD_WEB_TIMEOUT = 90.0
 ADGUARD_POLL_INTERVAL = 2.0
 ADGUARD_DEPLOY_TIMEOUT = 300.0
+
+IP_CONFLICT_MARKER = "address already in use"
+
+
+def _is_ip_conflict_error(exc: BaseException | str) -> bool:
+    """判断错误是否为 Docker 容器网络地址冲突。"""
+    return IP_CONFLICT_MARKER in str(exc).lower()
+
+
+def _dynamic_pool_range(subnet: ipaddress.IPv4Network) -> str | None:
+    """给动态分配划出地址池，避开低地址段供固定容器 IP 使用。
+
+    Docker 会从子网可用地址的最小值开始动态分配；AdGuard 固定使用低地址，
+    如果不限制动态池，其它容器在 AdGuard 重建期间可能抢占该地址，
+    导致新容器启动时报 ``Address already in use``。
+    """
+    if subnet.prefixlen >= 30:
+        return None
+    halves = list(subnet.subnets(new_prefix=subnet.prefixlen + 1))
+    if len(halves) < 2:
+        return None
+    return str(halves[1])
+
+
+def _network_layout(
+    network,
+) -> tuple[ipaddress.IPv4Network | None, str | None, ipaddress.IPv4Network | None]:
+    """解析加速网络的子网、网关与动态地址池。"""
+    configs = (network.attrs.get("IPAM") or {}).get("Config") or []
+    config = configs[0] if configs else {}
+    subnet_raw = config.get("Subnet")
+    try:
+        subnet = (
+            ipaddress.ip_network(subnet_raw, strict=False) if subnet_raw else None
+        )
+    except ValueError:
+        subnet = None
+    gateway = config.get("Gateway")
+    ip_range = config.get("IPRange")
+    try:
+        dynamic_pool = (
+            ipaddress.ip_network(ip_range, strict=False) if ip_range else None
+        )
+    except ValueError:
+        dynamic_pool = None
+    return subnet, gateway, dynamic_pool
 
 
 def _service_name(value: Any) -> str:
@@ -343,19 +390,27 @@ class HostsAccelerationService:
 
     @staticmethod
     def _pick_network_ip(network) -> str:
-        """在加速网络中挑选一个空闲容器 IP。"""
-        configs = (network.attrs.get("IPAM") or {}).get("Config") or []
-        subnet_raw = configs[0].get("Subnet") if configs else None
-        if not subnet_raw:
+        """在加速网络中挑选一个空闲容器 IP。
+
+        优先选动态池之外的地址，保证固定 IP 不会被其它容器的动态分配抢占。
+        """
+        subnet, gateway, dynamic_pool = _network_layout(network)
+        if subnet is None:
             raise APIException("加速网络缺少 IPAM 配置", 500)
-        subnet = ipaddress.ip_network(subnet_raw, strict=False)
-        gateway = configs[0].get("Gateway") if configs else None
         used: set[str] = set()
         for item in (network.attrs.get("Containers") or {}).values():
             address = str((item or {}).get("IPv4Address") or "").split("/")[0]
             if address:
                 used.add(address)
-        for host in subnet.hosts():
+
+        hosts = list(subnet.hosts())
+        preferred = (
+            [host for host in hosts if dynamic_pool is None or host not in dynamic_pool]
+            if dynamic_pool is not None
+            else hosts
+        )
+        fallback = [host for host in hosts if host not in preferred]
+        for host in [*preferred, *fallback]:
             address = str(host)
             if address == gateway or address in used:
                 continue
@@ -378,12 +433,16 @@ class HostsAccelerationService:
                 network = item
                 break
         if network is None:
-            subnet = self._pick_subnet(client)
+            subnet = ipaddress.ip_network(self._pick_subnet(client), strict=False)
+            ipam_config: dict[str, str] = {"Subnet": str(subnet)}
+            dynamic_pool = _dynamic_pool_range(subnet)
+            if dynamic_pool:
+                ipam_config["IPRange"] = dynamic_pool
             try:
                 client.networks.create(
                     ADGUARD_NETWORK,
                     driver="bridge",
-                    ipam={"Config": [{"Subnet": subnet}]},
+                    ipam={"Config": [ipam_config]},
                     labels={"com.onetap.acceleration": "true"},
                 )
             except docker_sdk.errors.APIError as exc:
@@ -399,29 +458,22 @@ class HostsAccelerationService:
                     return address
 
         if preferred_ip:
-            configs = (network.attrs.get("IPAM") or {}).get("Config") or []
-            subnet_raw = configs[0].get("Subnet") if configs else None
-            gateway = configs[0].get("Gateway") if configs else None
+            subnet, gateway, dynamic_pool = _network_layout(network)
             used = {
                 str((item or {}).get("IPv4Address") or "").split("/")[0]
                 for item in (network.attrs.get("Containers") or {}).values()
             }
             try:
                 candidate = ipaddress.ip_address(preferred_ip)
-                subnet = (
-                    ipaddress.ip_network(subnet_raw, strict=False)
-                    if subnet_raw
-                    else None
-                )
             except ValueError:
                 candidate = None
-                subnet = None
             if (
                 candidate is not None
                 and subnet is not None
                 and candidate in subnet
                 and str(candidate) != gateway
                 and str(candidate) not in used
+                and (dynamic_pool is None or candidate not in dynamic_pool)
             ):
                 return str(candidate)
 
@@ -831,12 +883,13 @@ class HostsAccelerationService:
         password = config.hosts_optimizer_adguard_password or secrets.token_urlsafe(12)
 
         app = await self._load_adguard_app(db)
+        previous_ip = config.hosts_optimizer_adguard_dns_ip
         reserve_ports([setup_port, web_port])
         try:
             if app is not None:
                 # 优先走应用市场的部署流程：端口检测、数据目录挂载、实例记录
                 # 与部署任务都由 AppService 统一处理。
-                await self._deploy_via_app_store(
+                dns_ip = await self._deploy_via_app_store(
                     db,
                     app,
                     host_base,
@@ -849,7 +902,7 @@ class HostsAccelerationService:
                     password=password,
                 )
             else:
-                await self._deploy_builtin(
+                dns_ip = await self._deploy_builtin(
                     db,
                     config,
                     host_base,
@@ -890,12 +943,24 @@ class HostsAccelerationService:
         # 优先改用容器 IP 管理 AdGuard，宿主机 IP 变化时无需重新部署。
         await self.refresh_managed_url(db, config)
 
+        warnings: list[str] = []
+        if previous_ip and previous_ip != dns_ip:
+            # 地址发生迁移时，已开启加速的应用仍指向旧 IP，需要同步改写。
+            report("initializing", 90, "同步加速应用的 DNS 地址")
+            warnings = await self._retarget_accelerated_apps(db, config)
+            for warning in warnings:
+                logger.warning(warning)
+
+        message = "AdGuard Home 已部署并完成初始化"
+        if warnings:
+            message += "；" + "；".join(warnings)
         return {
             "deployed": True,
             "url": config.hosts_optimizer_adguard_url,
             "dns_ip": dns_ip,
             "version": status_payload.get("version") if status_payload else None,
-            "message": "AdGuard Home 已部署并完成初始化",
+            "warnings": warnings,
+            "message": message,
         }
 
     async def _load_adguard_app(self, db: AsyncSession) -> App | None:
@@ -957,8 +1022,12 @@ class HostsAccelerationService:
         progress: Callable[[str, int, str, str | None], None] | None = None,
         username: str = "admin",
         password: str = "",
-    ) -> None:
-        """通过应用市场部署 AdGuard，并额外接入加速网络。"""
+    ) -> str:
+        """通过应用市场部署 AdGuard，并额外接入加速网络。
+
+        返回实际使用的 DNS 容器 IP。若部署过程中发现该地址已被其它容器
+        占用，会重新分配一个空闲地址并自动重试一次。
+        """
         from app.services.app_store import app_service
 
         if progress is not None:
@@ -982,29 +1051,49 @@ class HostsAccelerationService:
         )
         # 安装弹窗没有改镜像时，固定到稳定版本，避免模板里的 latest。
         config.setdefault("image", ADGUARD_IMAGE)
-        _, task_id = await app_service.deploy(
-            db,
-            app_name=app.name,
-            instance_name=ADGUARD_PROJECT,
-            config=config,
-            compose_overrides={
-                "services": {
-                    service_name: {
-                        "container_name": ADGUARD_CONTAINER,
-                        "networks": {
-                            ADGUARD_NETWORK: {"ipv4_address": dns_ip}
-                        },
-                    }
+
+        for attempt in (1, 2):
+            _, task_id = await app_service.deploy(
+                db,
+                app_name=app.name,
+                instance_name=ADGUARD_PROJECT,
+                config=config,
+                compose_overrides={
+                    "services": {
+                        service_name: {
+                            "container_name": ADGUARD_CONTAINER,
+                            "networks": {
+                                ADGUARD_NETWORK: {"ipv4_address": dns_ip}
+                            },
+                        }
+                    },
+                    "networks": {
+                        ADGUARD_NETWORK: {
+                            "external": True,
+                            "name": ADGUARD_NETWORK,
+                        }
+                    },
                 },
-                "networks": {
-                    ADGUARD_NETWORK: {
-                        "external": True,
-                        "name": ADGUARD_NETWORK,
-                    }
-                },
-            },
-        )
-        await self._wait_deploy_task(task_id, progress=progress)
+            )
+            try:
+                await self._wait_deploy_task(task_id, progress=progress)
+                return dns_ip
+            except Exception as exc:
+                if attempt == 2 or not _is_ip_conflict_error(exc):
+                    raise
+                if progress is not None:
+                    progress("preparing", 10, "检测到 DNS 地址冲突，重新分配")
+                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
+                # 重试会重建项目但复用同一份数据目录，密码哈希保持同步。
+                if password:
+                    await asyncio.to_thread(
+                        self._sync_data_password,
+                        self._app_store_conf_file(host_base, app, app_config),
+                        username,
+                        password,
+                    )
+
+        return dns_ip
 
     @staticmethod
     def _port_for_container(
@@ -1242,8 +1331,11 @@ class HostsAccelerationService:
         progress: Callable[[str, int, str, str | None], None] | None = None,
         username: str = "admin",
         password: str = "",
-    ) -> None:
-        """应用市场没有 AdGuard 时的兜底部署（内置 Compose）。"""
+    ) -> str:
+        """应用市场没有 AdGuard 时的兜底部署（内置 Compose）。
+
+        返回实际使用的 DNS 容器 IP；地址冲突时自动重新分配并重试一次。
+        """
         from app.services.compose import compose_manager
 
         logger.info("应用市场未找到 AdGuard Home，使用内置 Compose 部署")
@@ -1285,33 +1377,51 @@ class HostsAccelerationService:
             )
             try:
                 await compose_manager.action_async(db, project, action)
+                return dns_ip
             except Exception as exc:
-                raise APIException(f"启动 AdGuard Home 失败：{exc}", 502) from exc
-            return
+                if not _is_ip_conflict_error(exc):
+                    raise APIException(
+                        f"启动 AdGuard Home 失败：{exc}", 502
+                    ) from exc
+                # 旧网络没有预留动态地址池：地址被其它容器占用时换一个空闲 IP。
+                if progress is not None:
+                    progress("preparing", 15, "检测到 DNS 地址冲突，重新分配")
+                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
 
-        if progress is not None:
-            progress("creating_project", 10, "创建 AdGuard Home 项目")
-        await self._remove_project(db)
-        if password:
-            await asyncio.to_thread(
-                self._sync_data_password,
-                conf_file,
-                username,
-                password,
-            )
-        await compose_manager.create_project_async(
-            db,
-            project_name=ADGUARD_PROJECT,
-            content=self._adguard_compose_content(
-                host_base=host_base,
-                setup_port=setup_port,
-                web_port=web_port,
-                dns_ip=dns_ip,
-            ),
-            description="OneTap 应用加速专用 AdGuard Home",
-            allocate_ports=False,
-            progress_callback=progress,
-        )
+        for attempt in (1, 2):
+            if progress is not None:
+                progress("creating_project", 10, "创建 AdGuard Home 项目")
+            await self._remove_project(db)
+            if password:
+                await asyncio.to_thread(
+                    self._sync_data_password,
+                    conf_file,
+                    username,
+                    password,
+                )
+            try:
+                await compose_manager.create_project_async(
+                    db,
+                    project_name=ADGUARD_PROJECT,
+                    content=self._adguard_compose_content(
+                        host_base=host_base,
+                        setup_port=setup_port,
+                        web_port=web_port,
+                        dns_ip=dns_ip,
+                    ),
+                    description="OneTap 应用加速专用 AdGuard Home",
+                    allocate_ports=False,
+                    progress_callback=progress,
+                )
+                return dns_ip
+            except Exception as exc:
+                if attempt == 2 or not _is_ip_conflict_error(exc):
+                    raise
+                if progress is not None:
+                    progress("preparing", 15, "检测到 DNS 地址冲突，重新分配")
+                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
+
+        return dns_ip
 
     async def _remove_project(
         self, db: AsyncSession, backup_data: bool = False
@@ -1368,6 +1478,77 @@ class HostsAccelerationService:
                 ],
                 group_name=ADGUARD_PROJECT,
             )
+
+    async def _recover_conflicting_ip(
+        self, db: AsyncSession, dns_ip: str
+    ) -> str:
+        """清掉旧项目后重新挑选一个空闲 DNS 地址。
+
+        Docker 动态分配可能把 AdGuard 的固定地址抢先分给其它容器，
+        旧网络又没有预留地址池，只能换一个地址继续部署。
+        """
+        await self._remove_project(db)
+        new_ip = await self.ensure_network()
+        if new_ip != dns_ip:
+            logger.warning(
+                "AdGuard DNS 地址 %s 已被占用，改用 %s 重新部署", dns_ip, new_ip
+            )
+        return new_ip
+
+    async def _retarget_accelerated_apps(
+        self, db: AsyncSession, config: SystemConfig
+    ) -> list[str]:
+        """AdGuard 地址变化后，把已开启加速的应用 DNS 改到新地址。"""
+        from app.services.compose import compose_manager
+
+        dns_ip = config.hosts_optimizer_adguard_dns_ip
+        if not dns_ip:
+            return []
+        result = await db.execute(
+            select(AppInstance)
+            .options(
+                selectinload(AppInstance.app),
+                selectinload(AppInstance.project),
+            )
+            .where(AppInstance.acceleration_enabled.is_(True))
+        )
+        warnings: list[str] = []
+        for instance in result.scalars().all():
+            project = instance.project
+            if _is_adguard_app(instance.app) or project is None:
+                continue
+            paths = _config_file_paths(project)
+            if not paths or not paths[0].exists():
+                continue
+            primary = paths[0]
+            current = primary.read_text(encoding="utf-8")
+            try:
+                new_content, _ = apply_acceleration(
+                    current, dns_ip, ACCEL_FALLBACK_DNS
+                )
+            except ValueError as exc:
+                warnings.append(
+                    f"更新应用 {instance.instance_name} 的 DNS 地址失败：{exc}"
+                )
+                continue
+            if new_content.strip() == current.strip():
+                continue
+            path, version, original = await self._save_compose_version(
+                db, project, new_content, "OneTap 网络加速：更新 DNS 地址"
+            )
+            try:
+                await compose_manager.action_async(db, project, "up")
+            except Exception as exc:
+                await self._discard_version(db, version, path, original)
+                logger.warning(
+                    "更新加速应用 %s 的 DNS 地址失败：%s",
+                    instance.instance_name,
+                    exc,
+                )
+                warnings.append(
+                    f"更新应用 {instance.instance_name} 的 DNS 地址失败：{exc}"
+                )
+        return warnings
 
     async def delete_managed(
         self, db: AsyncSession, config: SystemConfig
