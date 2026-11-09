@@ -1106,7 +1106,11 @@ def test_dynamic_pool_range_keeps_low_addresses_free():
     assert _dynamic_pool_range(ipaddress.ip_network("172.31.254.0/30")) is None
 
 
-def _accel_network(containers: dict[str, str] | None = None) -> SimpleNamespace:
+def _accel_network(
+    containers: dict[str, str] | None = None,
+    *,
+    ip_range: str | None = "172.31.254.128/25",
+) -> SimpleNamespace:
     containers = containers or {}
     return SimpleNamespace(
         attrs={
@@ -1115,7 +1119,7 @@ def _accel_network(containers: dict[str, str] | None = None) -> SimpleNamespace:
                     {
                         "Subnet": "172.31.254.0/24",
                         "Gateway": "172.31.254.1",
-                        "IPRange": "172.31.254.128/25",
+                        "IPRange": ip_range or "",
                     }
                 ]
             },
@@ -1138,6 +1142,47 @@ def test_pick_network_ip_avoids_dynamic_pool():
             _accel_network({"other": "172.31.254.2"})
         )
         == "172.31.254.3"
+    )
+
+
+def test_pick_network_ip_skips_avoided_addresses():
+    """冲突后重新分配时排除刚失败的地址。"""
+    assert (
+        hosts_acceleration_service._pick_network_ip(
+            _accel_network(), avoid_ips={"172.31.254.2"}
+        )
+        == "172.31.254.3"
+    )
+
+
+def test_pick_network_ip_prefers_upper_half_without_ip_range():
+    """旧网络没有 IPRange 时用子网后半段，避开 Docker 的低地址动态分配。"""
+    assert (
+        hosts_acceleration_service._pick_network_ip(
+            _accel_network(ip_range=None)
+        )
+        == "172.31.254.128"
+    )
+
+
+def test_network_containers_reloads_list_summary():
+    """list() 概要对象没有 Containers，读取占用前必须先 reload。"""
+    network = _accel_network(ip_range=None)
+    network.attrs["Containers"] = None
+
+    def reload():
+        network.attrs["Containers"] = {
+            "id-other": {"Name": "other", "IPv4Address": "172.31.254.2/24"}
+        }
+
+    network.reload = reload
+
+    assert hosts_acceleration_service._network_containers(network) == {
+        "id-other": {"Name": "other", "IPv4Address": "172.31.254.2/24"}
+    }
+    assert (
+        hosts_acceleration_service._pick_network_ip(network)
+        == "172.31.254.128"
     )
 
 
@@ -1184,15 +1229,40 @@ async def test_ensure_network_creates_dynamic_pool(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ensure_network_reads_containers_from_detail(monkeypatch):
+    """list() 的概要对象不含容器端点，必须换成详情再挑地址。"""
+    detail = _accel_network({"other": "172.31.254.2"})
+    summary = SimpleNamespace(
+        name=ADGUARD_NETWORK,
+        attrs={**_accel_network().attrs, "Containers": None},
+    )
+
+    class FakeNetworks:
+        def list(self):
+            return [summary]
+
+        def get(self, name):
+            return detail
+
+    class FakeClient:
+        networks = FakeNetworks()
+
+    monkeypatch.setattr(docker_manager, "_client_obj", FakeClient())
+
+    # .2 已被其它容器占用，不能因为概要对象看不到就再次选中它。
+    assert await hosts_acceleration_service.ensure_network() == "172.31.254.3"
+
+
+@pytest.mark.asyncio
 async def test_recover_conflicting_ip_removes_project_and_reallocates(monkeypatch):
-    """地址冲突时先删除旧项目，再挑选新的空闲地址。"""
+    """地址冲突时先删除旧项目，再挑选新的空闲地址并避开冲突地址。"""
     calls: list = []
 
     async def fake_remove(db, backup_data=False):
         calls.append("remove")
 
-    async def fake_ensure(preferred_ip=None):
-        calls.append(("ensure", preferred_ip))
+    async def fake_ensure(preferred_ip=None, avoid_ips=None):
+        calls.append(("ensure", preferred_ip, set(avoid_ips or ())))
         return "172.31.254.7"
 
     monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
@@ -1203,7 +1273,18 @@ async def test_recover_conflicting_ip_removes_project_and_reallocates(monkeypatc
     )
 
     assert ip == "172.31.254.7"
-    assert calls == ["remove", ("ensure", None)]
+    assert calls == ["remove", ("ensure", None, {"172.31.254.2"})]
+
+
+def _adguard_app() -> App:
+    return App(
+        id=7,
+        name="adguardhome",
+        image="adguard/adguardhome",
+        config_schema={"containers": [{"name": "adguardhome"}]},
+        yaml_template="services:\n  adguardhome:\n    image: adguard/adguardhome\n",
+        display_name="AdGuard Home",
+    )
 
 
 @pytest.mark.asyncio
@@ -1212,14 +1293,7 @@ async def test_deploy_via_app_store_retries_on_ip_conflict(monkeypatch):
     from app.core.exceptions import APIException
     from app.services.app_store import app_service
 
-    app = App(
-        id=7,
-        name="adguardhome",
-        image="adguard/adguardhome",
-        config_schema={"containers": [{"name": "adguardhome"}]},
-        yaml_template="services:\n  adguardhome:\n    image: adguard/adguardhome\n",
-        display_name="AdGuard Home",
-    )
+    app = _adguard_app()
     deployed_ips: list[str] = []
     actions: list = []
 
@@ -1242,13 +1316,17 @@ async def test_deploy_via_app_store_retries_on_ip_conflict(monkeypatch):
     async def fake_remove(db, backup_data=False):
         actions.append("remove")
 
-    async def fake_recover(db, dns_ip):
-        actions.append(("recover", dns_ip))
+    async def fake_ensure(preferred_ip=None, avoid_ips=None):
+        return preferred_ip or "172.31.254.2"
+
+    async def fake_recover(db, dns_ip, avoid_ips=None):
+        actions.append(("recover", dns_ip, set(avoid_ips or ())))
         return "172.31.254.7"
 
     monkeypatch.setattr(app_service, "deploy", fake_deploy)
     monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
     monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(hosts_acceleration_service, "ensure_network", fake_ensure)
     monkeypatch.setattr(
         hosts_acceleration_service, "_recover_conflicting_ip", fake_recover
     )
@@ -1264,7 +1342,105 @@ async def test_deploy_via_app_store_retries_on_ip_conflict(monkeypatch):
 
     assert ip == "172.31.254.7"
     assert deployed_ips == ["172.31.254.2", "172.31.254.7"]
-    assert ("recover", "172.31.254.2") in actions
+    assert ("recover", "172.31.254.2", {"172.31.254.2"}) in actions
+
+
+@pytest.mark.asyncio
+async def test_deploy_via_app_store_retries_multiple_conflicts(monkeypatch):
+    """连续冲突时每次都用新地址，最多尝试 3 次。"""
+    from app.core.exceptions import APIException
+    from app.services.app_store import app_service
+
+    app = _adguard_app()
+    deployed_ips: list[str] = []
+    recovered: list[str] = []
+    replacements = iter(["172.31.254.7", "172.31.254.8"])
+
+    async def fake_deploy(db, **kwargs):
+        deployed_ips.append(
+            kwargs["compose_overrides"]["services"]["adguardhome"]["networks"][
+                ADGUARD_NETWORK
+            ]["ipv4_address"]
+        )
+        return object(), f"task-{len(deployed_ips)}"
+
+    async def fake_wait(task_id, timeout=None, progress=None):
+        if task_id in {"task-1", "task-2"}:
+            raise APIException("Address already in use", 502)
+
+    async def fake_ensure(preferred_ip=None, avoid_ips=None):
+        return preferred_ip or "172.31.254.2"
+
+    async def fake_recover(db, dns_ip, avoid_ips=None):
+        recovered.append(dns_ip)
+        return next(replacements)
+
+    async def fake_remove(db, backup_data=False):
+        return None
+
+    monkeypatch.setattr(app_service, "deploy", fake_deploy)
+    monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
+    monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(hosts_acceleration_service, "ensure_network", fake_ensure)
+    monkeypatch.setattr(
+        hosts_acceleration_service, "_recover_conflicting_ip", fake_recover
+    )
+    monkeypatch.setattr(
+        hosts_acceleration_service,
+        "_migrate_legacy_data",
+        lambda host_base: None,
+    )
+
+    ip = await hosts_acceleration_service._deploy_via_app_store(
+        None, app, "/tmp/host", 9006, 9007, "172.31.254.2"
+    )
+
+    assert ip == "172.31.254.8"
+    assert deployed_ips == ["172.31.254.2", "172.31.254.7", "172.31.254.8"]
+    assert recovered == ["172.31.254.2", "172.31.254.7"]
+
+
+@pytest.mark.asyncio
+async def test_deploy_via_app_store_rechecks_ip_after_cleanup(monkeypatch):
+    """旧项目删除后地址已被占用时，启动前就换成新地址。"""
+    from app.services.app_store import app_service
+
+    app = _adguard_app()
+    deployed_ips: list[str] = []
+
+    async def fake_deploy(db, **kwargs):
+        deployed_ips.append(
+            kwargs["compose_overrides"]["services"]["adguardhome"]["networks"][
+                ADGUARD_NETWORK
+            ]["ipv4_address"]
+        )
+        return object(), "task-1"
+
+    async def fake_wait(task_id, timeout=None, progress=None):
+        return None
+
+    async def fake_ensure(preferred_ip=None, avoid_ips=None):
+        return "172.31.254.9"
+
+    async def fake_remove(db, backup_data=False):
+        return None
+
+    monkeypatch.setattr(app_service, "deploy", fake_deploy)
+    monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
+    monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(hosts_acceleration_service, "ensure_network", fake_ensure)
+    monkeypatch.setattr(
+        hosts_acceleration_service,
+        "_migrate_legacy_data",
+        lambda host_base: None,
+    )
+
+    ip = await hosts_acceleration_service._deploy_via_app_store(
+        None, app, "/tmp/host", 9006, 9007, "172.31.254.2"
+    )
+
+    assert ip == "172.31.254.9"
+    assert deployed_ips == ["172.31.254.9"]
 
 
 @pytest.mark.asyncio
@@ -1273,14 +1449,7 @@ async def test_deploy_via_app_store_does_not_retry_other_errors(monkeypatch):
     from app.core.exceptions import APIException
     from app.services.app_store import app_service
 
-    app = App(
-        id=7,
-        name="adguardhome",
-        image="adguard/adguardhome",
-        config_schema={"containers": [{"name": "adguardhome"}]},
-        yaml_template="services:\n  adguardhome:\n    image: adguard/adguardhome\n",
-        display_name="AdGuard Home",
-    )
+    app = _adguard_app()
     deployed = []
 
     async def fake_deploy(db, **kwargs):
@@ -1293,9 +1462,13 @@ async def test_deploy_via_app_store_does_not_retry_other_errors(monkeypatch):
     async def fake_remove(db, backup_data=False):
         return None
 
+    async def fake_ensure(preferred_ip=None, avoid_ips=None):
+        return preferred_ip or "172.31.254.2"
+
     monkeypatch.setattr(app_service, "deploy", fake_deploy)
     monkeypatch.setattr(hosts_acceleration_service, "_wait_deploy_task", fake_wait)
     monkeypatch.setattr(hosts_acceleration_service, "_remove_project", fake_remove)
+    monkeypatch.setattr(hosts_acceleration_service, "ensure_network", fake_ensure)
     monkeypatch.setattr(
         hosts_acceleration_service,
         "_migrate_legacy_data",

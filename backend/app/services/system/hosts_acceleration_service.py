@@ -389,39 +389,64 @@ class HostsAccelerationService:
         raise APIException("没有可用的 Docker 子网用于加速网络", 500)
 
     @staticmethod
-    def _pick_network_ip(network) -> str:
+    def _network_containers(network) -> dict[str, Any]:
+        """读取网络上的容器端点。
+
+        ``client.networks.list()`` 返回的概要对象不含 ``Containers``，
+        必须 ``reload()`` 才能看到已占用地址；否则每次都会选中同一个
+        已被占用的低地址，重试也无法恢复。
+        """
+        if network.attrs.get("Containers") is None:
+            try:
+                network.reload()
+            except Exception as exc:
+                logger.warning("刷新加速网络信息失败：%s", exc)
+        return dict(network.attrs.get("Containers") or {})
+
+    @classmethod
+    def _pick_network_ip(
+        cls, network, avoid_ips: set[str] | None = None
+    ) -> str:
         """在加速网络中挑选一个空闲容器 IP。
 
-        优先选动态池之外的地址，保证固定 IP 不会被其它容器的动态分配抢占。
+        有新格式网络时优先选动态池之外的地址；旧网络没有 ``IPRange``，
+        则优先使用子网后半段，避开 Docker 从低地址开始的动态分配。
+        ``avoid_ips`` 用于排除刚发生过冲突的地址。
         """
         subnet, gateway, dynamic_pool = _network_layout(network)
         if subnet is None:
             raise APIException("加速网络缺少 IPAM 配置", 500)
-        used: set[str] = set()
-        for item in (network.attrs.get("Containers") or {}).values():
-            address = str((item or {}).get("IPv4Address") or "").split("/")[0]
-            if address:
-                used.add(address)
+        used = {
+            str((item or {}).get("IPv4Address") or "").split("/")[0]
+            for item in cls._network_containers(network).values()
+        }
+        blocked = used | set(avoid_ips or ())
 
         hosts = list(subnet.hosts())
-        preferred = (
-            [host for host in hosts if dynamic_pool is None or host not in dynamic_pool]
-            if dynamic_pool is not None
-            else hosts
-        )
+        if dynamic_pool is not None:
+            preferred = [host for host in hosts if host not in dynamic_pool]
+        else:
+            upper = _dynamic_pool_range(subnet)
+            pool = ipaddress.ip_network(upper, strict=False) if upper else None
+            preferred = [host for host in hosts if host in pool] if pool else hosts
         fallback = [host for host in hosts if host not in preferred]
         for host in [*preferred, *fallback]:
             address = str(host)
-            if address == gateway or address in used:
+            if address == gateway or address in blocked:
                 continue
             return address
         raise APIException("加速网络没有空闲 IP", 500)
 
-    def _ensure_network_sync(self, preferred_ip: str | None = None) -> str:
+    def _ensure_network_sync(
+        self,
+        preferred_ip: str | None = None,
+        avoid_ips: set[str] | None = None,
+    ) -> str:
         """确保加速网络存在，返回 AdGuard 当前可用的 DNS IP。
 
         ``preferred_ip`` 为上一次写入配置的容器 IP；重建容器时优先复用它，
-        避免已开启加速的应用仍指向旧地址。
+        避免已开启加速的应用仍指向旧地址。``avoid_ips`` 中的地址不会
+        被选中，用于地址冲突后的重新分配。
         """
         client = docker_manager._client
         if client is None:
@@ -430,7 +455,11 @@ class HostsAccelerationService:
         network = None
         for item in client.networks.list():
             if item.name == ADGUARD_NETWORK:
-                network = item
+                # list() 的结果不含容器端点，换成详情对象再判断占用情况。
+                try:
+                    network = client.networks.get(item.name)
+                except Exception:
+                    network = item
                 break
         if network is None:
             subnet = ipaddress.ip_network(self._pick_subnet(client), strict=False)
@@ -450,19 +479,22 @@ class HostsAccelerationService:
                 logger.info("创建加速网络失败，尝试复用已有网络：%s", exc)
             network = client.networks.get(ADGUARD_NETWORK)
 
+        avoid = set(avoid_ips or ())
+        containers = self._network_containers(network)
+        used = {
+            str((item or {}).get("IPv4Address") or "").split("/")[0]
+            for item in containers.values()
+        }
+
         # 已有 AdGuard 容器时沿用它的 IP，避免重配后应用还指向旧地址。
-        for item in (network.attrs.get("Containers") or {}).values():
+        for item in containers.values():
             if (item or {}).get("Name") == ADGUARD_CONTAINER:
                 address = str((item or {}).get("IPv4Address") or "").split("/")[0]
-                if address:
+                if address and address not in avoid:
                     return address
 
-        if preferred_ip:
+        if preferred_ip and preferred_ip not in avoid:
             subnet, gateway, dynamic_pool = _network_layout(network)
-            used = {
-                str((item or {}).get("IPv4Address") or "").split("/")[0]
-                for item in (network.attrs.get("Containers") or {}).values()
-            }
             try:
                 candidate = ipaddress.ip_address(preferred_ip)
             except ValueError:
@@ -477,12 +509,24 @@ class HostsAccelerationService:
             ):
                 return str(candidate)
 
-        return self._pick_network_ip(network)
+        picked = self._pick_network_ip(network, avoid_ips=avoid)
+        logger.info(
+            "加速网络 %s 选择 DNS 地址 %s（已占用：%s，避开：%s）",
+            ADGUARD_NETWORK,
+            picked,
+            sorted(address for address in used if address),
+            sorted(avoid),
+        )
+        return picked
 
-    async def ensure_network(self, preferred_ip: str | None = None) -> str:
+    async def ensure_network(
+        self,
+        preferred_ip: str | None = None,
+        avoid_ips: set[str] | None = None,
+    ) -> str:
         """确保加速网络存在并返回可用的 DNS IP。"""
         return await docker_manager.run_sync(
-            self._ensure_network_sync, preferred_ip
+            self._ensure_network_sync, preferred_ip, avoid_ips
         )
 
     def _ensure_backend_network_sync(self) -> bool:
@@ -1026,7 +1070,7 @@ class HostsAccelerationService:
         """通过应用市场部署 AdGuard，并额外接入加速网络。
 
         返回实际使用的 DNS 容器 IP。若部署过程中发现该地址已被其它容器
-        占用，会重新分配一个空闲地址并自动重试一次。
+        占用，会重新分配一个空闲地址并重试（最多 3 次）。
         """
         from app.services.app_store import app_service
 
@@ -1052,7 +1096,12 @@ class HostsAccelerationService:
         # 安装弹窗没有改镜像时，固定到稳定版本，避免模板里的 latest。
         config.setdefault("image", ADGUARD_IMAGE)
 
-        for attempt in (1, 2):
+        # 旧项目已删除，用最新占用情况重新确认地址：旧容器释放的地址继续沿用，
+        # 已被其它容器抢占时立即换一个，避免一次注定失败的启动。
+        dns_ip = await self.ensure_network(preferred_ip=dns_ip)
+        attempted: set[str] = set()
+        for attempt in range(1, 4):
+            attempted.add(dns_ip)
             _, task_id = await app_service.deploy(
                 db,
                 app_name=app.name,
@@ -1079,11 +1128,13 @@ class HostsAccelerationService:
                 await self._wait_deploy_task(task_id, progress=progress)
                 return dns_ip
             except Exception as exc:
-                if attempt == 2 or not _is_ip_conflict_error(exc):
+                if attempt == 3 or not _is_ip_conflict_error(exc):
                     raise
                 if progress is not None:
                     progress("preparing", 10, "检测到 DNS 地址冲突，重新分配")
-                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
+                dns_ip = await self._recover_conflicting_ip(
+                    db, dns_ip, avoid_ips=attempted
+                )
                 # 重试会重建项目但复用同一份数据目录，密码哈希保持同步。
                 if password:
                     await asyncio.to_thread(
@@ -1334,7 +1385,7 @@ class HostsAccelerationService:
     ) -> str:
         """应用市场没有 AdGuard 时的兜底部署（内置 Compose）。
 
-        返回实际使用的 DNS 容器 IP；地址冲突时自动重新分配并重试一次。
+        返回实际使用的 DNS 容器 IP；地址冲突时自动重新分配并重试（最多 3 次）。
         """
         from app.services.compose import compose_manager
 
@@ -1357,6 +1408,7 @@ class HostsAccelerationService:
         conf_file = (
             Path(host_base) / LEGACY_DATA_DIRNAME / "conf" / "AdGuardHome.yaml"
         )
+        avoided: set[str] = set()
         if project is not None and container is not None and same_ports:
             updated = (
                 await asyncio.to_thread(
@@ -1386,12 +1438,20 @@ class HostsAccelerationService:
                 # 旧网络没有预留动态地址池：地址被其它容器占用时换一个空闲 IP。
                 if progress is not None:
                     progress("preparing", 15, "检测到 DNS 地址冲突，重新分配")
-                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
+                avoided.add(dns_ip)
+                dns_ip = await self._recover_conflicting_ip(
+                    db, dns_ip, avoid_ips=avoided
+                )
 
-        for attempt in (1, 2):
+        for attempt in range(1, 4):
             if progress is not None:
                 progress("creating_project", 10, "创建 AdGuard Home 项目")
             await self._remove_project(db)
+            # 容器已删除，用最新占用情况确认地址后再启动。
+            dns_ip = await self.ensure_network(
+                preferred_ip=dns_ip, avoid_ips=avoided
+            )
+            avoided.add(dns_ip)
             if password:
                 await asyncio.to_thread(
                     self._sync_data_password,
@@ -1415,11 +1475,13 @@ class HostsAccelerationService:
                 )
                 return dns_ip
             except Exception as exc:
-                if attempt == 2 or not _is_ip_conflict_error(exc):
+                if attempt == 3 or not _is_ip_conflict_error(exc):
                     raise
                 if progress is not None:
                     progress("preparing", 15, "检测到 DNS 地址冲突，重新分配")
-                dns_ip = await self._recover_conflicting_ip(db, dns_ip)
+                dns_ip = await self._recover_conflicting_ip(
+                    db, dns_ip, avoid_ips=avoided
+                )
 
         return dns_ip
 
@@ -1480,19 +1542,26 @@ class HostsAccelerationService:
             )
 
     async def _recover_conflicting_ip(
-        self, db: AsyncSession, dns_ip: str
+        self,
+        db: AsyncSession,
+        dns_ip: str,
+        avoid_ips: set[str] | None = None,
     ) -> str:
         """清掉旧项目后重新挑选一个空闲 DNS 地址。
 
         Docker 动态分配可能把 AdGuard 的固定地址抢先分给其它容器，
-        旧网络又没有预留地址池，只能换一个地址继续部署。
+        旧网络又没有预留地址池，只能换一个地址继续部署。``dns_ip``
+        及 ``avoid_ips`` 中的地址一定不会再被选中。
         """
         await self._remove_project(db)
-        new_ip = await self.ensure_network()
-        if new_ip != dns_ip:
-            logger.warning(
-                "AdGuard DNS 地址 %s 已被占用，改用 %s 重新部署", dns_ip, new_ip
-            )
+        avoid = set(avoid_ips or ())
+        avoid.add(dns_ip)
+        new_ip = await self.ensure_network(avoid_ips=avoid)
+        if new_ip == dns_ip:
+            raise APIException("加速网络没有其它空闲 IP，无法重新分配", 500)
+        logger.warning(
+            "AdGuard DNS 地址 %s 已被占用，改用 %s 重新部署", dns_ip, new_ip
+        )
         return new_ip
 
     async def _retarget_accelerated_apps(
