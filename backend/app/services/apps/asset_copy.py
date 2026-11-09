@@ -20,6 +20,8 @@ from typing import Any
 
 from app.config import settings
 from app.services.apps.offline_assets import AssetCopy, OfflineAssetsProfile
+from app.services.docker.mirror_pull import pull_with_mirror
+from app.services.system.registry_mirror_service import get_acceleration_map
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +132,10 @@ async def _ensure_assets_container(
             progress(
                 "copying_assets", 10, "拉取离线资源镜像", profile.assets_image
             )
-        code, _, err = await _docker_exec(
-            "pull", profile.assets_image, timeout=1800
-        )
-        if code != 0:
+        acceleration = await get_acceleration_map()
+        if not await pull_with_mirror(profile.assets_image, acceleration):
             raise AssetCopyError(
-                f"拉取资源镜像失败（{profile.assets_image}）: {err or 'docker pull 失败'}"
+                f"拉取资源镜像失败（{profile.assets_image}）"
             )
 
     code, out, err = await _docker_exec(

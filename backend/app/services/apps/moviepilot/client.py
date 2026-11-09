@@ -39,12 +39,11 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
         previous_password: str | None = None,
         host_header_port: int | None = None,
     ) -> ProvisionResult:
-        """等待 MoviePilot 就绪并验证/更新统一账号密码。
+        """等待 MoviePilot 就绪并完成管理员初始化与账号复验。
 
-        首次部署时账号密码已通过 SUPERUSER/SUPERUSER_PASSWORD 环境变量
-        注入（首次初始化生效），这里等待服务就绪后登录复验。
-        修复场景下 env 不再生效：用 previous_password 登录后调用
-        用户更新接口改密，再复验。
+        账号密码通过 SUPERUSER/SUPERUSER_PASSWORD 环境变量注入；新版还需要
+        调用首次初始化接口创建管理员。修复场景下用 previous_password 登录后
+        调用用户更新接口改密，再复验。
         """
         base_url = str(url or "").rstrip("/")
         if not base_url:
@@ -56,6 +55,7 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
         password_change_attempted = False
 
         while time.monotonic() < deadline:
+            retry_delay = 5.0
             # 心跳读取该状态，避免进度里只有容器日志看不出卡在哪一步
             self.last_status = last_error
             try:
@@ -63,6 +63,64 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
                     timeout=self.TIMEOUT,
                     follow_redirects=True,
                 ) as client:
+                    initialization_resp = await client.get(
+                        f"{base_url}/api/v1/login/initialization"
+                    )
+                    initialization_data = None
+                    if initialization_resp.status_code == 200:
+                        try:
+                            initialization_payload = initialization_resp.json()
+                            if isinstance(initialization_payload, dict):
+                                initialization_data = initialization_payload.get("data")
+                        except json.JSONDecodeError:
+                            pass
+
+                    if (
+                        isinstance(initialization_data, dict)
+                        and initialization_data.get("initialized") is False
+                    ):
+                        if not api_key:
+                            return ProvisionResult(
+                                ok=False,
+                                message="缺少 API Token，无法初始化 MoviePilot 管理员",
+                            )
+                        initialize_resp = await client.post(
+                            f"{base_url}/api/v1/login/initialization",
+                            json={
+                                "username": username,
+                                "password": password,
+                                "confirm_password": password,
+                                "api_key": api_key,
+                            },
+                        )
+                        initialize_result = None
+                        if initialize_resp.status_code == 200:
+                            try:
+                                initialize_result = initialize_resp.json()
+                            except json.JSONDecodeError:
+                                pass
+                        if (
+                            isinstance(initialize_result, dict)
+                            and initialize_result.get("success") is True
+                        ):
+                            last_error = "管理员初始化完成，等待登录复验"
+                        elif initialize_resp.status_code == 409:
+                            last_error = "管理员已初始化，等待登录复验"
+                        else:
+                            last_error = (
+                                "管理员初始化失败: "
+                                f"HTTP {initialize_resp.status_code}"
+                            )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    if initialization_resp.status_code not in (200, 404):
+                        last_error = (
+                            "初始化状态检查失败: "
+                            f"HTTP {initialization_resp.status_code}"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+
                     token_resp = await client.post(
                         f"{base_url}/api/v1/login/access-token",
                         data={"username": username, "password": password},
@@ -71,7 +129,7 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
                         access_token = token_resp.json().get("access_token")
                         if not access_token:
                             last_error = "登录接口未返回 Token"
-                            await asyncio.sleep(5)
+                            await asyncio.sleep(retry_delay)
                             continue
                         user_resp = await client.get(
                             f"{base_url}/api/v1/user/",
@@ -95,7 +153,7 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
                             else:
                                 last_error = change_error
                         else:
-                            last_error = "登录被拒绝，管理员可能尚未初始化完成"
+                            last_error = "登录被拒绝，请检查管理员账号和密码"
                             if auth_deadline is None:
                                 auth_deadline = (
                                     time.monotonic()
@@ -105,11 +163,23 @@ class MoviePilotClient(MoviePilotIntegrationMixin, MoviePilotInspectionMixin, Ap
                                 return ProvisionResult(
                                     ok=False, message=last_error
                                 )
+                    elif token_resp.status_code == 429:
+                        try:
+                            retry_delay = max(
+                                retry_delay,
+                                float(token_resp.headers.get("Retry-After", "5")),
+                            )
+                        except ValueError:
+                            retry_delay = 30.0
+                        last_error = (
+                            "登录尝试过于频繁，"
+                            f"等待 {int(retry_delay)} 秒后重试"
+                        )
                     else:
                         last_error = f"服务响应异常: HTTP {token_resp.status_code}"
             except httpx.RequestError as exc:
                 last_error = f"无法连接到应用: {exc}"
-            await asyncio.sleep(5)
+            await asyncio.sleep(retry_delay)
 
         return ProvisionResult(ok=False, message=f"自动配置超时: {last_error}")
 

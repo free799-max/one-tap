@@ -1,21 +1,31 @@
-"""授权版自动更新：同步模板后升级 OneTap 自己部署的应用。
+"""自动更新：同步模板后升级 OneTap 自己部署的应用。
 
 只处理 OneTap 通过应用市场或自动化方案创建、并且仍由 Compose 项目管理的
 实例；用户在「容器编排」里手动创建的项目、以及导入的外部容器不在范围内。
 与手动升级一致，自动更新只替换镜像：不新增应用、不改挂载目录与端口，
 模板新增的应用留给用户手动部署。
+
+只允许在系统设置指定的夜间时段运行（默认 02:00-06:00），每晚执行一次，
+避免白天重启应用影响使用。
 """
 
 import asyncio
 import logging
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import APIException
 from app.database import async_session
+from app.models.docker import DockerComposeProject
 from app.models.orchestration import AppInstance, AppOrchestrationInstance
+from app.models.system_config import SystemConfig
 from app.services.orchestration import orchestration_service
+from app.services.orchestration.backup import (
+    AppDataEntry,
+    snapshot_app_data_dirs,
+)
 from app.services.orchestration.deploy_task_service import deploy_task_manager
 from app.services.orchestration.events import add_update_event
 from app.services.orchestration.upgrade import (
@@ -34,8 +44,108 @@ _run_lock = asyncio.Lock()
 """避免启动后的首轮更新与定时更新同时执行。"""
 
 
-async def _pending_group_ids() -> list[int]:
-    """返回方案版本落后于模板、且处于运行状态的实例组。"""
+def in_update_window(now: datetime, start_hour: int, end_hour: int) -> bool:
+    """判断当前时间是否落在自动更新的夜间时段内。
+
+    支持跨零点窗口（如 22 点至次日 6 点）；起止相同时视为全天。
+    """
+    if start_hour == end_hour:
+        return True
+    hour = now.hour
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
+def window_key(now: datetime, start_hour: int, end_hour: int) -> str:
+    """返回当前夜间时段的标识（跨零点时归到起始那一天）。
+
+    调度器用它保证同一晚只执行一轮自动更新。
+    """
+    day: date = now.date()
+    if start_hour > end_hour and now.hour < end_hour:
+        day -= timedelta(days=1)
+    return day.isoformat()
+
+
+async def _auto_backup_settings(db) -> tuple[bool, int]:
+    """读取自动备份开关与保留份数（无配置记录时按默认值）。"""
+    config = await db.get(SystemConfig, 1)
+    if config is None:
+        return False, 3
+    return bool(config.auto_backup_enabled), int(config.auto_backup_keep or 3)
+
+
+async def _snapshot_group_data(db, group: AppOrchestrationInstance) -> None:
+    """自动升级前复制实例组的应用数据目录，失败只告警不阻断升级。"""
+    enabled, keep = await _auto_backup_settings(db)
+    if not enabled:
+        return
+    entries: list[AppDataEntry] = []
+    for instance in group.instances:
+        db_app = instance.app
+        if db_app is None:
+            continue
+        project = (
+            await db.get(DockerComposeProject, instance.project_id)
+            if instance.project_id
+            else None
+        )
+        entries.append(
+            AppDataEntry(
+                instance_name=instance.instance_name,
+                app_name=db_app.name,
+                project_name=project.project_name if project else "",
+                config=instance.config or {},
+            )
+        )
+    try:
+        await snapshot_app_data_dirs(
+            db, entries, label=group.instance_name, keep=keep
+        )
+    except Exception:
+        logger.warning("自动备份实例组 %s 失败，继续升级", group.id, exc_info=True)
+
+
+async def _snapshot_instance_data(db, instance: AppInstance) -> None:
+    """自动升级前复制单个应用的数据目录，失败只告警不阻断升级。"""
+    enabled, keep = await _auto_backup_settings(db)
+    if not enabled:
+        return
+    project = (
+        await db.get(DockerComposeProject, instance.project_id)
+        if instance.project_id
+        else None
+    )
+    entries = [
+        AppDataEntry(
+            instance_name=instance.instance_name,
+            app_name=instance.app.name if instance.app else None,
+            project_name=project.project_name if project else "",
+            config=instance.config or {},
+        )
+    ]
+    try:
+        await snapshot_app_data_dirs(
+            db, entries, label=instance.instance_name, keep=keep
+        )
+    except Exception:
+        logger.warning(
+            "自动备份应用实例 %s 失败，继续升级", instance.id, exc_info=True
+        )
+
+
+async def _selected_targets() -> set[str]:
+    """读取用户勾选的自动更新服务；未配置时返回空集合。"""
+    async with async_session() as db:
+        config = await db.get(SystemConfig, 1)
+        if config is None:
+            return set()
+        return {str(item) for item in (config.auto_update_targets or []) if item}
+
+
+async def _pending_group_ids(selected: set[str]) -> list[int]:
+    """返回已勾选、方案版本落后于模板且处于运行状态的实例组。"""
     async with async_session() as db:
         groups = (
             (
@@ -51,17 +161,18 @@ async def _pending_group_ids() -> list[int]:
         return [
             group.id
             for group in groups
-            if group.orchestration is not None
+            if f"group:{group.id}" in selected
+            and group.orchestration is not None
             and group.orchestration_version != group.orchestration.version
             and group.status == "running"
         ]
 
 
-async def _pending_app_ids() -> list[int]:
-    """返回版本落后于应用模板的单应用实例。
+async def _pending_app_ids(selected: set[str]) -> list[int]:
+    """返回已勾选、版本落后于应用模板的单应用实例。
 
     跳过导入的外部容器（不受 OneTap 管理），以及上轮自动升级失败的版本，
-    避免同一版本每 30 分钟反复重试；管理端发布新版本后自动恢复。
+    避免每晚自动更新反复重试同一版本；管理端发布新版本后自动恢复。
     """
     async with async_session() as db:
         instances = (
@@ -82,6 +193,8 @@ async def _pending_app_ids() -> list[int]:
         )
         result: list[int] = []
         for instance in instances:
+            if f"app:{instance.id}" not in selected:
+                continue
             db_app = instance.app
             if db_app is None or instance.orchestration_version == db_app.version:
                 continue
@@ -183,6 +296,7 @@ async def _upgrade_group(group_id: int) -> str:
             await db.commit()
             return "upgraded"
 
+        await _snapshot_group_data(db, group)
         _, task_ids = await orchestration_service.upgrade_instance(
             db,
             group_id=group.id,
@@ -192,7 +306,6 @@ async def _upgrade_group(group_id: int) -> str:
             user_id=None,
             mode="auto",
         )
-
     status = await orchestration_service._wait_task_terminal(
         task_ids[0], timeout=TASK_TIMEOUT_SECONDS
     )
@@ -253,6 +366,7 @@ async def _upgrade_app(instance_id: int) -> str:
             await db.commit()
             return "upgraded"
 
+        await _snapshot_instance_data(db, instance)
         _, task_id = await orchestration_service.upgrade_single_instance(
             db,
             instance.id,
@@ -281,7 +395,12 @@ async def run_auto_update() -> dict:
             "apps_failed": 0,
         }
 
-        for group_id in await _pending_group_ids():
+        selected = await _selected_targets()
+        if not selected:
+            logger.info("自动更新未勾选任何服务，跳过本轮")
+            return {**stats, "skipped": True, "reason": "no_targets"}
+
+        for group_id in await _pending_group_ids(selected):
             try:
                 outcome = await _upgrade_group(group_id)
             except APIException as exc:
@@ -292,7 +411,7 @@ async def run_auto_update() -> dict:
                 outcome = "failed"
             stats[_outcome_key("groups", outcome)] += 1
 
-        for instance_id in await _pending_app_ids():
+        for instance_id in await _pending_app_ids(selected):
             try:
                 outcome = await _upgrade_app(instance_id)
             except APIException as exc:

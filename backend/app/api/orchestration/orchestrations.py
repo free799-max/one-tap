@@ -544,6 +544,7 @@ async def get_sync_status_endpoint(
 async def list_orchestration_update_events(
     scope: str | None = Query(None, description="template / instance"),
     orchestration_name: str | None = Query(None, description="按模板名过滤"),
+    mode: str | None = Query(None, description="auto / manual"),
     limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -553,6 +554,7 @@ async def list_orchestration_update_events(
         db,
         scope=scope,
         orchestration_name=orchestration_name,
+        mode=mode,
         limit=limit,
     )
 

@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import platform
-import socket
 
 import httpx
 
 from app.config import settings
 from app.database import async_session
 from app.services.licensing import licensing_service
+from app.services.licensing.device import get_host_details
 from app.services.manage_client import (
     ManageRequestError,
     manage_base_urls,
@@ -34,12 +33,6 @@ def _trim(value: str | None, limit: int) -> str | None:
     return value[:limit]
 
 
-def _device_platform() -> str | None:
-    name = platform.system() or ""
-    release = platform.release() or ""
-    return _trim(" ".join(part for part in (name, release) if part), 100)
-
-
 class InstallationReporter:
     """安装上报调度器：启动时上报一次，之后每天上报一次。"""
 
@@ -54,15 +47,20 @@ class InstallationReporter:
         async with async_session() as db:
             state = await licensing_service.get_state(db)
             await db.commit()
-            payload = {
-                "installation_id": state.installation_id,
-                "device_name": _trim(
-                    state.device_name or socket.gethostname(), 100
-                ),
-                "hostname": _trim(socket.gethostname(), 255),
-                "platform": _device_platform(),
-                "app_version": _trim(settings.APP_VERSION, 50),
-            }
+        details = await get_host_details()
+        device_info = details["device_info"]
+        payload = {
+            "installation_id": state.installation_id,
+            "device_name": _trim(state.device_name or details["hostname"], 100),
+            "hostname": _trim(details["hostname"], 255),
+            "platform": _trim(details["platform"], 100),
+            "app_version": _trim(settings.APP_VERSION, 50),
+            "device_info": {
+                "cpu_model": _trim(device_info.get("cpu_model"), 255),
+                "cpu_cores": device_info.get("cpu_cores"),
+                "memory_total_bytes": device_info.get("memory_total_bytes"),
+            },
+        }
 
         async def fetch(base_url: str) -> httpx.Response:
             async with httpx.AsyncClient(

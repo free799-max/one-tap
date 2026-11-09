@@ -45,12 +45,16 @@ class Settings(BaseSettings):
     COMPOSE_WORKSPACE_DIR: str = ""
     """Compose 项目工作目录，默认为 DATA_ROOT/compose，可单独覆盖。"""
 
+    HOST_PATH_ALIAS_ENABLED: bool = True
+    """是否建立宿主机路径软链别名，让 Compose 标签与相对挂载使用宿主机真实路径。"""
+
+    HOST_DATA_ROOT: str = ""
+    """DATA_ROOT 对应的宿主机路径；留空时通过自身容器挂载信息自动探测。"""
+
     APP_ICON_DIR: str = ""
     """图标文件存储目录，默认为 DATA_ROOT/app-icons，可单独覆盖。"""
 
-    MANAGE_BASE_URL: str = "https://m.one-tap.vip,https://m.one-tab.vip"
-    """配套管理端（onetap-manage）基础地址，设为空可禁用应用与编排方案同步。
-    支持逗号分隔的多个地址，前一个不可用时自动重试下一个；CI 可在构建前替换默认值。"""
+    MANAGE_BASE_URL: str = ""
 
     MANAGE_SYNC_INTERVAL_MINUTES: int = 30
     """从管理端定时同步应用与编排方案的间隔（分钟）。"""
@@ -69,6 +73,9 @@ class Settings(BaseSettings):
 
     LICENSE_HTTP_TIMEOUT_SECONDS: float = 15
     """授权管理端请求超时（秒）。"""
+
+    LICENSE_PURCHASE_URL: str = ""
+    """专属加速购买页地址；配置后前端展示购买入口。"""
 
     @model_validator(mode="after")
     def _fill_data_subdirs(self) -> "Settings":

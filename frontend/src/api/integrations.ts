@@ -51,11 +51,32 @@ export interface VaultwardenConfig {
   kind: "vaultwarden";
   enabled: boolean;
   configured: boolean;
+  managed: boolean;
+  running: boolean;
   url: string;
+  web_url: string | null;
+  web_port: number | null;
   email: string;
   password_set: boolean;
   synced_count: number;
   status: IntegrationStatus;
+}
+
+export interface VaultwardenDeployRequest {
+  email?: string | null;
+  password?: string | null;
+  web_port?: number | null;
+}
+
+export interface VaultwardenDeployTask {
+  task_id: string;
+  instance_name: string;
+  deploying: boolean;
+}
+
+export interface VaultwardenRemoveResult {
+  removed: boolean;
+  message: string;
 }
 
 export interface VaultwardenUpdate {
@@ -267,6 +288,20 @@ export function updateVaultwardenConfig(
     .then((r) => r.data as VaultwardenConfig);
 }
 
+export function deployVaultwarden(
+  data: VaultwardenDeployRequest
+): Promise<VaultwardenDeployTask> {
+  return api
+    .post("/integrations/vaultwarden/deploy", data)
+    .then((r) => r.data as VaultwardenDeployTask);
+}
+
+export function removeVaultwarden(): Promise<VaultwardenRemoveResult> {
+  return api
+    .delete("/integrations/vaultwarden/managed", { timeout: 120000 })
+    .then((r) => r.data as VaultwardenRemoveResult);
+}
+
 export function testVaultwarden(data: {
   url?: string | null;
   email?: string | null;
@@ -356,18 +391,45 @@ export function deleteNetworkProxy(
 }
 
 export type NetworkSecretProvider = "lucky" | "npm" | "ddnsgo" | "ddns";
+export type IntegrationSecretProvider =
+  | NetworkSecretProvider
+  | "vaultwarden"
+  | "adguard"
+  | "system"
+  | "license";
 
-export interface NetworkSecretOut {
+export interface IntegrationSecretOut {
   password: string;
+  reveal_token: string;
+  expires_at: string;
 }
 
-export function revealNetworkSecret(data: {
-  provider: NetworkSecretProvider;
-  password: string;
-}): Promise<NetworkSecretOut> {
+export function revealIntegrationSecret(data: {
+  provider: IntegrationSecretProvider;
+  password?: string;
+  reveal_token?: string;
+}): Promise<IntegrationSecretOut> {
+  const { provider, ...credentials } = data;
+  const path =
+    provider === "vaultwarden"
+      ? "/integrations/vaultwarden/secret"
+      : provider === "adguard"
+        ? "/settings/hosts-optimizer/secret"
+        : provider === "system"
+          ? "/settings/secret"
+          : provider === "license"
+            ? "/license/secret"
+            : "/integrations/network/secret";
+  const payload =
+    provider === "vaultwarden" ||
+    provider === "adguard" ||
+    provider === "system" ||
+    provider === "license"
+      ? credentials
+      : { provider, ...credentials };
   return api
-    .post("/integrations/network/secret", data)
-    .then((r) => r.data as NetworkSecretOut);
+    .post(path, payload)
+    .then((r) => r.data as IntegrationSecretOut);
 }
 
 export function listNpmCertificates(): Promise<NpmCertificate[]> {

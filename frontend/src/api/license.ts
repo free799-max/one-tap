@@ -6,16 +6,19 @@ export interface LicenseStatus {
   status: string;
   /** free 免费版；licensed 授权版 */
   edition: "free" | "licensed";
-  /** 是否为永久授权 */
+  /** 是否为永久授权（历史字段，当前授权均有期限） */
   perpetual: boolean;
   license_id: string | null;
   activation_id: string | null;
-  /** 授权码，仅管理员接口返回 */
+  /** 授权码不再随状态接口返回，仅记录是否已保存 */
   license_key: string | null;
+  license_key_set: boolean;
   device_name: string | null;
   expires_at: string | null;
   last_refreshed_at: string | null;
   last_error: string | null;
+  /** 专属加速购买页；未配置时为空 */
+  purchase_url: string | null;
 }
 
 export interface ActivateLicenseRequest {

@@ -8,7 +8,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { AppIcon } from "../apps/AppIcon";
 import { AutomationDeployWizard } from "./AutomationDeployWizard";
 import { AutomationImportDialog } from "./AutomationImportDialog";
@@ -399,46 +398,33 @@ export function AutomationCategoryPage() {
                   className="h-5 text-[11px]"
                 />
               )}
+              {instances.length > 0 && orchestrations.length > 1 && (
+                <div className="ml-4 flex flex-wrap items-center gap-1.5">
+                  {orchestrations.map((orchestration) => {
+                    const active = orchestration.name === activeOrchestration?.name;
+                    return (
+                      <button
+                        key={orchestration.name}
+                        type="button"
+                        onClick={() => switchRecipe(orchestration.name)}
+                        className={cn(
+                          "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] leading-4 transition-colors",
+                          active
+                            ? "border-primary/40 bg-primary/10 font-medium text-primary"
+                            : "border-border bg-background text-muted-foreground hover:bg-muted/50"
+                        )}
+                      >
+                        {orchestration.display_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <p className="mt-0.5 text-sm text-muted-foreground">
               {meta.description}
             </p>
           </div>
-
-          {instances.length > 0 && orchestrations.length > 1 && (
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-              {orchestrations.map((orchestration) => {
-                const active = orchestration.name === activeOrchestration?.name;
-                const count = instanceCountByRecipe[orchestration.name] ?? 0;
-                return (
-                  <button
-                    key={orchestration.name}
-                    type="button"
-                    onClick={() => switchRecipe(orchestration.name)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition-colors",
-                      active
-                        ? "border-primary/40 bg-primary/10 font-medium text-primary"
-                        : "border-border bg-background text-muted-foreground hover:bg-muted/50"
-                    )}
-                  >
-                    {orchestration.display_name}
-                    <span className="tabular-nums opacity-70">
-                      {formatVersion(orchestration.version)}
-                    </span>
-                    {count > 0 && (
-                      <Badge
-                        variant="secondary"
-                        className="h-4 px-1.5 py-0 text-[10px] font-normal"
-                      >
-                        {count}
-                      </Badge>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
 
           <div className="flex shrink-0 items-center gap-2">
             <Button

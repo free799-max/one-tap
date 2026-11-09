@@ -16,7 +16,13 @@ from app.schemas.system_config import SystemConfigUpdate
 MAX_DOCKER_REGISTRY_MIRRORS = 20
 """镜像加速地址数量上限。"""
 
-EMAIL_USERNAME_APPS: tuple[str, ...] = ("komga", "ermao-library")
+MAX_AUTO_UPDATE_TARGETS = 500
+"""自动更新服务选择数量上限。"""
+
+_AUTO_UPDATE_TARGET = re.compile(r"^(group|app):[1-9]\d*$")
+"""自动更新服务标识：group:<id> 或 app:<id>。"""
+
+EMAIL_USERNAME_APPS: tuple[str, ...] = ("komga", "ermao-library", "vaultwarden")
 """必须使用邮箱作为登录账号的应用。"""
 
 _EMAIL_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -92,6 +98,28 @@ def normalize_docker_registry_mirrors(urls: list[str]) -> list[str]:
     return normalized
 
 
+def normalize_auto_update_targets(targets: list[str]) -> list[str]:
+    """校验并规范化自动更新服务标识，去重并保持原顺序。"""
+    normalized: list[str] = []
+    for raw in targets:
+        key = (raw or "").strip()
+        if not key:
+            continue
+        if not _AUTO_UPDATE_TARGET.match(key):
+            raise APIException(
+                f"自动更新服务标识格式不正确，应为 group:<id> 或 app:<id>：{key}",
+                400,
+            )
+        if key not in normalized:
+            normalized.append(key)
+
+    if len(normalized) > MAX_AUTO_UPDATE_TARGETS:
+        raise APIException(
+            f"自动更新服务最多选择 {MAX_AUTO_UPDATE_TARGETS} 个", 400
+        )
+    return normalized
+
+
 class SystemConfigService:
     """系统全局配置服务。"""
 
@@ -156,6 +184,34 @@ class SystemConfigService:
         if data.auto_update_enabled is not None:
             config.auto_update_enabled = bool(data.auto_update_enabled)
 
+        if (
+            data.auto_update_window_start is not None
+            or data.auto_update_window_end is not None
+        ):
+            start = (
+                config.auto_update_window_start
+                if data.auto_update_window_start is None
+                else data.auto_update_window_start
+            )
+            end = (
+                config.auto_update_window_end
+                if data.auto_update_window_end is None
+                else data.auto_update_window_end
+            )
+            if start == end:
+                raise APIException("自动更新的开始与结束时间不能相同", 400)
+            config.auto_update_window_start = start
+            config.auto_update_window_end = end
+
+        if data.auto_backup_enabled is not None:
+            config.auto_backup_enabled = bool(data.auto_backup_enabled)
+        if data.auto_backup_keep is not None:
+            config.auto_backup_keep = data.auto_backup_keep
+        if data.auto_update_targets is not None:
+            config.auto_update_targets = normalize_auto_update_targets(
+                data.auto_update_targets
+            )
+
         if data.docker_registry_mirrors is not None:
             config.docker_registry_mirrors = normalize_docker_registry_mirrors(
                 data.docker_registry_mirrors
@@ -165,7 +221,7 @@ class SystemConfigService:
         await db.refresh(config)
         return config
 
-    def to_dict(self, config: SystemConfig) -> dict:
+    def to_dict(self, config: SystemConfig, include_password: bool = True) -> dict:
         """将配置对象转换为前端友好的字典。
 
         Args:
@@ -182,9 +238,17 @@ class SystemConfigService:
             "no_proxy": config.no_proxy,
             "service_port_start": config.service_port_start,
             "default_admin_username": config.default_admin_username,
-            "default_admin_password": config.default_admin_password,
+            "default_admin_password": (
+                config.default_admin_password if include_password else ""
+            ),
+            "default_admin_password_set": bool(config.default_admin_password),
             "default_email_domain": config.default_email_domain or "",
             "auto_update_enabled": bool(config.auto_update_enabled),
+            "auto_update_window_start": config.auto_update_window_start,
+            "auto_update_window_end": config.auto_update_window_end,
+            "auto_backup_enabled": bool(config.auto_backup_enabled),
+            "auto_backup_keep": config.auto_backup_keep,
+            "auto_update_targets": config.auto_update_targets or [],
             "email_username_apps": list(EMAIL_USERNAME_APPS),
             "docker_registry_mirrors": config.docker_registry_mirrors or [],
         }

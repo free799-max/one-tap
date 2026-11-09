@@ -116,33 +116,27 @@ async def search_images(
         raise APIException(f"镜像搜索失败: {e}", 500) from e
 
 
-_MANAGED_MIRRORS_TTL = 600
+_MANAGED_MIRRORS_TTL = 60
 """管理端推荐镜像源的内存缓存时长（秒）。"""
 
-_managed_mirrors_cache: tuple[float, list[str]] | None = None
-"""最近一次从管理端获取的镜像加速地址。"""
+_managed_mirrors_cache: tuple[float, dict[str, list[str]]] | None = None
+"""最近一次从管理端获取的「源站 → 加速地址」映射。"""
 
 
-async def _managed_tag_mirrors() -> list[str]:
-    """从管理端获取推荐镜像加速地址，未配置管理端时返回空列表。"""
+async def _acceleration_map(db: AsyncSession) -> dict[str, list[str]]:
+    """获取按源站分组的加速地址，失败时返回空映射。"""
     global _managed_mirrors_cache
     now = time.monotonic()
-    if _managed_mirrors_cache and now - _managed_mirrors_cache[0] < _MANAGED_MIRRORS_TTL:
+    if (
+        _managed_mirrors_cache
+        and now - _managed_mirrors_cache[0] < _MANAGED_MIRRORS_TTL
+    ):
         return _managed_mirrors_cache[1]
 
-    try:
-        payload = await registry_mirror_service.fetch_remote()
-    except Exception:
-        logger.info("从管理端获取镜像加速地址失败", exc_info=True)
-        return []
-
-    urls = [
-        str(item.get("url"))
-        for item in payload.get("mirrors") or []
-        if item.get("url")
-    ]
-    _managed_mirrors_cache = (now, urls)
-    return urls
+    mapping = await registry_mirror_service.acceleration_map(db)
+    if mapping:
+        _managed_mirrors_cache = (now, mapping)
+    return mapping
 
 
 async def _tag_mirrors(db: AsyncSession) -> list[str]:
@@ -157,7 +151,7 @@ async def _tag_mirrors(db: AsyncSession) -> list[str]:
     configured = list(config.docker_registry_mirrors or []) if config else []
     if configured:
         return configured
-    return await _managed_tag_mirrors()
+    return (await _acceleration_map(db)).get("docker.io", [])
 
 
 @router.get("/images/tags", response_model=list[ImageTag])
@@ -177,6 +171,7 @@ async def get_image_tags(
             image,
             refresh=refresh,
             mirror_provider=lambda: _tag_mirrors(db),
+            source_mirrors=await _acceleration_map(db),
         )
     except ImageTagsUnavailable as e:
         raise APIException(f"获取镜像标签失败：{e}", 502) from e
@@ -185,12 +180,14 @@ async def get_image_tags(
 @router.post("/images/pull", response_model=PullTaskResponse)
 async def pull_image(
     data: ImagePullRequest,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
     """启动镜像拉取任务。"""
     if not await docker_manager.run_sync(docker_manager.check_available):
         raise APIException("Docker 不可用", 503)
 
+    acceleration = await _acceleration_map(db)
     try:
         task_id = task_manager.create_task(data.image)
     except RuntimeError as e:
@@ -198,7 +195,7 @@ async def pull_image(
 
     thread = threading.Thread(
         target=docker_manager.pull_image_async,
-        args=(data.image, task_id, task_manager),
+        args=(data.image, task_id, task_manager, acceleration),
         daemon=True,
     )
     thread.start()

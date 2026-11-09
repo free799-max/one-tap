@@ -67,6 +67,257 @@ def _split_image_ref(image: str) -> tuple[str, str]:
     return host, repo
 
 
+def _parse_image_ref(image: str) -> tuple[str, str, str, str | None]:
+    """解析镜像引用，返回 ``(源站, 仓库名, tag, digest)``。
+
+    源站是客户端匹配加速域名用的键：Docker Hub 统一为 ``docker.io``。
+    """
+    ref = image.strip().removeprefix("https://").removeprefix("http://")
+    digest = None
+    if "@" in ref:
+        ref, digest = ref.split("@", 1)
+    tag = "latest"
+    head, separator, tail = ref.rpartition(":")
+    if separator and "/" not in tail:
+        ref, tag = head, tail
+    host, repo = _split_image_ref(ref)
+    return host or "docker.io", repo, tag, digest
+
+
+def _mirror_ref(image: str, mirror_url: str) -> str | None:
+    """把镜像引用改写成加速域名下的地址。
+
+    带 digest 的引用无法可靠改 tag，返回 ``None`` 由调用方直连。
+    """
+    _, repo, tag, digest = _parse_image_ref(image)
+    if not repo or digest:
+        return None
+    host = (
+        mirror_url.strip()
+        .removeprefix("https://")
+        .removeprefix("http://")
+        .rstrip("/")
+    )
+    if not host:
+        return None
+    return f"{host}/{repo}:{tag}"
+
+
+def _original_tag_target(image: str) -> tuple[str, str]:
+    """加速域名拉取完成后要改回的仓库名与 tag。"""
+    source, repo, tag, _ = _parse_image_ref(image)
+    repository = repo if source == "docker.io" else f"{source}/{repo}"
+    return repository, tag
+
+
+def _select_mirror(
+    image: str, acceleration: dict[str, list[str]] | None
+) -> tuple[str, tuple[str, str] | None]:
+    """挑选该镜像源站可用的加速地址，返回 ``(实际拉取引用, 改 tag 目标)``。"""
+    if not acceleration:
+        return image, None
+    source, _, _, digest = _parse_image_ref(image)
+    if digest:
+        return image, None
+    for url in acceleration.get(source) or []:
+        mirrored = _mirror_ref(image, url)
+        if mirrored:
+            return mirrored, _original_tag_target(image)
+    return image, None
+
+
+def _tag_back(
+    client, pulled_ref: str, repository: str, tag: str
+) -> bool:
+    """把加速域名下拉到的镜像改回原始仓库名，并去掉临时 tag。"""
+    try:
+        client.images.get(pulled_ref).tag(repository=repository, tag=tag)
+    except Exception:
+        common.logger.warning(
+            "镜像已拉取但改 tag 失败：%s -> %s:%s", pulled_ref, repository, tag,
+            exc_info=True,
+        )
+        return False
+    try:
+        client.images.remove(pulled_ref)
+    except Exception:
+        common.logger.debug("清理临时镜像 tag 失败：%s", pulled_ref)
+    return True
+
+
+_PULL_STATUS_MAP = {
+    "Pulling from": "拉取中",
+    "Pulling fs layer": "准备下载",
+    "Waiting": "等待中",
+    "Downloading": "下载中",
+    "Download complete": "下载完成",
+    "Verifying Checksum": "验证中",
+    "Pull complete": "已完成",
+    "Already exists": "已存在",
+    "Layer already exists": "已存在",
+    "Extracting": "解压中",
+    "Pulling manifest": "获取清单",
+}
+
+
+def _format_bytes(size: int) -> str:
+    if size == 0:
+        return "0 B"
+    step = 1024
+    units = ["B", "KB", "MB", "GB", "TB"]
+    index = min(len(units) - 1, int(math.log(size) / math.log(step)))
+    return f"{size / (step ** index):.1f} {units[index]}"
+
+
+def _map_pull_status(status: str) -> str:
+    for key, value in _PULL_STATUS_MAP.items():
+        if key in status:
+            return value
+    return status
+
+
+def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
+    """消费 docker pull 流并推送分层进度。"""
+    layers = {}
+    last_progress_time = common.time.time()
+    last_overall_percentage = 0
+
+    for line in stream:
+        if not line:
+            continue
+
+        status = line.get("status", "")
+        layer_id = line.get("id", "")
+        progress_detail = line.get("progressDetail", {}) or {}
+        current = progress_detail.get("current", 0) or 0
+        total = progress_detail.get("total", 0) or 0
+
+        now = common.time.time()
+
+        if layer_id:
+            if layer_id not in layers:
+                layers[layer_id] = {
+                    "status": status,
+                    "current": current,
+                    "total": total,
+                    "last_current": current,
+                    "last_time": now,
+                    "speed": 0,
+                }
+            else:
+                old = layers[layer_id]
+                time_delta = now - old["last_time"]
+                if time_delta >= 0.5 and current > old["last_current"]:
+                    speed = int((current - old["last_current"]) / time_delta)
+                    old["speed"] = speed
+                    old["last_current"] = current
+                    old["last_time"] = now
+                old["status"] = status
+                old["current"] = current
+                if total > 0:
+                    old["total"] = total
+
+        layer_progress_list = []
+        total_size = 0
+        downloaded_size = 0
+        total_speed = 0
+        downloading_count = 0
+        completed_layers = 0
+
+        for lid, ldata in layers.items():
+            l_total = ldata.get("total", 0)
+            l_current = ldata.get("current", 0)
+            l_status = ldata.get("status", "")
+            l_speed = ldata.get("speed", 0)
+
+            completed_statuses = (
+                "Pull complete",
+                "Already exists",
+                "Layer already exists",
+                "Download complete",
+            )
+            l_percentage = 0
+            if l_status in completed_statuses:
+                l_percentage = 100
+            elif l_total > 0 and l_current > 0:
+                l_percentage = int((l_current / l_total) * 100)
+
+            if l_status in completed_statuses:
+                progress_text = "已完成"
+            elif l_total > 0:
+                progress_text = f"{_format_bytes(l_current)} / {_format_bytes(l_total)}"
+            else:
+                progress_text = "--"
+
+            layer_progress_list.append({
+                "id": lid,
+                "status": l_status,
+                "status_text": _map_pull_status(l_status),
+                "current": l_current,
+                "total": l_total,
+                "progress_text": progress_text,
+                "percentage": l_percentage,
+                "speed": l_speed,
+            })
+
+            if l_status in completed_statuses or l_percentage == 100:
+                completed_layers += 1
+
+            if l_total > 0:
+                total_size += l_total
+                downloaded_size += min(l_current, l_total)
+
+            if l_speed > 0:
+                total_speed += l_speed
+                downloading_count += 1
+
+        total_layers = len(layers)
+        byte_percentage = 0
+        if total_size > 0:
+            byte_percentage = int((downloaded_size / total_size) * 100)
+
+        layer_average_percentage = 0
+        if total_layers > 0:
+            layer_percentage_sum = sum(
+                layer["percentage"] for layer in layer_progress_list
+            )
+            layer_average_percentage = int(layer_percentage_sum / total_layers)
+
+        calculated_percentage = max(byte_percentage, layer_average_percentage)
+        percentage = max(calculated_percentage, last_overall_percentage)
+        last_overall_percentage = percentage
+
+        if downloading_count > 0:
+            overall_status = f"下载中 {downloading_count} 个层"
+        elif completed_layers < total_layers:
+            overall_status = "准备下载"
+        else:
+            overall_status = "处理中"
+
+        size_text = (
+            f"{_format_bytes(downloaded_size)} / {_format_bytes(total_size)}"
+            if total_size > 0
+            else "--"
+        )
+
+        progress = {
+            "total_layers": total_layers,
+            "completed_layers": completed_layers,
+            "current_layer": layer_id,
+            "percentage": min(percentage, 99),
+            "status": overall_status,
+            "speed": total_speed,
+            "total_size": total_size,
+            "downloaded_size": downloaded_size,
+            "size_text": size_text,
+            "layers": layer_progress_list,
+        }
+
+        if now - last_progress_time >= 0.3:
+            task_manager.update_progress(task_id, progress)
+            last_progress_time = now
+
+
 def _parse_bearer_challenge(header: str) -> dict[str, str]:
     if not header or not header.lower().startswith("bearer"):
         return {}
@@ -624,11 +875,28 @@ class ImageService(common.BaseDockerService):
         except RuntimeError as e:
             raise RuntimeError("镜像搜索失败: " + str(e)) from e
 
-    def pull_image(self, image: str):
-        """拉取指定镜像。"""
+    def pull_image(
+        self, image: str, acceleration: dict[str, list[str]] | None = None
+    ):
+        """拉取指定镜像；选中加速域名时先下载再改回原始 tag。"""
         if not self._client:
             raise RuntimeError("Docker not available")
-        self._client.images.pull(image)
+        target, tag_target = _select_mirror(image, acceleration)
+        try:
+            self._client.images.pull(target)
+        except Exception:
+            if target == image:
+                raise
+            common.logger.info(
+                "通过加速域名 %s 拉取 %s 失败，回退直连", target, image,
+                exc_info=True,
+            )
+            self._client.images.pull(image)
+            return
+        if tag_target is not None and not _tag_back(
+            self._client, target, *tag_target
+        ):
+            raise RuntimeError("镜像已下载但改 tag 失败")
 
     async def get_image_tags(
         self,
@@ -637,6 +905,7 @@ class ImageService(common.BaseDockerService):
         refresh: bool = False,
         mirrors: list[str] | None = None,
         mirror_provider: Callable[[], Awaitable[list[str]]] | None = None,
+        source_mirrors: dict[str, list[str]] | None = None,
     ) -> list[dict]:
         """获取指定镜像的可用标签列表。
 
@@ -650,8 +919,9 @@ class ImageService(common.BaseDockerService):
         Args:
             image: 镜像名，可带标签或域名
             refresh: 为 True 时跳过进程内缓存重新获取
-            mirrors: 镜像加速地址列表，顺序即优先级
+            mirrors: Docker Hub 镜像加速地址列表，顺序即优先级
             mirror_provider: 未显式给 mirrors 时的异步备用源，仅在需要回退时调用
+            source_mirrors: 按源站分组的加速地址，用于 ghcr.io 等非 Hub 仓库
         """
         host, repo = _split_image_ref(image)
         if not repo:
@@ -678,10 +948,28 @@ class ImageService(common.BaseDockerService):
                 errors.append(f"{label}: 未返回标签")
             return tags
 
+        async def _try_mirrors(candidates: list[str] | None) -> list[dict]:
+            if not candidates:
+                return []
+            # 加速地址并发尝试，仍按配置顺序取第一个有结果的
+            attempts = [
+                _try(
+                    mirror,
+                    lambda m=mirror: _registry_tags(
+                        "", repo, _REGISTRY_TAG_LIMIT, root=m
+                    ),
+                )
+                for mirror in candidates
+            ]
+            results = await asyncio.gather(*attempts)
+            return next((result for result in results if result), [])
+
         if host:
             tags = await _try(
                 host, lambda: _registry_tags(host, repo, _REGISTRY_TAG_LIMIT)
             )
+            if not tags:
+                tags = await _try_mirrors((source_mirrors or {}).get(host))
         else:
             tags = await _try("Docker Hub", lambda: _hub_tags(repo, _TAG_LIMIT))
             if not tags:
@@ -693,25 +981,15 @@ class ImageService(common.BaseDockerService):
                 )
             if not tags:
                 candidates = mirrors
+                if candidates is None:
+                    candidates = (source_mirrors or {}).get("docker.io")
                 if candidates is None and mirror_provider is not None:
                     try:
                         candidates = await mirror_provider()
                     except Exception:
                         common.logger.info("获取镜像加速地址失败", exc_info=True)
                         candidates = []
-                if candidates:
-                    # 加速地址并发尝试，仍按配置顺序取第一个有结果的
-                    attempts = [
-                        _try(
-                            mirror,
-                            lambda m=mirror: _registry_tags(
-                                "", repo, _REGISTRY_TAG_LIMIT, root=m
-                            ),
-                        )
-                        for mirror in candidates
-                    ]
-                    results = await asyncio.gather(*attempts)
-                    tags = next((result for result in results if result), [])
+                tags = await _try_mirrors(candidates)
 
         if not tags:
             raise ImageTagsUnavailable("；".join(errors) or "未返回任何标签")
@@ -720,181 +998,48 @@ class ImageService(common.BaseDockerService):
         _tag_cache[cache_key] = (time.monotonic(), tags)
         return tags
 
-    def pull_image_async(self, image: str, task_id: str, task_manager):
-        """在后台线程中流式拉取指定镜像，并报告进度。"""
+    def pull_image_async(
+        self,
+        image: str,
+        task_id: str,
+        task_manager,
+        acceleration: dict[str, list[str]] | None = None,
+    ):
+        """在后台线程中流式拉取指定镜像，并报告进度。
+
+        有可用加速域名时先按加速地址下载，成功后改回原始 tag；
+        加速地址失败会自动回退直连，不需要宿主机配置 daemon.json。
+        """
         if not self._client:
             task_manager.fail_task(task_id, "Docker not available")
             raise RuntimeError("Docker not available")
 
-        STATUS_MAP = {
-            "Pulling from": "拉取中",
-            "Pulling fs layer": "准备下载",
-            "Waiting": "等待中",
-            "Downloading": "下载中",
-            "Download complete": "下载完成",
-            "Verifying Checksum": "验证中",
-            "Pull complete": "已完成",
-            "Already exists": "已存在",
-            "Layer already exists": "已存在",
-            "Extracting": "解压中",
-            "Pulling manifest": "获取清单",
-        }
+        target, tag_target = _select_mirror(image, acceleration)
 
-        def _format_bytes(b: int) -> str:
-            if b == 0:
-                return "0 B"
-            k = 1024
-            sizes = ["B", "KB", "MB", "GB", "TB"]
-            i = min(len(sizes) - 1, int(math.log(b) / math.log(k)))
-            return f"{b / (k ** i):.1f} {sizes[i]}"
-
-        def _map_status(status: str) -> str:
-            for key, value in STATUS_MAP.items():
-                if key in status:
-                    return value
-            return status
+        def _pull(ref: str) -> None:
+            stream = self._client.api.pull(ref, stream=True, decode=True)
+            _consume_pull_stream(stream, task_manager, task_id)
 
         try:
-            stream = self._client.api.pull(image, stream=True, decode=True)
-            layers = {}
-            last_progress_time = common.time.time()
-            last_overall_percentage = 0
-
-            for line in stream:
-                if not line:
-                    continue
-
-                status = line.get("status", "")
-                layer_id = line.get("id", "")
-                progress_detail = line.get("progressDetail", {}) or {}
-                current = progress_detail.get("current", 0) or 0
-                total = progress_detail.get("total", 0) or 0
-
-                now = common.time.time()
-
-                if layer_id:
-                    if layer_id not in layers:
-                        layers[layer_id] = {
-                            "status": status,
-                            "current": current,
-                            "total": total,
-                            "last_current": current,
-                            "last_time": now,
-                            "speed": 0,
-                        }
-                    else:
-                        old = layers[layer_id]
-                        time_delta = now - old["last_time"]
-                        if time_delta >= 0.5 and current > old["last_current"]:
-                            speed = int((current - old["last_current"]) / time_delta)
-                            old["speed"] = speed
-                            old["last_current"] = current
-                            old["last_time"] = now
-                        old["status"] = status
-                        old["current"] = current
-                        if total > 0:
-                            old["total"] = total
-
-                layer_progress_list = []
-                total_size = 0
-                downloaded_size = 0
-                total_speed = 0
-                downloading_count = 0
-                completed_layers = 0
-
-                for lid, ldata in layers.items():
-                    l_total = ldata.get("total", 0)
-                    l_current = ldata.get("current", 0)
-                    l_status = ldata.get("status", "")
-                    l_speed = ldata.get("speed", 0)
-
-                    completed_statuses = (
-                        "Pull complete",
-                        "Already exists",
-                        "Layer already exists",
-                        "Download complete",
+            if target != image:
+                try:
+                    _pull(target)
+                except Exception:
+                    common.logger.info(
+                        "通过加速域名 %s 拉取 %s 失败，回退直连",
+                        target,
+                        image,
+                        exc_info=True,
                     )
-                    l_percentage = 0
-                    if l_status in completed_statuses:
-                        l_percentage = 100
-                    elif l_total > 0 and l_current > 0:
-                        l_percentage = int((l_current / l_total) * 100)
-
-                    if l_status in completed_statuses:
-                        progress_text = "已完成"
-                    elif l_total > 0:
-                        progress_text = f"{_format_bytes(l_current)} / {_format_bytes(l_total)}"
-                    else:
-                        progress_text = "--"
-
-                    layer_progress_list.append({
-                        "id": lid,
-                        "status": l_status,
-                        "status_text": _map_status(l_status),
-                        "current": l_current,
-                        "total": l_total,
-                        "progress_text": progress_text,
-                        "percentage": l_percentage,
-                        "speed": l_speed,
-                    })
-
-                    if l_status in completed_statuses or l_percentage == 100:
-                        completed_layers += 1
-
-                    if l_total > 0:
-                        total_size += l_total
-                        downloaded_size += min(l_current, l_total)
-
-                    if l_speed > 0:
-                        total_speed += l_speed
-                        downloading_count += 1
-
-                total_layers = len(layers)
-                byte_percentage = 0
-                if total_size > 0:
-                    byte_percentage = int((downloaded_size / total_size) * 100)
-
-                layer_average_percentage = 0
-                if total_layers > 0:
-                    layer_percentage_sum = sum(
-                        layer["percentage"] for layer in layer_progress_list
-                    )
-                    layer_average_percentage = int(layer_percentage_sum / total_layers)
-
-                calculated_percentage = max(byte_percentage, layer_average_percentage)
-                percentage = max(calculated_percentage, last_overall_percentage)
-                last_overall_percentage = percentage
-
-                if downloading_count > 0:
-                    overall_status = f"下载中 {downloading_count} 个层"
-                elif completed_layers < total_layers:
-                    overall_status = "准备下载"
+                    _pull(image)
                 else:
-                    overall_status = "处理中"
-
-                size_text = (
-                    f"{_format_bytes(downloaded_size)} / {_format_bytes(total_size)}"
-                    if total_size > 0
-                    else "--"
-                )
-
-                progress = {
-                    "total_layers": total_layers,
-                    "completed_layers": completed_layers,
-                    "current_layer": layer_id,
-                    "percentage": min(percentage, 99),
-                    "status": overall_status,
-                    "speed": total_speed,
-                    "total_size": total_size,
-                    "downloaded_size": downloaded_size,
-                    "size_text": size_text,
-                    "layers": layer_progress_list,
-                }
-
-                if now - last_progress_time >= 0.3:
-                    task_manager.update_progress(task_id, progress)
-                    last_progress_time = now
-
+                    if tag_target is not None and not _tag_back(
+                        self._client, target, *tag_target
+                    ):
+                        task_manager.fail_task(task_id, "镜像已下载但改 tag 失败")
+                        return
+            else:
+                _pull(image)
             task_manager.complete_task(task_id)
         except common.docker.errors.ImageNotFound:
             task_manager.fail_task(task_id, "镜像不存在")

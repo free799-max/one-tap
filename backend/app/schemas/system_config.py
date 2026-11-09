@@ -28,7 +28,23 @@ class SystemConfigBase(BaseModel):
         description="需要邮箱登录的应用使用的邮箱后缀（不含 @）",
     )
     auto_update_enabled: bool = Field(
-        False, description="是否开启自动更新（仅授权版可开启）"
+        False, description="是否开启自动更新（夜间时段运行）"
+    )
+    auto_update_window_start: int = Field(
+        2, ge=0, le=23, description="自动更新夜间时段的起始小时"
+    )
+    auto_update_window_end: int = Field(
+        6, ge=0, le=23, description="自动更新夜间时段的结束小时"
+    )
+    auto_backup_enabled: bool = Field(
+        True, description="自动升级前是否备份应用数据目录"
+    )
+    auto_backup_keep: int = Field(
+        3, ge=1, le=10, description="自动备份保留份数"
+    )
+    auto_update_targets: list[str] = Field(
+        default_factory=list,
+        description="允许自动更新的服务标识列表（group:<id> / app:<id>）",
     )
     docker_registry_mirrors: list[str] = Field(
         default_factory=list,
@@ -40,6 +56,9 @@ class SystemConfigOut(SystemConfigBase):
     """系统配置响应模型。"""
 
     id: int
+    default_admin_password_set: bool = Field(
+        False, description="是否已设置统一管理员密码"
+    )
     email_username_apps: list[str] = Field(
         default_factory=list,
         description="使用邮箱作为登录账号的应用标识",
@@ -58,7 +77,23 @@ class SystemConfigUpdate(BaseModel):
     default_admin_password: Optional[str] = Field(None, max_length=255)
     default_email_domain: Optional[str] = Field(None, max_length=255)
     auto_update_enabled: Optional[bool] = Field(
-        None, description="是否开启自动更新（仅授权版可开启）"
+        None, description="是否开启自动更新（夜间时段运行）"
+    )
+    auto_update_window_start: Optional[int] = Field(
+        None, ge=0, le=23, description="自动更新夜间时段的起始小时"
+    )
+    auto_update_window_end: Optional[int] = Field(
+        None, ge=0, le=23, description="自动更新夜间时段的结束小时"
+    )
+    auto_backup_enabled: Optional[bool] = Field(
+        None, description="自动升级前是否备份应用数据目录"
+    )
+    auto_backup_keep: Optional[int] = Field(
+        None, ge=1, le=10, description="自动备份保留份数"
+    )
+    auto_update_targets: Optional[list[str]] = Field(
+        None,
+        description="允许自动更新的服务标识列表（group:<id> / app:<id>）",
     )
     docker_registry_mirrors: Optional[list[str]] = None
 
@@ -96,19 +131,37 @@ class RemoteDockerMirror(BaseModel):
     name: str
     url: str
     priority: int = 100
+    tier: str = "free"
+    source: str = "docker.io"
+    auth_type: str = "none"
     region: Optional[str] = None
     description: Optional[str] = None
     doc_url: Optional[str] = None
     last_check_ok: Optional[bool] = None
     last_latency_ms: Optional[int] = None
     last_checked_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
 
 
 class RemoteDockerMirrorsOut(BaseModel):
-    """管理端镜像加速源拉取结果。"""
+    """管理端镜像加速源拉取结果。
+
+    免费线路来自公开列表；授权专属域名由本机凭刷新令牌单独获取，
+    只有已激活设备才会出现。
+    """
 
     configured: bool = Field(description="是否配置了管理端地址")
+    licensed: bool = False
     mirrors: list[RemoteDockerMirror] = Field(default_factory=list)
+
+
+class DockerMirrorEffectivenessOut(BaseModel):
+    """授权专属镜像源的实际可用状态。"""
+
+    effective: bool
+    available_count: int = 0
+    total_count: int = 0
+    message: str = ""
 
 
 class DockerMirrorTestRequest(BaseModel):
@@ -133,3 +186,33 @@ class DockerMirrorTestResult(BaseModel):
     ok_count: int
     total: int
     results: list[DockerMirrorTestItem]
+
+
+class AutoUpdateTargetOut(BaseModel):
+    """可配置自动更新的一个服务（组合实例组或单应用实例）。"""
+
+    key: str = Field(description="group:<id> / app:<id>")
+    type: str = Field(description="group / app")
+    id: int
+    name: str = Field(description="实例名")
+    display_name: str = Field(description="展示名称")
+    icon: Optional[str] = Field(None, description="应用或方案图标")
+    icon_name: str = Field("", description="图标静态资源回退使用的应用标识")
+    status: str
+    current_version: Optional[str] = None
+    target_version: Optional[str] = None
+    upgrade_available: bool = False
+    app_count: int = 1
+    apps: list[str] = Field(default_factory=list)
+    complex: bool = Field(
+        False,
+        description="组合部署或多容器应用，升级只替换主服务镜像，建议谨慎开启",
+    )
+    selectable: bool = True
+    reason: Optional[str] = Field(None, description="不可选或需要谨慎的原因")
+
+
+class AutoUpdateTargetsOut(BaseModel):
+    """自动更新服务候选列表。"""
+
+    targets: list[AutoUpdateTargetOut] = Field(default_factory=list)

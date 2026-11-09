@@ -14,10 +14,21 @@ export interface SystemConfig {
   service_port_start: number;
   default_admin_username: string;
   default_admin_password: string;
+  default_admin_password_set: boolean;
   /** 需要邮箱登录的应用使用的邮箱后缀（不含 @） */
   default_email_domain: string;
-  /** 是否开启自动更新（仅授权版可开启） */
+  /** 是否开启自动更新（只在夜间时段运行） */
   auto_update_enabled: boolean;
+  /** 自动更新夜间时段起始小时（0-23） */
+  auto_update_window_start: number;
+  /** 自动更新夜间时段结束小时（0-23） */
+  auto_update_window_end: number;
+  /** 自动升级前是否备份应用数据目录 */
+  auto_backup_enabled: boolean;
+  /** 自动备份保留份数 */
+  auto_backup_keep: number;
+  /** 允许自动更新的服务标识（group:<id> / app:<id>） */
+  auto_update_targets: string[];
   /** 使用邮箱作为登录账号的应用标识 */
   email_username_apps: string[];
   /** Docker 镜像加速地址列表，顺序即优先级 */
@@ -34,6 +45,11 @@ export interface SystemConfigUpdate {
   default_admin_password?: string;
   default_email_domain?: string | null;
   auto_update_enabled?: boolean;
+  auto_update_window_start?: number;
+  auto_update_window_end?: number;
+  auto_backup_enabled?: boolean;
+  auto_backup_keep?: number;
+  auto_update_targets?: string[];
   docker_registry_mirrors?: string[];
 }
 
@@ -51,6 +67,11 @@ export function getSystemConfig(): Promise<SystemConfig> {
       default_admin_password: data.default_admin_password ?? "",
       default_email_domain: data.default_email_domain ?? "",
       auto_update_enabled: data.auto_update_enabled ?? false,
+      auto_update_window_start: data.auto_update_window_start ?? 2,
+      auto_update_window_end: data.auto_update_window_end ?? 6,
+      auto_backup_enabled: data.auto_backup_enabled ?? true,
+      auto_backup_keep: data.auto_backup_keep ?? 3,
+      auto_update_targets: data.auto_update_targets ?? [],
       email_username_apps: data.email_username_apps ?? [],
       docker_registry_mirrors: data.docker_registry_mirrors ?? [],
     };
@@ -64,23 +85,70 @@ export function updateSystemConfig(
   return api.put("/settings", data).then((r) => r.data as SystemConfig);
 }
 
+/** 可配置自动更新的服务 */
+export interface AutoUpdateTarget {
+  /** group:<id> / app:<id> */
+  key: string;
+  type: "group" | "app";
+  id: number;
+  /** 实例名 */
+  name: string;
+  display_name: string;
+  /** 应用或方案图标 */
+  icon: string | null;
+  /** 图标静态资源回退使用的应用标识 */
+  icon_name: string;
+  status: string;
+  current_version: string | null;
+  target_version: string | null;
+  upgrade_available: boolean;
+  app_count: number;
+  apps: string[];
+  /** 组合部署或多容器应用，升级只替换主服务镜像 */
+  complex: boolean;
+  selectable: boolean;
+  /** 不可选或需要谨慎的原因 */
+  reason: string | null;
+}
+
+/** 自动更新服务候选列表 */
+export interface AutoUpdateTargets {
+  targets: AutoUpdateTarget[];
+}
+
+/** 获取可勾选自动更新的服务 */
+export function listAutoUpdateTargets(): Promise<AutoUpdateTargets> {
+  return api
+    .get("/settings/auto-update/targets")
+    .then((r) => r.data as AutoUpdateTargets);
+}
+
 /** 管理端下发的 Docker 镜像加速源 */
 export interface RemoteDockerMirror {
   name: string;
   url: string;
   priority: number;
+  /** free 免费线路 / subscription 授权专属域名 */
+  tier: string;
+  /** 上游源站：docker.io、ghcr.io 等 */
+  source: string;
+  auth_type: string;
   region: string | null;
   description: string | null;
   doc_url: string | null;
   last_check_ok: boolean | null;
   last_latency_ms: number | null;
   last_checked_at: string | null;
+  /** 专属域名的到期时间 */
+  expires_at: string | null;
 }
 
 /** 从管理端获取镜像加速源的结果 */
 export interface RemoteDockerMirrors {
   /** 是否配置了管理端地址 */
   configured: boolean;
+  /** 本机是否已激活授权并拿到专属域名 */
+  licensed: boolean;
   mirrors: RemoteDockerMirror[];
 }
 
@@ -89,6 +157,21 @@ export function listRemoteDockerMirrors(): Promise<RemoteDockerMirrors> {
   return api
     .get("/settings/docker-mirrors/remote")
     .then((r) => r.data as RemoteDockerMirrors);
+}
+
+/** 授权专属镜像源的实际可用状态 */
+export interface DockerMirrorEffectiveness {
+  effective: boolean;
+  available_count: number;
+  total_count: number;
+  message: string;
+}
+
+/** 实际探测授权专属镜像源是否可用 */
+export function getDockerMirrorEffectiveness(): Promise<DockerMirrorEffectiveness> {
+  return api
+    .get("/settings/docker-mirrors/effectiveness")
+    .then((r) => r.data as DockerMirrorEffectiveness);
 }
 
 /** 单个镜像加速地址的检测结果 */
@@ -211,9 +294,26 @@ export function deleteStorageDirectory(id: number): Promise<null> {
 }
 
 /** 获取服务端口分配建议（从起始端口顺序分配的空闲端口） */
-export function getPortSuggestions(count: number): Promise<number[]> {
+export interface PortSuggestionOptions {
+  /** 优先复用且确认空闲的端口 */
+  preferred?: number[];
+  /** 忽略该容器已映射的端口（用于重建同一服务） */
+  excludeContainer?: string;
+}
+
+export function getPortSuggestions(
+  count: number,
+  options?: PortSuggestionOptions
+): Promise<number[]> {
+  const params: Record<string, string | number> = { count };
+  if (options?.preferred?.length) {
+    params.preferred = options.preferred.join(",");
+  }
+  if (options?.excludeContainer) {
+    params.exclude_container = options.excludeContainer;
+  }
   return api
-    .get("/settings/port-suggestions", { params: { count } })
+    .get("/settings/port-suggestions", { params })
     .then((r) => r.data.ports as number[]);
 }
 
@@ -227,12 +327,21 @@ export interface HostsOptimizerConfig {
   adguard_url: string | null;
   adguard_username: string;
   adguard_password: string;
+  adguard_password_set?: boolean;
+  /** 以下字段由后端维护，只读 */
+  adguard_managed?: boolean;
+  adguard_dns_ip?: string | null;
+  manage_configured?: boolean;
+  managed_rules?: unknown[];
+  managed_rules_synced_at?: string | null;
 }
 
-/** 单个域名的优选结果 */
+/** 单个域名的优选结果；只有数量和最优延迟，不含具体 IP */
 export interface HostsOptimizerDomainResult {
   status: string;
-  ips: { ip: string; latency_ms: number }[];
+  source?: string;
+  ip_count?: number;
+  best_latency_ms?: number | null;
 }
 
 /** 一次优选运行结果 */
@@ -276,7 +385,7 @@ export function updateHostsOptimizerConfig(
     .then((r) => r.data as HostsOptimizerConfig);
 }
 
-/** 查询 Hosts 优选运行状态 */
+/** 查询 Hosts 优选运行状态；结果不含具体 IP */
 export function getHostsOptimizerStatus(): Promise<HostsOptimizerStatus> {
   return api
     .get("/settings/hosts-optimizer/status")
@@ -294,9 +403,157 @@ export function testHostsOptimizer(data: {
     .then((r) => r.data as HostsOptimizerTestResult);
 }
 
-/** 立即执行一次 Hosts 优选 */
+/** 立即执行一次 Hosts 优选；返回结果不含具体 IP */
 export function runHostsOptimizer(): Promise<HostsOptimizerRun> {
   return api
     .post("/settings/hosts-optimizer/run", {}, { timeout: 200000 })
     .then((r) => r.data as HostsOptimizerRun);
+}
+
+/** 管理端下发的加速域名规则 */
+export interface ManagedDnsRule {
+  domain: string;
+  answers: string[];
+  priority: number;
+  description: string | null;
+  /** free 免费线路 / subscription 专属加速 */
+  tier?: string;
+}
+
+/** 管理端加速规则状态 */
+export interface ManagedDnsRules {
+  configured: boolean;
+  rules: ManagedDnsRule[];
+  synced_at: string | null;
+  error: string | null;
+}
+
+/** 可配置 DNS 加速的应用实例 */
+export interface AccelerationApp {
+  instance_id: number;
+  instance_name: string;
+  display_name: string;
+  app_name: string | null;
+  icon: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  orchestration_group_id: number | null;
+  orchestration_group_name: string | null;
+  orchestration_name: string | null;
+  status: string;
+  services: string[];
+  acceleration_enabled: boolean;
+  dns: string[];
+  can_enable: boolean;
+  reason: string | null;
+}
+
+/** AdGuard Home 自动部署状态 */
+export interface AccelerationAdguard {
+  configured: boolean;
+  managed: boolean;
+  running: boolean;
+  url: string | null;
+  web_url: string | null;
+  dns_ip: string | null;
+  setup_port: number | null;
+  web_port: number | null;
+  version: string | null;
+  network: string;
+  fallback_dns?: string[];
+  message: string;
+}
+
+/** 应用加速聚合状态 */
+export interface AccelerationOverview {
+  adguard: AccelerationAdguard;
+  managed_rules: ManagedDnsRules;
+  apps: AccelerationApp[];
+  network_effective: boolean | null;
+  network_rule_count: number;
+  network_applied_rule_count: number;
+  network_app_count: number;
+  network_message: string;
+}
+
+/** 应用加速开关结果 */
+export interface AccelerationToggleResult {
+  instance_id: number;
+  enabled: boolean;
+  dns_ip: string | null;
+  services: string[];
+  warnings: string[];
+  message: string;
+}
+
+/** 自动部署 AdGuard Home 的任务响应 */
+export interface AdguardDeployResult {
+  task_id: string;
+  instance_name: string | null;
+  status: string;
+}
+
+/** 删除 OneTap 托管 AdGuard Home 的结果 */
+export interface AdguardRemoveResult {
+  removed: boolean;
+  disabled_apps: string[];
+  warnings: string[];
+  message: string;
+}
+
+/** 查询应用加速、AdGuard 与管理端规则状态 */
+export function getHostsAccelerationOverview(): Promise<AccelerationOverview> {
+  return api
+    .get("/settings/hosts-optimizer/acceleration")
+    .then((r) => r.data as AccelerationOverview);
+}
+
+/** 开启或关闭单个应用的 DNS 加速 */
+export function toggleAppAcceleration(
+  instanceId: number,
+  enabled: boolean
+): Promise<AccelerationToggleResult> {
+  return api
+    .post(
+      `/settings/hosts-optimizer/acceleration/apps/${instanceId}`,
+      { enabled },
+      { timeout: 320000 }
+    )
+    .then((r) => r.data as AccelerationToggleResult);
+}
+
+/** 应用市场安装弹窗提交的 AdGuard 部署参数 */
+export interface AdguardDeployRequest {
+  instance_name?: string;
+  config?: Record<string, unknown>;
+}
+
+/** 自动部署 OneTap 专用 AdGuard Home */
+/** 自动部署 OneTap 专用 AdGuard Home（立即返回部署任务 ID） */
+export function deployHostsAdguard(
+  data?: AdguardDeployRequest
+): Promise<AdguardDeployResult> {
+  return api
+    .post(
+      "/settings/hosts-optimizer/acceleration/adguard/deploy",
+      data ?? {},
+      { timeout: 30000 }
+    )
+    .then((r) => r.data as AdguardDeployResult);
+}
+
+/** 关闭所有应用加速并删除 OneTap 托管的 AdGuard Home */
+export function removeHostsAdguard(): Promise<AdguardRemoveResult> {
+  return api
+    .delete("/settings/hosts-optimizer/acceleration/adguard", {
+      timeout: 320000,
+    })
+    .then((r) => r.data as AdguardRemoveResult);
+}
+
+/** 从管理端同步加速域名规则 */
+export function syncHostsManagedRules(): Promise<ManagedDnsRules> {
+  return api
+    .post("/settings/hosts-optimizer/managed-rules/sync", {}, { timeout: 30000 })
+    .then((r) => r.data as ManagedDnsRules);
 }

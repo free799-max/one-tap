@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -19,6 +20,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import APIException
 from app.models.storage_directory import StorageDirectory
 from app.schemas.storage_directory import StorageDirectoryCreate, StorageDirectoryUpdate
+
+logger = logging.getLogger(__name__)
+
+
+async def _refresh_host_path_aliases(db: AsyncSession) -> None:
+    """存储映射变更后补齐宿主机路径软链，失败不影响目录配置本身。"""
+    try:
+        from app.services.system.host_path_aliases import host_path_aliases
+
+        await host_path_aliases.refresh(db)
+    except Exception as exc:
+        logger.warning("刷新宿主机路径别名失败：%s", exc)
 
 
 def _normalize_path(path: str) -> str:
@@ -178,6 +191,7 @@ class StorageDirectoryService:
             await self._clear_other_app_data(db, exclude_id=directory.id)
         await db.flush()
         await db.refresh(directory)
+        await _refresh_host_path_aliases(db)
         return directory
 
     async def update(
@@ -219,6 +233,7 @@ class StorageDirectoryService:
             await self._clear_other_app_data(db, exclude_id=directory.id)
             await db.flush()
         await db.refresh(directory)
+        await _refresh_host_path_aliases(db)
         return directory
 
     async def delete(self, db: AsyncSession, dir_id: int) -> None:
@@ -226,6 +241,7 @@ class StorageDirectoryService:
         directory = await self.get(db, dir_id)
         await db.delete(directory)
         await db.flush()
+        await _refresh_host_path_aliases(db)
 
     def to_dict(self, directory: StorageDirectory) -> dict:
         """将存储目录对象转换为响应字典，附带容器可见性计算字段。"""

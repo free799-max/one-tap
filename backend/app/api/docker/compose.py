@@ -33,6 +33,7 @@ from app.schemas.orchestration.deploy_task import ComposeDeployResponse
 from app.services.compose import compose_manager
 from app.services.docker import docker_manager
 from app.services.orchestration.deploy_task_service import deploy_task_manager
+from app.services.system.host_path_aliases import host_path_aliases
 
 logger = logging.getLogger(__name__)
 router = APIRouter(route_class=CustomAPIRoute)
@@ -104,6 +105,15 @@ def _build_project_out(
             config_files = _json.loads(project.config_files)
         except _json.JSONDecodeError:
             config_files = []
+    host_config_files = [host_path_aliases.to_host_path(path) for path in config_files]
+    host_working_dir = (
+        host_path_aliases.to_host_path(project.working_dir)
+        if project.working_dir
+        else None
+    )
+    compose_available, compose_unavailable_reason = (
+        compose_manager.project_availability(project)
+    )
     return ComposeProjectOut(
         id=project.id,
         project_name=project.project_name,
@@ -113,6 +123,14 @@ def _build_project_out(
         stack=_build_stack_out(project.stack, status_info=status_info),
         config_files=config_files or None,
         working_dir=project.working_dir,
+        host_config_files=(
+            host_config_files if host_config_files != config_files else None
+        ),
+        host_working_dir=(
+            host_working_dir if host_working_dir != project.working_dir else None
+        ),
+        compose_available=compose_available,
+        compose_unavailable_reason=compose_unavailable_reason,
         created_at=project.created_at.isoformat() if project.created_at else "",
         updated_at=project.updated_at.isoformat() if project.updated_at else "",
     )
@@ -356,7 +374,8 @@ async def delete_compose_project(
     """删除 Compose 项目。"""
     project = await _get_compose_project(db, project_id)
     try:
-        await compose_manager.delete_project(db, project)
+        # 删除时先把应用数据目录移入 _backups，重新部署从空数据开始。
+        await compose_manager.delete_project(db, project, backup_data=True)
     except Exception as e:
         raise APIException(f"删除项目失败: {e}", 500)
 

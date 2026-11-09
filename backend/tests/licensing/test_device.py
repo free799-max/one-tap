@@ -103,3 +103,69 @@ def test_read_cpu_model(monkeypatch):
     monkeypatch.setattr("builtins.open", mock_open(read_data=cpuinfo))
 
     assert device._read_cpu_model() == "Intel(R) Xeon(R) E5-2680 v4"
+
+
+async def test_host_details_uses_docker_host_metadata(monkeypatch):
+    client = MagicMock()
+    client.info.return_value = {
+        "Name": "nas-host",
+        "OperatingSystem": "Debian GNU/Linux 12 (bookworm)",
+        "Architecture": "x86_64",
+        "NCPU": 8,
+        "MemTotal": 16 * 1024**3,
+    }
+    monkeypatch.setattr(device.docker, "from_env", MagicMock(return_value=client))
+    monkeypatch.setattr(device, "_read_cpu_model", lambda: "Test CPU")
+
+    result = await device.get_host_details()
+
+    assert result == {
+        "hostname": "nas-host",
+        "platform": "Debian GNU/Linux 12 (bookworm) · x86_64",
+        "device_info": {
+            "cpu_model": "Test CPU",
+            "cpu_cores": 8,
+            "memory_total_bytes": 16 * 1024**3,
+        },
+    }
+
+
+async def test_host_details_keeps_kernel_when_os_is_generic(monkeypatch):
+    client = MagicMock()
+    client.info.return_value = {
+        "Name": "nas-host",
+        "OperatingSystem": "Linux",
+        "KernelVersion": "6.18.18.c1186-trim",
+        "Architecture": "x86_64",
+        "NCPU": 8,
+        "MemTotal": 16 * 1024**3,
+    }
+    monkeypatch.setattr(device.docker, "from_env", MagicMock(return_value=client))
+    monkeypatch.setattr(device, "_read_cpu_model", lambda: "Test CPU")
+
+    result = await device.get_host_details()
+
+    assert result["platform"] == "Linux 6.18.18.c1186-trim · x86_64"
+
+
+async def test_host_details_falls_back_without_docker(monkeypatch):
+    monkeypatch.setattr(
+        device.docker, "from_env", MagicMock(side_effect=OSError("Docker unavailable"))
+    )
+    monkeypatch.setattr(device, "_read_cpu_model", lambda: None)
+    monkeypatch.setattr(device.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(device.platform, "release", lambda: "6.1.0")
+    monkeypatch.setattr(device.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(device.socket, "gethostname", lambda: "container-id")
+
+    result = await device.get_host_details()
+
+    assert result == {
+        "hostname": "container-id",
+        "platform": "Linux 6.1.0 x86_64",
+        "device_info": {
+            "cpu_model": None,
+            "cpu_cores": None,
+            "memory_total_bytes": None,
+        },
+    }

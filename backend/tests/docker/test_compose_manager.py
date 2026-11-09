@@ -106,9 +106,9 @@ async def test_create_project_auto_deploy(compose_manager, tmp_path):
     assert version_args[0].version_number == 1
     assert version_args[0].is_current is True
 
-    mock_run.assert_awaited_once()
-    args = mock_run.call_args[0]
-    assert args[1:] == ("up", "-d")
+    up_calls = [call for call in mock_run.call_args_list if call.args[1] == "up"]
+    assert len(up_calls) == 1
+    assert up_calls[0].args[1:] == ("up", "-d")
     mock_sync.assert_awaited_once()
 
 
@@ -190,9 +190,9 @@ async def test_edit_and_deploy_creates_version(compose_manager, tmp_path):
     assert db.add.call_count == 1
     version_args = db.add.call_args_list[0][0]
     assert isinstance(version_args[0], DockerComposeVersion)
-    mock_run.assert_awaited_once()
-    args = mock_run.call_args[0]
-    assert args[1:] == ("up", "-d")
+    up_calls = [call for call in mock_run.call_args_list if call.args[1] == "up"]
+    assert len(up_calls) == 1
+    assert up_calls[0].args[1:] == ("up", "-d")
     mock_sync.assert_awaited_once()
 
 
@@ -298,3 +298,49 @@ async def test_ensure_host_directories_ignores_named_volumes(compose_manager, tm
 
     # 不应抛出异常，也不应在当前目录创建意外目录
     assert True
+
+
+def test_compose_command_uses_host_path_view(compose_manager, monkeypatch):
+    """CLI 使用宿主机路径，数据库中的容器路径保持不变。"""
+    from app.services.system.host_path_aliases import (
+        HostPathMapping,
+        host_path_aliases,
+    )
+
+    monkeypatch.setattr(
+        host_path_aliases,
+        "_mappings",
+        (HostPathMapping("/volume1/docker/onetap/data", "/data", "data-root"),),
+    )
+    project = MagicMock()
+    project.project_name = "demo"
+    project.config_files = '["/data/compose/demo/docker-compose.yml"]'
+    project.working_dir = "/data/compose/demo"
+
+    cmd, cwd = compose_manager._compose_command(project, "up", "-d")
+
+    assert cmd == [
+        "docker",
+        "compose",
+        "-f",
+        "/volume1/docker/onetap/data/compose/demo/docker-compose.yml",
+        "-p",
+        "demo",
+        "up",
+        "-d",
+    ]
+    assert cwd == "/volume1/docker/onetap/data/compose/demo"
+    assert project.config_files == '["/data/compose/demo/docker-compose.yml"]'
+
+
+def test_compose_command_without_mapping_keeps_legacy_paths(compose_manager):
+    """未启用或未建立映射时完全沿用旧版本调用方式。"""
+    project = MagicMock()
+    project.project_name = "demo"
+    project.config_files = '["/data/compose/demo/docker-compose.yml"]'
+    project.working_dir = "/data/compose/demo"
+
+    cmd, cwd = compose_manager._compose_command(project, "ps")
+
+    assert cmd[3] == "/data/compose/demo/docker-compose.yml"
+    assert cwd == "/data/compose/demo"

@@ -5,6 +5,7 @@
 """
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import logging
 
@@ -44,6 +45,15 @@ async def lifespan(app: FastAPI):
     alembic_cfg = Config(str(backend_dir / "alembic.ini"))
     # alembic env 内部使用 asyncio.run，必须在独立线程执行以避免与当前事件循环冲突
     await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+
+    # 建立宿主机路径软链别名，让 Compose 标签与相对挂载使用宿主机真实路径。
+    # 旧项目数据库路径保持不变；任何映射失败都只告警，不阻断启动。
+    from app.services.system.host_path_aliases import host_path_aliases
+
+    try:
+        await host_path_aliases.initialize()
+    except Exception as exc:
+        logger.warning("初始化宿主机路径别名失败：%s", exc)
 
     # 启动 reconciliation：进程重启后旧的部署协程已消亡，
     # 残留的 deploying 实例/实例组不可能仍在部署，统一置为 error 以便用户重试
@@ -104,21 +114,19 @@ async def lifespan(app: FastAPI):
                 except Exception as exc:
                     logger.warning("%s同步%s失败：%s", stage, label, exc)
 
-        async def _auto_update_allowed() -> bool:
-            """自动更新关闭或授权失效时跳过定时同步。"""
+        async def _auto_update_window() -> tuple[int, int] | None:
+            """返回自动更新的夜间时段；未开启时返回 None。"""
             from app.database import async_session
-            from app.services.licensing import licensing_service
             from app.services.system.config_service import system_config_service
 
             async with async_session() as db:
                 config = await system_config_service.get_or_create(db)
                 if not config.auto_update_enabled:
-                    return False
-                try:
-                    await licensing_service.require_valid(db)
-                except Exception:
-                    return False
-                return True
+                    return None
+                return (
+                    int(config.auto_update_window_start),
+                    int(config.auto_update_window_end),
+                )
 
         async def _run_auto_update() -> None:
             """自动升级 OneTap 自己部署的实例，异常仅记录告警。"""
@@ -129,21 +137,39 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.warning("自动更新实例失败：%s", exc)
 
+        # 只在夜间时段运行，且同一晚只跑一轮；启动时若正好在时段内则补跑一次
+        from app.services.orchestration.auto_update import (
+            in_update_window,
+            window_key,
+        )
+
+        last_window: str | None = None
         if settings.MANAGE_SYNC_ON_STARTUP:
             await _sync_catalog("启动时")
 
-        # 启动同步完成后，若已开启自动更新则补跑一轮；放后台避免拉镜像
-        # 阻塞服务启动
-        if await _auto_update_allowed():
-            auto_update_task = asyncio.create_task(_run_auto_update())
+        window = await _auto_update_window()
+        if window is not None:
+            now = datetime.now()
+            if in_update_window(now, *window):
+                last_window = window_key(now, *window)
+                auto_update_task = asyncio.create_task(_run_auto_update())
 
         async def _sync_loop():
-            """按配置间隔循环同步应用市场与编排方案，异常仅记录告警。"""
+            """夜间时段内同步应用市场并自动升级，过了时段就跳过。"""
+            nonlocal last_window
             while True:
                 await asyncio.sleep(settings.MANAGE_SYNC_INTERVAL_MINUTES * 60)
-                if not await _auto_update_allowed():
+                window = await _auto_update_window()
+                if window is None:
                     continue
-                await _sync_catalog("定时")
+                now = datetime.now()
+                if not in_update_window(now, *window):
+                    continue
+                key = window_key(now, *window)
+                if key == last_window:
+                    continue
+                last_window = key
+                await _sync_catalog("夜间")
                 await _run_auto_update()
 
         sync_task = asyncio.create_task(_sync_loop())

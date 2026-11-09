@@ -4,6 +4,10 @@
 """
 
 from app.services.system.config_service import SystemConfigService, system_config_service
+from app.services.system.hosts_acceleration_service import (
+    HostsAccelerationService,
+    hosts_acceleration_service,
+)
 from app.services.system.hosts_optimizer_service import (
     HostsOptimizerService,
     hosts_optimizer_service,
@@ -40,6 +44,8 @@ __all__ = [
     "system_config_service",
     "HostsOptimizerService",
     "hosts_optimizer_service",
+    "HostsAccelerationService",
+    "hosts_acceleration_service",
     "ProxyTestService",
     "proxy_test_service",
     "RegistryMirrorService",

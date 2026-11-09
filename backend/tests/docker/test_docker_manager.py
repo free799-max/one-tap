@@ -526,3 +526,85 @@ def test_container_action_stop_returns_immediately(mock_docker_module):
     mock_container.stop.assert_called_once()
     assert result["status"] == "exited"
     assert result["error"] == ""
+
+
+@patch("app.services.docker.docker_common.docker")
+def test_pull_uses_acceleration_domain_and_retags(mock_docker_module):
+    mock_client = MagicMock()
+    mock_client.api.pull.return_value = iter(
+        [
+            {"status": "Pulling from", "id": "layer1"},
+            {"status": "Pull complete", "id": "layer1"},
+        ]
+    )
+    mock_docker_module.from_env.return_value = mock_client
+
+    manager = DockerManager()
+    task_manager = ImagePullTaskManager()
+    task_id = task_manager.create_task("ghcr.io/open-webui/open-webui:main")
+
+    manager.pull_image_async(
+        "ghcr.io/open-webui/open-webui:main",
+        task_id,
+        task_manager,
+        {"ghcr.io": ["https://abc.d.1ms.run"]},
+    )
+
+    mirrored = "abc.d.1ms.run/open-webui/open-webui:main"
+    mock_client.api.pull.assert_called_once_with(
+        mirrored, stream=True, decode=True
+    )
+    mock_client.images.get.assert_called_once_with(mirrored)
+    mock_client.images.get.return_value.tag.assert_called_once_with(
+        repository="ghcr.io/open-webui/open-webui", tag="main"
+    )
+    mock_client.images.remove.assert_called_once_with(mirrored)
+    assert task_manager.get_task(task_id)["status"] == "completed"
+
+
+@patch("app.services.docker.docker_common.docker")
+def test_pull_falls_back_to_direct_when_acceleration_fails(mock_docker_module):
+    mock_client = MagicMock()
+    mock_client.api.pull.side_effect = [
+        RuntimeError("mirror down"),
+        iter([{"status": "Pull complete", "id": "layer1"}]),
+    ]
+    mock_docker_module.from_env.return_value = mock_client
+
+    manager = DockerManager()
+    task_manager = ImagePullTaskManager()
+    task_id = task_manager.create_task("nginx:1.27")
+
+    manager.pull_image_async(
+        "nginx:1.27",
+        task_id,
+        task_manager,
+        {"docker.io": ["https://mirror.example.com"]},
+    )
+
+    calls = [call.args[0] for call in mock_client.api.pull.call_args_list]
+    assert calls == ["mirror.example.com/library/nginx:1.27", "nginx:1.27"]
+    mock_client.images.get.assert_not_called()
+    assert task_manager.get_task(task_id)["status"] == "completed"
+
+
+@patch("app.services.docker.docker_common.docker")
+def test_pull_skips_acceleration_for_digest_reference(mock_docker_module):
+    mock_client = MagicMock()
+    mock_client.api.pull.return_value = iter(
+        [{"status": "Pull complete", "id": "layer1"}]
+    )
+    mock_docker_module.from_env.return_value = mock_client
+
+    manager = DockerManager()
+    task_manager = ImagePullTaskManager()
+    image = "ghcr.io/owner/app@sha256:" + "a" * 64
+    task_id = task_manager.create_task(image)
+
+    manager.pull_image_async(
+        image, task_id, task_manager, {"ghcr.io": ["https://abc.d.1ms.run"]}
+    )
+
+    mock_client.api.pull.assert_called_once_with(
+        image, stream=True, decode=True
+    )

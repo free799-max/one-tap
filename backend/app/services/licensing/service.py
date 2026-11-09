@@ -156,9 +156,6 @@ def validate_certificate(
             or not hmac.compare_digest(certificate_fingerprint, hardware_fingerprint)
         ):
             raise LicenseCertificateError("device_mismatch", expires_at)
-    # 只有授权版（永久授权）证书有效
-    if payload.get("perpetual") is not True:
-        raise LicenseCertificateError("invalid_license_type", expires_at)
     return payload
 
 
@@ -415,7 +412,7 @@ class LicensingService:
     async def get_status(
         self, db: AsyncSession, include_license_key: bool = False
     ) -> dict[str, Any]:
-        """返回本机授权状态；授权码默认脱敏，仅管理员请求时下发。"""
+        """返回本机授权状态；明文授权码仅通过二次验证接口获取。"""
         state = await self.get_state(db)
         device = await get_device_fingerprint(state.installation_id)
         result: dict[str, Any] = {
@@ -427,10 +424,12 @@ class LicensingService:
             "license_id": state.license_id,
             "activation_id": state.activation_id,
             "license_key": state.license_key if include_license_key else None,
+            "license_key_set": bool(state.license_key),
             "device_name": state.device_name,
             "expires_at": None,
             "last_refreshed_at": state.last_refreshed_at,
             "last_error": state.last_error,
+            "purchase_url": settings.LICENSE_PURCHASE_URL or None,
         }
         if not state.certificate:
             return result

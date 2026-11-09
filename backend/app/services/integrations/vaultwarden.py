@@ -7,6 +7,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -27,6 +28,17 @@ def _b64encode(value: bytes) -> str:
 
 def _b64decode(value: str) -> bytes:
     return base64.b64decode(value)
+
+
+def _jwt_subject(token: str) -> str | None:
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        subject = claims.get("sub")
+        return str(subject) if subject else None
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 def _hkdf_expand(prk: bytes, info: bytes, length: int = 32) -> bytes:
@@ -85,6 +97,7 @@ class VaultwardenSession:
     token: str
     user_key: bytes
     version: str | None = None
+    user_id: str | None = None
 
 
 class VaultwardenCrypto:
@@ -134,8 +147,14 @@ class VaultwardenCrypto:
         if value is None or value == "":
             return None
         enc_key, mac_key = VaultwardenCrypto.split_user_key(user_key)
+        return VaultwardenCrypto._encrypt_enc_string(
+            value.encode("utf-8"), enc_key, mac_key
+        )
+
+    @staticmethod
+    def _encrypt_enc_string(value: bytes, enc_key: bytes, mac_key: bytes) -> str:
         iv = os.urandom(16)
-        ciphertext = _aes_encrypt(enc_key, iv, value.encode("utf-8"))
+        ciphertext = _aes_encrypt(enc_key, iv, value)
         mac = hmac.new(mac_key, iv + ciphertext, hashlib.sha256).digest()
         return f"2.{_b64encode(iv)}|{_b64encode(ciphertext)}|{_b64encode(mac)}"
 
@@ -235,6 +254,83 @@ class VaultwardenClient:
         except ValueError as exc:
             raise VaultwardenError("Vaultwarden 预登录返回内容异常", 502) from exc
 
+    async def register(self, email: str, password: str) -> None:
+        """创建 Bitwarden 兼容账号；成功后由调用方显式登录。"""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        email = (email or "").strip()
+        if not email or not password:
+            raise VaultwardenError("请填写 Vaultwarden 邮箱和主密码", 400)
+
+        master_key = VaultwardenCrypto.derive_master_key(
+            password, email, kdf=0, iterations=600000
+        )
+        user_key = os.urandom(64)
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_key_der = private_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        public_key_der = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        master_enc_key, master_mac_key = _stretch_master_key(master_key)
+        user_enc_key, user_mac_key = VaultwardenCrypto.split_user_key(user_key)
+        payload = {
+            "email": email,
+            "masterPasswordHash": VaultwardenCrypto.master_password_hash(
+                master_key, password
+            ),
+            "masterPasswordHint": "",
+            "key": VaultwardenCrypto._encrypt_enc_string(
+                user_key, master_enc_key, master_mac_key
+            ),
+            "kdf": 0,
+            "kdfIterations": 600000,
+            "keys": {
+                "publicKey": _b64encode(public_key_der),
+                "encryptedPrivateKey": VaultwardenCrypto._encrypt_enc_string(
+                    private_key_der, user_enc_key, user_mac_key
+                ),
+            },
+        }
+        verification = await self._post(
+            "/identity/accounts/register/send-verification-email",
+            json={"email": email, "name": None},
+            headers={"Accept": "application/json"},
+        )
+        if verification.status_code == 404:
+            response = await self._post("/api/accounts/register", json=payload)
+        else:
+            if verification.status_code == 204:
+                raise VaultwardenError(
+                    "Vaultwarden 要求邮箱验证，暂时无法自动创建账号", 400
+                )
+            if verification.status_code >= 400:
+                raise VaultwardenError(
+                    self._error_message(verification, "Vaultwarden 注册验证失败"),
+                    502,
+                )
+            try:
+                token = verification.json()
+            except ValueError:
+                token = verification.text.strip()
+            if isinstance(token, dict):
+                token = token.get("token") or token.get("Token")
+            if not isinstance(token, str) or not token.strip():
+                raise VaultwardenError("Vaultwarden 未返回注册验证令牌", 502)
+            payload["emailVerificationToken"] = token.strip()
+            response = await self._post(
+                "/identity/accounts/register/finish", json=payload
+            )
+        if response.status_code >= 400:
+            raise VaultwardenError(
+                self._error_message(response, "Vaultwarden 注册失败"), 502
+            )
+
     async def login(self, email: str, password: str) -> VaultwardenSession:
         email = (email or "").strip()
         if not email or not password:
@@ -282,7 +378,13 @@ class VaultwardenClient:
             )
         user_key = VaultwardenCrypto.decrypt_key(str(encrypted_key), master_key)
         self._session = VaultwardenSession(
-            token=str(token), user_key=user_key, version=await self.get_version()
+            token=str(token),
+            user_key=user_key,
+            version=await self.get_version(),
+            user_id=(
+                str(payload.get("UserId") or payload.get("userId") or "")
+                or _jwt_subject(str(token))
+            ),
         )
         return self._session
 
@@ -341,7 +443,7 @@ class VaultwardenClient:
         if self._session is None:
             raise VaultwardenError("尚未登录 Vaultwarden", 401)
         user_key = self._session.user_key
-        return {
+        payload = {
             "type": 1,
             "name": VaultwardenCrypto.encrypt_field(name, user_key),
             "notes": VaultwardenCrypto.encrypt_field(notes, user_key),
@@ -359,6 +461,9 @@ class VaultwardenClient:
                 ),
             },
         }
+        if self._session.user_id:
+            payload["encryptedFor"] = self._session.user_id
+        return payload
 
     @staticmethod
     def _error_message(response: httpx.Response, fallback: str) -> str:

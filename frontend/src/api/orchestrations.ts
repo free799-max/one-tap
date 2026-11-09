@@ -323,9 +323,16 @@ export interface OrchestrationUpdateEventDetail {
   /** 新方案已移除、但升级时保留运行的应用 */
   apps_retained?: string[];
   selected_apps?: string[];
+  /** 单应用升级时的应用名 */
+  app_name?: string;
+  /** 单应用实例 ID */
+  app_instance_id?: number;
+  /** 升级前后的主服务镜像 */
+  image_from?: string;
+  image_to?: string;
   /** 升级前配置快照 ID */
   backup_id?: number;
-  /** 升级模式，如 image_only */
+  /** 升级模式，如 image_only / version_only */
   mode?: string;
 }
 
@@ -348,6 +355,7 @@ export interface OrchestrationUpdateEvent {
 export interface OrchestrationUpdateEventsParams {
   scope?: OrchestrationUpdateEventScope;
   orchestration_name?: string;
+  mode?: OrchestrationUpdateEventMode;
   limit?: number;
 }
 

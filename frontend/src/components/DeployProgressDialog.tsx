@@ -33,6 +33,9 @@ export function DeployProgressDialog() {
     queryClient.invalidateQueries({ queryKey: ["dashboard", "overview"] });
     queryClient.invalidateQueries({ queryKey: ["compose"] });
     queryClient.invalidateQueries({ queryKey: ["docker", "containers"] });
+    // AdGuard 部署完成后刷新网络优化页的运行状态与加速列表
+    queryClient.invalidateQueries({ queryKey: ["settings", "hosts-optimizer"] });
+    queryClient.invalidateQueries({ queryKey: ["integrations"] });
   }, [queryClient]);
 
   const handleComplete = useCallback(

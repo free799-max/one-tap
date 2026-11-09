@@ -37,6 +37,10 @@ export interface ComposeProject {
   stack: ComposeStackStatus | null;
   config_files: string[] | null;
   working_dir: string | null;
+  host_config_files: string[] | null;
+  host_working_dir: string | null;
+  compose_available: boolean;
+  compose_unavailable_reason: string | null;
   created_at: string;
   updated_at: string;
 }

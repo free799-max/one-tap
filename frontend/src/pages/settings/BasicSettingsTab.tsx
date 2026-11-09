@@ -1,7 +1,7 @@
 /**
  * 基础配置 Tab
  *
- * 包含代理、统一服务账号和订阅授权。
+ * 包含代理、统一服务账号和专属加速状态。
  */
 
 import { useEffect, useState } from "react";
@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/toast";
-import { useLicenseStatus } from "@/hooks/useLicense";
+import { RevealSecretDialog } from "@/components/RevealSecretDialog";
 import { useSystemConfig, useUpdateSystemConfig, useTestProxy } from "@/hooks/useSettings";
 import {
   Tooltip,
@@ -34,10 +34,25 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LicenseTab } from "./LicenseTab";
+import { AutoUpdateConfigDialog } from "./AutoUpdateConfigDialog";
 
 /** 隐藏代理地址中的账号密码，避免在页面上明文展示 */
 function maskProxy(proxy: string): string {
   return proxy.replace(/\/\/[^@/]+@/, "//***@");
+}
+
+/** 小时数转时间输入框的值（HH:00） */
+function hourToTime(hour: number): string {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+/** 时间输入框的值转小时数，只取小时部分 */
+function timeToHour(value: string, fallback: number): number {
+  const hour = Number.parseInt(value.slice(0, 2), 10);
+  if (Number.isNaN(hour)) {
+    return fallback;
+  }
+  return Math.min(23, Math.max(0, hour));
 }
 
 interface BasicFormState {
@@ -47,6 +62,10 @@ interface BasicFormState {
   default_admin_password: string;
   default_email_domain: string;
   auto_update_enabled: boolean;
+  auto_update_window_start: number;
+  auto_update_window_end: number;
+  auto_backup_enabled: boolean;
+  auto_backup_keep: number;
 }
 
 const EMAIL_APP_LABELS: Record<string, string> = {
@@ -62,18 +81,23 @@ const EMPTY_FORM: BasicFormState = {
   default_admin_password: "",
   default_email_domain: "",
   auto_update_enabled: false,
+  auto_update_window_start: 2,
+  auto_update_window_end: 6,
+  auto_backup_enabled: true,
+  auto_backup_keep: 3,
 };
 
 export function BasicSettingsTab() {
   const { data: config, isLoading } = useSystemConfig();
   const updateConfig = useUpdateSystemConfig();
   const testProxy = useTestProxy();
-  const { data: license } = useLicenseStatus();
-  const licensed = Boolean(license?.valid);
   const toast = useToast();
 
   const [form, setForm] = useState<BasicFormState>(EMPTY_FORM);
   const [initialized, setInitialized] = useState(false);
+  const [adminPasswordTouched, setAdminPasswordTouched] = useState(false);
+  const [revealDialogOpen, setRevealDialogOpen] = useState(false);
+  const [autoUpdateConfigOpen, setAutoUpdateConfigOpen] = useState(false);
 
   // 首次加载完成后回填表单；后续 refetch 不再覆盖用户未保存的修改
   useEffect(() => {
@@ -82,9 +106,13 @@ export function BasicSettingsTab() {
         proxy_enabled: config.proxy_enabled,
         proxy_address: config.https_proxy || config.http_proxy || "",
         default_admin_username: config.default_admin_username || "admin",
-        default_admin_password: config.default_admin_password || "",
+        default_admin_password: "",
         default_email_domain: config.default_email_domain || "",
         auto_update_enabled: config.auto_update_enabled ?? false,
+        auto_update_window_start: config.auto_update_window_start ?? 2,
+        auto_update_window_end: config.auto_update_window_end ?? 6,
+        auto_backup_enabled: config.auto_backup_enabled ?? true,
+        auto_backup_keep: config.auto_backup_keep ?? 3,
       });
       setInitialized(true);
     }
@@ -100,9 +128,13 @@ export function BasicSettingsTab() {
     form.proxy_enabled !== config.proxy_enabled ||
     form.proxy_address !== (config.https_proxy || config.http_proxy || "") ||
     form.default_admin_username !== (config.default_admin_username || "admin") ||
-    form.default_admin_password !== (config.default_admin_password || "") ||
+    adminPasswordTouched ||
     form.default_email_domain !== (config.default_email_domain || "") ||
-    form.auto_update_enabled !== (config.auto_update_enabled ?? false);
+    form.auto_update_enabled !== (config.auto_update_enabled ?? false) ||
+    form.auto_update_window_start !== (config.auto_update_window_start ?? 2) ||
+    form.auto_update_window_end !== (config.auto_update_window_end ?? 6) ||
+    form.auto_backup_enabled !== (config.auto_backup_enabled ?? true) ||
+    form.auto_backup_keep !== (config.auto_backup_keep ?? 3);
 
   const proxyResult = testProxy.data;
 
@@ -141,6 +173,11 @@ export function BasicSettingsTab() {
       }
     }
 
+    if (form.auto_update_window_start === form.auto_update_window_end) {
+      toast.error("自动更新的开始与结束时间不能相同");
+      return;
+    }
+
     updateConfig.mutate(
       {
         proxy_enabled: form.proxy_enabled,
@@ -148,17 +185,25 @@ export function BasicSettingsTab() {
         https_proxy: address || null,
         service_port_start: config?.service_port_start ?? 10000,
         default_admin_username: form.default_admin_username.trim() || "admin",
-        default_admin_password: form.default_admin_password.trim(),
+        default_admin_password: adminPasswordTouched
+          ? form.default_admin_password.trim()
+          : undefined,
         default_email_domain: emailDomain,
         auto_update_enabled: form.auto_update_enabled,
+        auto_update_window_start: form.auto_update_window_start,
+        auto_update_window_end: form.auto_update_window_end,
+        auto_backup_enabled: form.auto_backup_enabled,
+        auto_backup_keep: form.auto_backup_keep,
       },
       {
         onSuccess: (data) => {
           // 后端会规范化大小写与 @ 前缀，回填避免表单继续保持脏状态
           setForm((prev) => ({
             ...prev,
+            default_admin_password: "",
             default_email_domain: data.default_email_domain ?? "",
           }));
+          setAdminPasswordTouched(false);
         },
       }
     );
@@ -299,15 +344,18 @@ export function BasicSettingsTab() {
               <TooltipContent
                 side="bottom"
                 align="start"
-                className="max-w-72 whitespace-normal font-normal leading-relaxed"
+                className="max-w-80 whitespace-normal font-normal leading-relaxed"
               >
-                自动更新只维护由 OneTap 安装和管理的应用，不会修改或更新用户自行安装的容器；升级只替换镜像，不会新建应用或改动挂载与端口。
+                只在设定的夜间时段运行，每晚一次；同步应用市场与自动化方案，并升级
+                OneTap 部署的应用（只替换镜像，不会新建应用或改动挂载与端口）。
+                升级前自动备份会把应用数据目录复制到 _backups/auto-update
+                下，只备份应用自身数据，不含媒体与下载，超过保留份数清理最旧的。
               </TooltipContent>
             </Tooltip>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <div className="flex items-center gap-2">
               <Label htmlFor="auto_update_enabled" className="text-sm font-medium">
                 启用自动更新
@@ -315,7 +363,6 @@ export function BasicSettingsTab() {
               <Switch
                 id="auto_update_enabled"
                 checked={form.auto_update_enabled}
-                disabled={!licensed && !form.auto_update_enabled}
                 onCheckedChange={(checked) =>
                   setForm((prev) => ({
                     ...prev,
@@ -323,19 +370,110 @@ export function BasicSettingsTab() {
                   }))
                 }
               />
-              {!licensed && (
-                <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                  授权版功能
-                </span>
-              )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {!licensed && form.auto_update_enabled
-                ? "授权已失效，自动更新已暂停，激活授权后恢复。"
-                : licensed
-                  ? "开启后每 30 分钟同步应用市场与自动化方案，并自动升级 OneTap 部署的应用（只替换镜像，不会新建应用）。"
-                  : "免费版不支持自动更新，激活授权后可开启。"}
-            </p>
+
+            <div className="flex items-center gap-2">
+              <Label
+                htmlFor="auto_update_window_start"
+                className="text-sm font-medium"
+              >
+                运行时段
+              </Label>
+              <Input
+                id="auto_update_window_start"
+                type="time"
+                step={3600}
+                value={hourToTime(form.auto_update_window_start)}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    auto_update_window_start: timeToHour(
+                      e.target.value,
+                      prev.auto_update_window_start
+                    ),
+                  }))
+                }
+                className="h-8 w-28 rounded-md border-input bg-white px-2 text-sm shadow-none"
+              />
+              <span className="text-sm text-muted-foreground">至</span>
+              <Input
+                id="auto_update_window_end"
+                type="time"
+                step={3600}
+                value={hourToTime(form.auto_update_window_end)}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    auto_update_window_end: timeToHour(
+                      e.target.value,
+                      prev.auto_update_window_end
+                    ),
+                  }))
+                }
+                className="h-8 w-28 rounded-md border-input bg-white px-2 text-sm shadow-none"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label htmlFor="auto_backup_enabled" className="text-sm font-medium">
+                升级前自动备份
+              </Label>
+              <Switch
+                id="auto_backup_enabled"
+                checked={form.auto_backup_enabled}
+                onCheckedChange={(checked) =>
+                  setForm((prev) => ({ ...prev, auto_backup_enabled: checked }))
+                }
+              />
+              <Label htmlFor="auto_backup_keep" className="ml-2 text-sm font-medium">
+                保留
+              </Label>
+              <Input
+                id="auto_backup_keep"
+                type="number"
+                min={1}
+                max={10}
+                value={form.auto_backup_keep}
+                onChange={(e) => {
+                  const keep = Number.parseInt(e.target.value, 10);
+                  setForm((prev) => ({
+                    ...prev,
+                    auto_backup_keep: Number.isNaN(keep)
+                      ? prev.auto_backup_keep
+                      : Math.min(10, Math.max(1, keep)),
+                  }));
+                }}
+                className="h-8 w-16 rounded-md border-input bg-white px-2 text-sm shadow-none"
+              />
+              <span className="text-sm text-muted-foreground">份</span>
+            </div>
+
+            <div className="ml-auto flex items-center gap-2">
+              <span
+                className={cn(
+                  "text-xs",
+                  form.auto_update_enabled &&
+                    (config?.auto_update_targets?.length ?? 0) === 0
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground"
+                )}
+              >
+                {(config?.auto_update_targets?.length ?? 0) > 0
+                  ? `已选 ${config?.auto_update_targets?.length} 个服务`
+                  : form.auto_update_enabled
+                    ? "未选择服务，自动更新不会执行"
+                    : "未选择服务"}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAutoUpdateConfigOpen(true)}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                更新配置
+              </Button>
+            </div>
           </div>
         </CardContent>
 
@@ -417,7 +555,7 @@ export function BasicSettingsTab() {
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   邮箱后缀仅用于必须邮箱登录的应用
-                  {emailAppNames ? `（${emailAppNames}）` : ""}。
+                  {emailAppNames ? `（如${emailAppNames}）` : ""}。
                 </p>
               </div>
             </div>
@@ -431,14 +569,30 @@ export function BasicSettingsTab() {
               <PasswordInput
                 id="default_admin_password"
                 value={form.default_admin_password}
-                onChange={(e) =>
+                onChange={(e) => {
+                  setAdminPasswordTouched(true);
                   setForm((prev) => ({
                     ...prev,
                     default_admin_password: e.target.value,
-                  }))
+                  }));
+                }}
+                placeholder={
+                  config?.default_admin_password_set
+                    ? "••••••••"
+                    : "留空则每次部署随机生成"
                 }
-                placeholder="留空则每次部署随机生成"
-                className="h-8 min-w-0 max-w-md flex-1 rounded-md border-input bg-white px-2 text-sm shadow-none"
+                onToggleClick={() => {
+                  if (
+                    !form.default_admin_password &&
+                    config?.default_admin_password_set
+                  ) {
+                    setRevealDialogOpen(true);
+                    return true;
+                  }
+                  return false;
+                }}
+                containerClassName="min-w-0 max-w-md flex-1"
+                className="h-8 rounded-md border-input bg-white px-2 text-sm shadow-none"
               />
             </div>
           </div>
@@ -460,6 +614,18 @@ export function BasicSettingsTab() {
       </form>
 
       <LicenseTab />
+
+      <AutoUpdateConfigDialog
+        open={autoUpdateConfigOpen}
+        onOpenChange={setAutoUpdateConfigOpen}
+      />
+
+      <RevealSecretDialog
+        open={revealDialogOpen}
+        onOpenChange={setRevealDialogOpen}
+        provider="system"
+        title="查看统一管理员密码"
+      />
     </div>
   );
 }

@@ -34,7 +34,7 @@ async def test_email_domain_defaults_to_empty(client):
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["default_email_domain"] == ""
-    assert data["email_username_apps"] == ["komga", "ermao-library"]
+    assert data["email_username_apps"] == ["komga", "ermao-library", "vaultwarden"]
 
 
 @pytest.mark.asyncio
@@ -108,10 +108,35 @@ async def test_partial_update_keeps_unrelated_fields(client):
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["default_admin_username"] == "nasadmin"
-    assert data["default_admin_password"] == "Secret123"
+    assert data["default_admin_password"] == ""
+    assert data["default_admin_password_set"] is True
     assert data["service_port_start"] == 20000
     assert data["default_email_domain"] == "example.com"
     assert data["docker_registry_mirrors"] == ["https://mirror2.example.com"]
+
+    wrong = await client.post(
+        "/api/settings/secret",
+        json={"password": "wrong-pass"},
+        headers=_auth(token),
+    )
+    assert wrong.status_code == 403, wrong.text
+
+    revealed = await client.post(
+        "/api/settings/secret",
+        json={"password": "pass123456"},
+        headers=_auth(token),
+    )
+    assert revealed.status_code == 200, revealed.text
+    secret = revealed.json()["data"]
+    assert secret["password"] == "Secret123"
+
+    cached = await client.post(
+        "/api/settings/secret",
+        json={"reveal_token": secret["reveal_token"]},
+        headers=_auth(token),
+    )
+    assert cached.status_code == 200, cached.text
+    assert cached.json()["data"]["password"] == "Secret123"
 
 
 def test_resolve_username_only_for_email_apps():
@@ -122,6 +147,10 @@ def test_resolve_username_only_for_email_apps():
     )
     assert (
         resolve_username_for_app("ermao-library", "admin", "example.com")
+        == "admin@example.com"
+    )
+    assert (
+        resolve_username_for_app("vaultwarden", "admin", "example.com")
         == "admin@example.com"
     )
     assert (

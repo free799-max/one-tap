@@ -50,7 +50,7 @@ docker compose logs -f app     # 查看应用、迁移与定时任务日志
 
 生产环境只有 `app` 与 `postgres` 两个容器；`app` 内的 Nginx 对外监听 80，FastAPI 只监听容器内回环地址 5001，前端与 API 使用同一端口。
 
-镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）接收完整源码快照但排除 `.gitlab-ci.yml`、不推标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`，同时推送到腾讯云 CCR `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`（正式版本另打 `latest`；Docker Hub 需在 CI/CD 变量配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`）。`MANAGE_BASE_URL` 等管理端同步配置在构建前由 CI 替换 `backend/app/config.py` 中的默认值（默认 `https://m.one-tap.vip,https://m.one-tab.vip`，逗号分隔多地址按顺序重试），运行时 `.env` 可覆盖。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
+镜像发布走 GitLab CI（`.gitlab-ci.yml`），且**只由推送 `v主.次.修订` 标签触发**，分支推送不构建。发版统一用 `scripts/release.sh`：按提交信息递增版本、写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z` 并打标签（`--dry-run` 只预览）。`origin`（GitHub）接收完整源码快照但排除 `.gitlab-ci.yml`、不推标签；`gitlab` 接收完整 `main` 与标签。基础镜像 `harbor.cacty.top/library/onetap-base` 由 `docker/base.Dockerfile` 手动构建推送，流水线不构建它，只以它为基础镜像构建后端代码与前端，产物为 `onetap:<tag>`，同时推送到腾讯云 CCR `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`（正式版本另打 `latest`；Docker Hub 需在 CI/CD 变量配置 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`）。`MANAGE_BASE_URL` 不设内置默认值，由容器运行时通过 `.env` 注入（逗号分隔多地址按顺序重试），留空即关闭同步。系统包或 `backend/requirements.txt` 变化后需要重建基础镜像。
 
 ## 架构
 
@@ -208,6 +208,7 @@ DockerComposeProject 1--1 DockerComposeStack
 - 备份目录内写入 `backup.json`（实例组、编排、删除时间、各应用 `config`、`app_configs` 凭据、`shared_config`、目录映射），用于恢复。
 - 恢复：`GET /api/orchestrations/backups?orchestration=<name>` 列出备份，`POST /api/orchestrations/backups/restore`（`{backup, instance_name?}`）把数据目录移回并按备份配置重新部署；新布局按实例名目录移回，换实例名恢复时同步改写配置里的路径前缀。凭据沿用备份（系统统一密码变化时用 `previous_password` 登录旧密码再改密）；实现见 `services/orchestration/restore.py`，前端入口为自动化页右上角「恢复」按钮（`pages/automation/AutomationRestoreDialog.tsx`）。恢复成功后备份目录被消费。恢复后的账号自动配置与集成装配由 `orchestration_provision` 进度任务持续展示，完成后自动刷新实例详情。
 - 重新部署（修复）不走备份：它有意保留数据卷，并继承上次部署的密钥类 env。修复时可只勾选需要重部署的应用（包括取消必选应用），未勾选的应用保持运行；后端 `_validate_composition(require_required=False)` 只校验所选应用。
+- 普通 Compose 项目删除同样复用这套备份：`DELETE /api/docker/compose/{id}` 调用 `compose_manager.delete_project(..., backup_data=True)`，先 `down` 并移除容器，再把实例配置或当前 Compose 文件声明的数据目录移入 `_backups`，最后删除项目记录。重新部署时原路径为空，会全新初始化；手动 Compose 项目没有实例记录时从 Compose 文件的 bind mount 推导目录。`backup_data` 默认 False，内部替换项目（如 AdGuard 重新部署）不会搬走数据。
 
 ## 离线资源（客户端内置档案）
 
@@ -231,24 +232,46 @@ DockerComposeProject 1--1 DockerComposeStack
 ## 应用市场数据同步
 
 - 应用定义由配套管理端（onetap-manage）维护，本仓库**不再提供应用创建/编辑/删除/图标上传**。原 `POST/PUT/DELETE /api/apps`、`POST /api/apps/preview-template`、`POST/GET /api/apps/{name}/icon` 接口与前端 `/appstore/create`、`/appstore/:name/edit` 页面均已移除。
-- 管理端地址、同步间隔与启动同步的默认值内置在 `backend/app/config.py`，GitLab CI 构建前按流水线变量替换，运行时可用 `.env` 的 `MANAGE_BASE_URL` / `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 覆盖：`MANAGE_BASE_URL` 支持逗号分隔的多个地址，请求失败按顺序重试下一个并记住最近成功地址（见 `services/manage_client.py`）。后端启动时与每 30 分钟从 `GET {MANAGE_BASE_URL}/api/public/apps` 拉取已发布应用，upsert 到本地 `apps` 表作为只读缓存（实现见 `services/catalog_sync.py` 的 `sync_apps`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
+- 管理端地址默认留空，由容器运行时通过 `.env` 的 `MANAGE_BASE_URL` 注入（同步间隔与启动同步默认 30 分钟 / 开启，同样可用 `MANAGE_SYNC_INTERVAL_MINUTES` / `MANAGE_SYNC_ON_STARTUP` 覆盖）：`MANAGE_BASE_URL` 支持逗号分隔的多个地址，请求失败按顺序重试下一个并记住最近成功地址（见 `services/manage_client.py`）。后端启动时同步一次；之后按间隔检查，仅在「自动更新」开启、当前处于设置里配置的夜间时段（默认 02:00-06:00）且当晚尚未执行时，才同步 `GET {MANAGE_BASE_URL}/api/public/apps` 并自动升级，upsert 到本地 `apps` 表作为只读缓存；自动升级只处理设置里明确勾选的服务（`auto_update_targets`，`group:<id>` / `app:<id>`），未勾选不执行，升级结果写入 `orchestration_update_events`，设置页「更新配置」弹窗分「更新配置 / 更新记录」两页（实现见 `services/catalog_sync.py` 的 `sync_apps` 与 `main.py` 的 `_sync_loop`，夜间窗口判断见 `services/orchestration/auto_update.py` 的 `in_update_window`）。当前生产环境管理端地址为 `http://192.168.1.17:5101`。
 - 只同步带 `compose_template` 且通过模板 / Schema 校验的条目，校验失败仅告警跳过；管理端下架（远端不再返回）的应用会删除本地缓存，但只删非内置且没有部署实例的记录，远端返回空列表时不做清理；`is_builtin` 等本地字段保持不变。
 - 分类为自由字符串，展示名称与排序由管理端 `backend/app/core/categories.py` 统一维护，经 `GET /api/public/categories` 下发；本仓库启动/定时同步到进程内缓存，前端通过 `GET /api/apps/categories` 获取（`frontend/src/lib/categories.ts` 仅保留查表辅助，不再内置映射），未配置 `MANAGE_BASE_URL` 时回退显示原始分类值。
 - 应用定义与应用目录 JSON 已整体迁移到管理端仓库：数据文件在 `onetap-manage/backend/app/data/apps/`，由管理端启动种子与 `scripts/import_apps.py` 导入；本仓库不再保留应用导入脚本。
 
-## Hosts 优选（AdGuard）
+## 网络优化（AdGuard / Hosts 优选）
 
-- 系统设置页新增「Hosts 优选」Tab，配置保存在 `system_config.hosts_optimizer_*` 字段；支持手动运行与按间隔自动运行。
+- 应用集成页「网络优化」Tab（内部仍称 Hosts 优选），配置保存在 `system_config.hosts_optimizer_*` 字段；支持手动运行与按间隔自动运行。
 - 后端服务：`services/system/hosts_optimizer_service.py`。通过 DNSPod DoH（`doh.pub` / `1.12.12.12`）获取候选 IP，配置了系统代理时再补充 Cloudflare / Google DoH；对候选 IP 做 TLS + HTTP 探测后，写入 AdGuard Home 的 DNS 重写（`/control/rewrite/*`）。
 - 接口：`GET/PUT /api/settings/hosts-optimizer/config`、`GET .../status`、`POST .../test`、`POST .../run`（同步执行，上限 180 秒）。
 - 调度器在 `main.py` lifespan 中启动，每 30 秒检查一次配置；`enabled && mode == "auto"` 且到达 `finished_at + interval` 时运行。配置保存后调用 `wake()` 立即重新判断。
 - 探测失败（某域名没有可用 IP）时保留 AdGuard 中已有的重写，避免临时网络抖动导致回退到被污染的默认解析。
 - **只对把 DNS 指向 AdGuard 的客户端生效**；本功能不写宿主机 `/etc/hosts`。Docker 容器需在 compose 中显式配置 `dns: [<AdGuard-IP>]`。
-- 管理端 AdGuard 应用默认映射 `3000 -> 3000`（初始化）与 `8080 -> 80`（管理界面），部署后可在本 Tab 填写 `http://<NAS-IP>:8080`。
+- 管理端 AdGuard 应用默认映射 `3000 -> 3000`（初始化）与 `8080 -> 80`（管理界面）。「网络优化」的 AdGuard 区域统一提供「服务地址 / 登录账号 / 登录密码 + 测试 + 保存配置」表单：托管实例的服务地址只读（由后端通过容器 IP 维护），账号密码可编辑；保存时若账号密码有变化，后端会写回实例的 `AdGuardHome.yaml` 并重启容器。手动接入外部 AdGuard 时填写 `http://<NAS-IP>:8080`。
 - 「影视自动化」方案（管理端 `movie`/`movie-auto` 与内置 `media-stack`，1.1.0 起）把 AdGuard Home 列为可选组件（分组「网络优化」），与 MoviePilot、qBittorrent 等一起部署；已有实例可在「升级」时勾选安装。
 - 方案中 AdGuard 固定使用稳定版 `adguard/adguardhome:v0.107.79`（与 1.23 上实际运行的版本一致），不使用 `latest`。
 - AdGuard 应用定义标记 `x-fixed-ports`（`config_schema` 顶层），`app_service._validate_and_prepare` 会跳过顺序端口分配，保留 53、3000、8080 等端口；否则 DNS 会被改到高位端口导致无法作为局域网 DNS 使用。固定端口在部署前会检测占用并纳入预留表，避免同批部署的其他应用分配到同一端口；前端端口建议（`lib/schema-utils.ts`）同样跳过 `x-fixed-ports` 应用。
 - 测试：`backend/tests/system/test_hosts_optimizer.py`。
+
+## 应用级 DNS 加速
+
+- 入口：应用集成 →「网络优化」→「应用加速」。列表只展示已开启加速的应用，通过「添加应用」弹窗按需选择（与「应用集成 → 反向代理与域名」的添加方式一致）；弹窗按自动化方案分组，支持全选一组。开启动作逐个提交，避免并发重启应用。只对添加的应用生效，不修改全局代理或宿主机 DNS。
+- 服务：`services/system/hosts_acceleration_service.py`。
+  - 首次开启自动部署专用 AdGuard Home（Compose 项目 `onetap-adguard`，容器 `onetap-adguardhome`）。应用市场目录中存在 `adguardhome` 时，前端复用应用市场的安装弹窗（可确认镜像、端口、存储、环境变量与 Compose 预览），提交后由 `app_service.deploy` 执行：复用应用模板、端口检测、数据目录挂载、`AppInstance` 记录与部署任务；目录中没有该应用时才回退到内置 Compose。镜像固定 `adguard/adguardhome:v0.107.79`。
+  - 只映射初始化端口（容器 3000）和管理端口（容器 80），**不映射宿主机 53**。安装弹窗通过 `GET /api/settings/port-suggestions?preferred=...&exclude_container=onetap-adguardhome` 预填宿主端口：优先复用旧的可用端口，被其他服务占用时自动从 `service_port_start` 选空闲端口；`exclude_container` 让重建时忽略旧 AdGuard 自己占用的端口。容器内 DNS 固定监听 53，Docker 的 `dns:` 选项不支持自定义端口；需要给局域网设备用时，再在安装弹窗里添加「宿主端口 → 容器 53（TCP/UDP）」。
+  - AdGuard 与加速应用加入独立 Docker 网络 `onetap-accel`（自动挑选未占用的 `172.31.x.0/24` 子网），AdGuard 使用固定容器 IP；重建时优先沿用 `hosts_optimizer_adguard_dns_ip`，避免已开启加速的应用指向旧地址。
+  - OneTap 后端容器会自动接入 `onetap-accel`，并用 AdGuard 的**容器 IP**（`http://<dns-ip>:80`）同步 DNS 重写；宿主机 IP 变化不影响同步，不需要重启容器。`overview` 额外返回按当前宿主机 IP 计算的 `web_url`，只用于浏览器「打开管理」。
+  - 初始化/重建 AdGuard 时会把上游 DNS 统一切到国内可达的 DoH（`https://doh.pub/dns-query`、`https://1.12.12.12/dns-query`，bootstrap `223.5.5.5`、`119.29.29.29`），并清空缓存。默认的 Quad9 DoH 在国内不可达，会让每次非重写查询等约 4 秒再落到明文备用 DNS。注意：国内 DoH 的 RFC 8484 wire 格式仍可能返回污染结果（实测 `www.google.com` 被解析到 Facebook IP），只能保证「探测 + 证书校验通过的加速域名」不被污染；需要全局干净解析只能走代理。
+  - 直接改写应用自己的 Compose 文件（单一文件源），不再生成覆盖文件：开启时把 `dns:` 与 `networks:` 写进主文件并生成一个新的 Compose 版本（`comment` 为「OneTap 网络加速：注入 DNS」），关闭时按记录还原并生成「移除 DNS」版本。被改动前的原始值记录在顶层扩展字段 `x-onetap-accel` 中，重复开启沿用它，避免把已注入的 DNS 当成用户原值；旧版 `docker-compose.onetap-dns.yml` 会在下次开启/关闭时自动删除并把 `config_files` 收敛为单一文件。`dns:` 依次为 AdGuard 静态 IP、服务原有 DNS 和兜底 DNS（`223.5.5.5`、`119.29.29.29`）：Docker 只在 AdGuard 超时不可达时才使用兜底地址，避免单点故障导致应用完全无法解析域名。
+  - 加速偏好按稳定的实例名保存在 `system_config.hosts_optimizer_accel_instances`。应用部署任务完成后会自动恢复该偏好，因此自动化方案的「修复/重新部署」、重新安装都会重新写入 DNS 覆盖；自动化方案里的每个子应用同样在弹窗中按需添加，`overview.apps` 会带上 `orchestration_group_id` / `orchestration_group_name` / `orchestration_name` 供前端分组。
+  - 开启/关闭都会执行一次 `docker compose up -d` 重启该应用；服务使用 `network_mode: host/service:/container:` 时会被跳过并给出提示。
+- 接口：`GET /api/settings/hosts-optimizer/acceleration`、`POST .../acceleration/apps/{instance_id}`、`POST .../acceleration/adguard/deploy`、`DELETE .../acceleration/adguard`、`POST .../managed-rules/sync`。
+- `POST .../acceleration/adguard/deploy` 立即返回部署任务 ID（`adguard_deploy` 跟踪任务，不占并发槽位），部署与初始化在后台执行；应用市场子任务的进度按 10%→80% 折算，AdGuard 初始化占 85%，前端接入统一的「任务进度」弹窗，部署完成后刷新网络优化页。
+- 删除托管 AdGuard 会先关闭所有已开启加速的应用并恢复原网络配置，再把数据目录移入 `<应用数据目录>/_backups`，然后删除 Compose 项目与网络，最后清空 `hosts_optimizer_adguard_*` 中的地址/端口配置；账号密码保留，重新部署时从空数据全新初始化。
+- 旧版自建 Compose 的 `<应用数据目录>/adguard/{work,conf}` 在首次迁移时复制到应用市场目录后删除，避免用户删除 AdGuard 后重新部署又从旧目录复制回过期密码和配置。
+- 重新部署会复用已有的 `work/conf` 数据（DNS 重写、过滤规则不丢）。启动容器前先把系统配置里的 AdGuard 账号密码哈希写回 `AdGuardHome.yaml`（按安装弹窗的 conf 挂载路径确定，内置兜底用 `<应用数据目录>/adguard/conf`），避免旧数据密码与系统配置不一致导致 401/403。后端容器没有挂载宿主机目录时，通过 Docker 临时辅助容器（复用本地已有镜像）读写文件，不需要额外挂载；配置写回后已用 AdGuard `--check-config` 验证。系统配置里的密码为空时会生成新密码并写回数据。运行期间在「网络优化」里修改托管实例的账号密码并保存时，`PUT /api/settings/hosts-optimizer/config` 会按容器挂载反查配置文件、写入新凭据并重启容器（`hosts_acceleration_service.apply_managed_credentials`）。
+- 加速域名规则由配套管理端统一维护：OneTap 从 `GET {MANAGE_BASE_URL}/api/public/dns-rules` 拉取，缓存到 `system_config.hosts_optimizer_managed_rules`；每次优选前自动同步一次，管理端暂不可用时使用缓存。规则带 `answers` 时直接写入这些 IP，不带时由客户端探测最快 IP。
+- 管理端仓库 `nas-deck-manage` 提供「DNS 加速」页面与 `/api/dns-rules` CRUD，公共接口 `/api/public/dns-rules` 只返回启用中的规则。
+- 自动部署需要先在「存储配置」中设置应用数据目录。走应用市场部署时数据位于 `<应用数据目录>/onetap-adguard/adguardhome/{work,conf}`；旧版自建 Compose 的 `<应用数据目录>/adguard/{work,conf}` 会在首次重新部署时自动复制过去。
+- 测试：`backend/tests/system/test_hosts_acceleration.py`。
 
 ## 应用商店图标规则
 

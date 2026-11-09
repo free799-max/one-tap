@@ -1,12 +1,8 @@
 """DDNS 配置映射与任务构造测试。"""
 
-from types import SimpleNamespace
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.exceptions import APIException
-from app.core.security import hash_password
 from app.database import Base
 from app.models.integration import IntegrationConfig
 from app.services.integrations.lucky import build_ddns_task
@@ -109,7 +105,7 @@ def test_build_ddns_task_ipv6_url():
 
 
 @pytest.mark.asyncio
-async def test_reveal_ddns_secret_requires_login_password():
+async def test_reveal_ddns_secret():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     try:
         async with engine.begin() as conn:
@@ -126,17 +122,8 @@ async def test_reveal_ddns_secret_requires_login_password():
                 )
             )
             await db.commit()
-            user = SimpleNamespace(hashed_password=hash_password("pass123456"))
 
-            with pytest.raises(APIException) as wrong:
-                await integration_service.reveal_network_password(
-                    db, "ddns", "wrong-pass", user
-                )
-            assert wrong.value.status_code == 401
-
-            secret = await integration_service.reveal_network_password(
-                db, "ddns", "pass123456", user
-            )
+            secret = await integration_service.reveal_network_password(db, "ddns")
             assert secret == "ddns-secret"
     finally:
         await engine.dispose()

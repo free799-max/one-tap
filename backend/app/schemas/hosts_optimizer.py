@@ -47,11 +47,29 @@ class HostsOptimizerConfig(BaseModel):
     )
     adguard_url: str | None = Field(None, max_length=500, description="AdGuard Home 管理地址")
     adguard_username: str = Field("admin", max_length=255, description="AdGuard 管理员用户名")
-    adguard_password: str = Field("", max_length=255, description="AdGuard 管理员密码")
+    adguard_password: str = Field(
+        "", max_length=255, description="AdGuard 管理员密码（公开配置不回传明文）"
+    )
+    adguard_password_set: bool = Field(False, description="是否已保存 AdGuard 管理员密码")
+    adguard_managed: bool = Field(
+        False, description="AdGuard 是否由 OneTap 自动部署（只读）"
+    )
+    adguard_dns_ip: str | None = Field(
+        None, description="应用加速使用的 AdGuard DNS 地址（只读）"
+    )
+    manage_configured: bool = Field(
+        False, description="是否配置了配套管理端地址（只读）"
+    )
+    managed_rules: list[dict[str, Any]] = Field(
+        default_factory=list, description="管理端下发的加速规则（只读）"
+    )
+    managed_rules_synced_at: str | None = Field(
+        None, description="管理端规则最近同步时间（只读）"
+    )
 
 
 class HostsOptimizerConfigUpdate(HostsOptimizerConfig):
-    """更新 Hosts 优选配置（整份提交，便于区分清空与未提交）。"""
+    """更新 Hosts 优选配置；密码留空表示沿用已保存值。"""
 
 
 class HostsOptimizerTestRequest(BaseModel):
@@ -88,3 +106,116 @@ class HostsOptimizerRunOut(BaseModel):
     adguard: str = "ok"
     errors: list[str] = Field(default_factory=list)
     domains: dict[str, Any] = Field(default_factory=dict)
+
+
+class ManagedDnsRule(BaseModel):
+    """管理端下发的一条加速域名规则。"""
+
+    domain: str
+    answers: list[str] = Field(
+        default_factory=list, description="管理端指定的 IP；为空时由客户端优选"
+    )
+    priority: int = 100
+    description: str | None = None
+    tier: str = Field("free", description="free 免费线路 / subscription 专属加速")
+
+
+class ManagedDnsRulesOut(BaseModel):
+    """管理端加速规则同步结果。"""
+
+    configured: bool = Field(description="是否配置了管理端地址")
+    rules: list[ManagedDnsRule] = Field(default_factory=list)
+    synced_at: str | None = None
+    error: str | None = None
+
+
+class AccelerationToggleRequest(BaseModel):
+    """开启或关闭单个应用的 DNS 加速。"""
+
+    enabled: bool
+
+
+class AccelerationToggleOut(BaseModel):
+    """应用加速开关操作结果。"""
+
+    instance_id: int
+    enabled: bool
+    dns_ip: str | None = None
+    services: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class AccelerationAppOut(BaseModel):
+    """可配置加速的应用实例。"""
+
+    instance_id: int
+    instance_name: str
+    display_name: str
+    app_name: str | None = None
+    icon: str | None = None
+    project_id: int | None = None
+    project_name: str | None = None
+    orchestration_group_id: int | None = None
+    orchestration_group_name: str | None = None
+    orchestration_name: str | None = None
+    status: str
+    services: list[str] = Field(default_factory=list)
+    acceleration_enabled: bool = False
+    dns: list[str] = Field(default_factory=list)
+    can_enable: bool = False
+    reason: str | None = None
+
+
+class AccelerationAdguardOut(BaseModel):
+    """自动部署的 AdGuard Home 状态。"""
+
+    configured: bool = False
+    managed: bool = False
+    running: bool = False
+    url: str | None = None
+    web_url: str | None = None
+    dns_ip: str | None = None
+    setup_port: int | None = None
+    web_port: int | None = None
+    version: str | None = None
+    network: str = "onetap-accel"
+    fallback_dns: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class AccelerationOverviewOut(BaseModel):
+    """应用加速页面所需的聚合数据。"""
+
+    adguard: AccelerationAdguardOut
+    managed_rules: ManagedDnsRulesOut
+    apps: list[AccelerationAppOut] = Field(default_factory=list)
+    network_effective: bool | None = False
+    network_rule_count: int = 0
+    network_applied_rule_count: int = 0
+    network_app_count: int = 0
+    network_message: str = ""
+
+
+class AdguardDeployTaskOut(BaseModel):
+    """自动部署 AdGuard Home 的任务响应。"""
+
+    task_id: str
+    instance_name: str | None = None
+    status: str = "deploying"
+
+
+class AdguardDeployRequest(BaseModel):
+    """应用市场安装弹窗提交的 AdGuard 部署参数。"""
+
+    instance_name: str | None = Field(None, max_length=100)
+    config: dict[str, Any] | None = None
+
+
+class AdguardRemoveOut(BaseModel):
+    """删除 OneTap 托管 AdGuard Home 的结果。"""
+
+    removed: bool
+    disabled_apps: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    message: str = ""

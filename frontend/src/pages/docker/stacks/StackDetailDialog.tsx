@@ -148,20 +148,30 @@ export function StackDetailDialog({
                 </InfoItem>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <InfoItem label="Compose 文件">
+                <InfoItem
+                  label={
+                    project.host_config_files ? "Compose 文件（宿主机）" : "Compose 文件"
+                  }
+                >
                   <span
                     className="font-mono text-sm break-all"
-                    title={project.config_files?.join(", ") || undefined}
+                    title={
+                      (project.host_config_files || project.config_files)?.join(", ") ||
+                      undefined
+                    }
                   >
-                    {project.config_files?.join(", ") || "-"}
+                    {(project.host_config_files || project.config_files)?.join(", ") ||
+                      "-"}
                   </span>
                 </InfoItem>
-                <InfoItem label="工作目录">
+                <InfoItem
+                  label={project.host_working_dir ? "工作目录（宿主机）" : "工作目录"}
+                >
                   <span
                     className="font-mono text-sm break-all"
-                    title={project.working_dir || undefined}
+                    title={project.host_working_dir || project.working_dir || undefined}
                   >
-                    {project.working_dir || "-"}
+                    {project.host_working_dir || project.working_dir || "-"}
                   </span>
                 </InfoItem>
               </div>

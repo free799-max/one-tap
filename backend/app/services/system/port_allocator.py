@@ -113,34 +113,52 @@ def _get_host_listening_ports(client, local_ports: set[int]) -> set[int]:
         return local_ports
 
 
-def get_used_ports() -> set[int]:
+def _container_host_ports(container) -> set[int]:
+    """读取容器映射到宿主机的端口。"""
+    ports: set[int] = set()
+    host_config = container.attrs.get("HostConfig") or {}
+    bindings = host_config.get("PortBindings") or {}
+    for binding_list in bindings.values():
+        if not isinstance(binding_list, list):
+            continue
+        for binding in binding_list:
+            host_port = binding.get("HostPort")
+            if host_port:
+                try:
+                    ports.add(int(host_port))
+                except ValueError:
+                    continue
+    return ports
+
+
+def get_used_ports(exclude_containers: set[str] | None = None) -> set[int]:
     """获取宿主机上已被占用的端口。
 
     合并 Docker 容器映射、宿主机网络命名空间中的 IPv4/IPv6 监听端口，
     以及当前网络命名空间的监听端口（作为探测失败时的兜底）。
+
+    Args:
+        exclude_containers: 需要忽略映射端口的容器名集合，用于重建同一
+            服务时把旧容器占用的端口视为可用。
     """
     used: set[int] = set()
+    ignored_ports: set[int] = set()
+    other_ports: set[int] = set()
 
     # 1. Docker 容器端口映射
     client = docker_manager._client
     if client is not None:
         try:
             for container in client.containers.list(all=True):
-                host_config = container.attrs.get("HostConfig") or {}
-                bindings = host_config.get("PortBindings") or {}
-                for binding_list in bindings.values():
-                    if not isinstance(binding_list, list):
-                        continue
-                    for binding in binding_list:
-                        host_port = binding.get("HostPort")
-                        if host_port:
-                            try:
-                                used.add(int(host_port))
-                            except ValueError:
-                                pass
+                ports = _container_host_ports(container)
+                if exclude_containers and container.name in exclude_containers:
+                    ignored_ports.update(ports)
+                else:
+                    other_ports.update(ports)
         except Exception:
             # Docker 不可用时跳过
             logger.warning("获取 Docker 容器端口映射失败，跳过该来源", exc_info=True)
+    used.update(other_ports)
 
     # 2. 当前网络命名空间与宿主机网络命名空间的监听端口
     local_ports = _parse_proc_net_tcp("/proc/net/tcp")
@@ -149,7 +167,9 @@ def get_used_ports() -> set[int]:
     if client is not None:
         used.update(_get_host_listening_ports(client, local_ports))
 
-    return used
+    # 宿主机监听探测无法区分 Docker 代理属于哪个容器，最后再扣除被忽略
+    # 容器独占的端口；仍被其他容器映射的端口保留为占用。
+    return used - (ignored_ports - other_ports)
 
 
 def allocate_free_ports(used: set[int], count: int, start: int) -> list[int]:

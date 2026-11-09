@@ -23,7 +23,7 @@ interface AutomationPlanSectionProps {
   instanceCount?: number;
   /**
    * single：分类下唯一的方案，居中大图标展示（版本徽标在页头显示）；
-   * stacked：多方案纵向堆叠，使用紧凑标题行并自带版本徽标。
+   * stacked：多方案纵向堆叠，使用紧凑标题行。
    */
   variant?: "single" | "stacked";
   className?: string;
@@ -101,14 +101,6 @@ export function AutomationPlanSection({
             >
               {orchestration.display_name}
             </h3>
-            {!single && (
-              <Badge
-                variant="outline"
-                className="h-4 shrink-0 px-1.5 py-0 text-[10px] font-normal tabular-nums text-muted-foreground"
-              >
-                v{orchestration.version}
-              </Badge>
-            )}
             {instanceCount > 0 && (
               <Badge
                 variant="secondary"

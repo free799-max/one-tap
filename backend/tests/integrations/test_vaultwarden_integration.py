@@ -91,13 +91,16 @@ def test_decrypt_login_key_and_encrypt_fields():
     assert VaultwardenCrypto.decrypt_key(encrypted, master_key) == user_key
 
     client = VaultwardenClient("http://vaultwarden.local")
-    client._session = VaultwardenSession(token="token", user_key=user_key)
+    client._session = VaultwardenSession(
+        token="token", user_key=user_key, user_id="user-id"
+    )
     payload = client.build_login_cipher(
         name="OneTap · Jellyfin",
         username="admin",
         password="secret",
         url="http://192.168.1.2:8096",
     )
+    assert payload["encryptedFor"] == "user-id"
     item_enc_key, item_mac_key = VaultwardenCrypto.split_user_key(user_key)
     assert (
         VaultwardenCrypto._decrypt_enc_string(
@@ -279,7 +282,7 @@ async def test_network_password_reveal_requires_login_password(client):
         headers=headers,
         json={"provider": "lucky", "password": "wrong-pass"},
     )
-    assert resp.status_code == 401, resp.text
+    assert resp.status_code == 403, resp.text
     assert "密码" in resp.json()["message"]
 
     resp = await client.post(
@@ -288,12 +291,90 @@ async def test_network_password_reveal_requires_login_password(client):
         json={"provider": "lucky", "password": "pass123456"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["password"] == "lucky-pass"
+    data = resp.json()["data"]
+    assert data["password"] == "lucky-pass"
+    assert data["reveal_token"]
+    assert data["expires_at"]
 
     resp = await client.post(
         "/api/integrations/network/secret",
         headers=headers,
-        json={"provider": "npm", "password": "pass123456"},
+        json={"provider": "npm", "reveal_token": data["reveal_token"]},
     )
     assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_vaultwarden_password_reveal_uses_shared_grant(client):
+    token = await _register_and_login(client, "vaultwardenrevealadmin")
+    headers = _auth_headers(token)
+
+    resp = await client.put(
+        "/api/integrations/vaultwarden",
+        headers=headers,
+        json={
+            "enabled": True,
+            "url": "http://vaultwarden:8080",
+            "email": "admin@example.com",
+            "password": "master-pass",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    resp = await client.put(
+        "/api/integrations/network",
+        headers=headers,
+        json={
+            "enabled": True,
+            "provider": "lucky",
+            "lucky": {
+                "url": "http://lucky:16601",
+                "username": "666",
+                "password": "lucky-pass",
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post(
+        "/api/integrations/vaultwarden/secret", headers=headers, json={}
+    )
+    assert resp.status_code == 400, resp.text
+
+    resp = await client.post(
+        "/api/integrations/vaultwarden/secret",
+        headers=headers,
+        json={"password": "wrong-pass"},
+    )
+    assert resp.status_code == 403, resp.text
+
+    resp = await client.post(
+        "/api/integrations/vaultwarden/secret",
+        headers=headers,
+        json={"password": "pass123456"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["password"] == "master-pass"
+    assert data["reveal_token"]
+    assert data["expires_at"]
+
+    reveal_headers = _auth_headers(data["reveal_token"])
+    resp = await client.get("/api/auth/me", headers=reveal_headers)
+    assert resp.status_code == 401, resp.text
+
+    resp = await client.post(
+        "/api/integrations/network/secret",
+        headers=headers,
+        json={"provider": "lucky", "reveal_token": data["reveal_token"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["password"] == "lucky-pass"
+
+    resp = await client.post(
+        "/api/integrations/vaultwarden/secret",
+        headers=headers,
+        json={"reveal_token": data["reveal_token"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["password"] == "master-pass"
 

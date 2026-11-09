@@ -1,8 +1,8 @@
 /**
  * 镜像加速维护弹窗
  *
- * 地址支持从配套管理端获取，也可在本地手动调整；
- * 弹窗内可直接检测各地址的连通性与响应耗时。
+ * 免费地址从配套管理端获取，授权设备的专属域名也会在此展示；
+ * 拉取镜像时自动按源站选择加速域名并改回原 tag，无需修改 daemon.json。
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -22,11 +22,22 @@ import {
   useUpdateSystemConfig,
 } from "@/hooks/useSettings";
 import type { ApiError } from "@/api/types";
-import type { DockerMirrorTestItem } from "@/api/settings";
-import { cn } from "@/lib/utils";
-import { Copy, Download, Gauge, Loader2, Minus, Plus } from "lucide-react";
+import type {
+  DockerMirrorTestItem,
+  RemoteDockerMirror,
+  RemoteDockerMirrors,
+} from "@/api/settings";
+import { cn, formatDate } from "@/lib/utils";
+import { Download, Gauge, Loader2, Minus, Plus } from "lucide-react";
 
 const MAX_DOCKER_REGISTRY_MIRRORS = 20;
+
+const SOURCE_LABELS: Record<string, string> = {
+  "docker.io": "Docker Hub",
+  "ghcr.io": "GitHub",
+  "lscr.io": "LinuxServer",
+  "docker.n8n.io": "n8n",
+};
 
 interface RegistryMirrorsDialogProps {
   open: boolean;
@@ -55,34 +66,6 @@ function normalizeMirrors(items: string[]): {
     };
   }
   return { urls: [...new Set(urls)] };
-}
-
-/** 复制文本；局域网 HTTP 访问时 Clipboard API 不可用，回退到 execCommand */
-async function copyText(text: string): Promise<boolean> {
-  if (window.isSecureContext && navigator.clipboard) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // 继续尝试回退方案
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } catch {
-    ok = false;
-  }
-  document.body.removeChild(textarea);
-  return ok;
 }
 
 const RESULT_COLUMN_CLASS = "w-28 shrink-0";
@@ -148,6 +131,8 @@ export function RegistryMirrorsDialog({
   const updateConfig = useUpdateSystemConfig();
 
   const [items, setItems] = useState<string[]>([]);
+  const [leased, setLeased] = useState<RemoteDockerMirror[]>([]);
+  const [licensed, setLicensed] = useState(false);
   const [results, setResults] = useState<Record<string, DockerMirrorTestItem>>(
     {}
   );
@@ -158,11 +143,43 @@ export function RegistryMirrorsDialog({
     mirrorsRef.current = mirrors;
   }, [mirrors]);
 
+  const applyRemote = (data: RemoteDockerMirrors, notify: boolean) => {
+    const free = data.mirrors.filter((mirror) => mirror.tier !== "subscription");
+    const dedicated = data.mirrors.filter(
+      (mirror) => mirror.tier === "subscription"
+    );
+    setLicensed(Boolean(data.licensed));
+    setLeased(dedicated);
+    if (notify && free.length) {
+      setItems(free.map((mirror) => mirror.url));
+    }
+    if (!notify) return;
+    if (!data.configured) {
+      toast.error("未配置管理端地址，无法获取镜像加速地址");
+      return;
+    }
+    if (free.length === 0 && dedicated.length === 0) {
+      toast.error("管理端暂无启用的镜像加速地址");
+      return;
+    }
+    toast.success(
+      `已获取 ${free.length} 个免费地址` +
+        (dedicated.length ? `、${dedicated.length} 个专属域名` : "")
+    );
+  };
+
   useEffect(() => {
     if (!open) return;
     const source = mirrorsRef.current;
     setItems(source.length ? [...source] : [""]);
     setResults({});
+    setLeased([]);
+    setLicensed(false);
+    remote.mutate(undefined, {
+      onSuccess: (data) => applyRemote(data, false),
+    });
+    // 打开弹窗时自动拉一次，避免用户漏掉专属域名
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const addItem = () => {
@@ -183,19 +200,7 @@ export function RegistryMirrorsDialog({
 
   const loadRemote = () => {
     remote.mutate(undefined, {
-      onSuccess: (data) => {
-        if (!data.configured) {
-          toast.error("未配置管理端地址，无法获取镜像加速地址");
-          return;
-        }
-        if (data.mirrors.length === 0) {
-          toast.error("管理端暂无启用的镜像加速地址");
-          return;
-        }
-        setItems(data.mirrors.map((mirror) => mirror.url));
-        setResults({});
-        toast.success(`已从管理端获取 ${data.mirrors.length} 个地址`);
-      },
+      onSuccess: (data) => applyRemote(data, true),
       onError: (error) => {
         toast.error((error as ApiError).displayMessage || "获取失败");
       },
@@ -228,25 +233,6 @@ export function RegistryMirrorsDialog({
     });
   };
 
-  const copyDaemonConfig = async () => {
-    const { urls, error } = normalizeMirrors(items);
-    if (error) {
-      toast.error(error);
-      return;
-    }
-    if (urls.length === 0) {
-      toast.error("请先填写镜像加速地址");
-      return;
-    }
-
-    const config = JSON.stringify({ "registry-mirrors": urls }, null, 2);
-    if (await copyText(config)) {
-      toast.success("已复制 daemon.json 配置");
-    } else {
-      toast.error("复制失败，请检查浏览器剪贴板权限");
-    }
-  };
-
   const handleSave = () => {
     const { urls, error } = normalizeMirrors(items);
     if (error) {
@@ -271,12 +257,42 @@ export function RegistryMirrorsDialog({
         <DialogHeader className="shrink-0 border-b px-5 pb-3 pt-5">
           <DialogTitle>镜像加速</DialogTitle>
           <DialogDescription>
-            地址可由配套管理端统一维护，也可在此手动调整；顺序即优先级。检测会请求每个地址，
-            返回 5xx 以下响应即视为可用。
+            拉取镜像时自动按源站选择加速域名下载，成功后改回原始 tag，
+            无需修改 daemon.json。免费地址由管理端统一下发，授权设备的
+            专属域名会在下方单独显示。
           </DialogDescription>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          {(leased.length > 0 || licensed) && (
+            <div className="space-y-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+              <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                授权专属加速域名（自动用于镜像下载）
+              </p>
+              {leased.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  本机已激活，但管理端暂无可用专属域名
+                </p>
+              )}
+              {leased.map((mirror) => (
+                <div
+                  key={mirror.url}
+                  className="flex flex-wrap items-center gap-2 text-xs"
+                >
+                  <span className="rounded-full border px-2 py-0.5 text-[11px]">
+                    {SOURCE_LABELS[mirror.source] ?? mirror.source}
+                  </span>
+                  <span className="break-all font-mono">{mirror.url}</span>
+                  <span className="text-muted-foreground">
+                    {mirror.expires_at
+                      ? `到期 ${formatDate(mirror.expires_at)}`
+                      : "长期"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {items.length === 0 && (
             <p className="text-sm text-muted-foreground">暂无镜像加速地址</p>
           )}
@@ -354,16 +370,6 @@ export function RegistryMirrorsDialog({
                 <Gauge className="h-4 w-4" />
               )}
               检测
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={copyDaemonConfig}
-              title="复制为 daemon.json 的 registry-mirrors 配置"
-            >
-              <Copy className="h-4 w-4" />
-              复制 daemon.json
             </Button>
           </div>
           <Button

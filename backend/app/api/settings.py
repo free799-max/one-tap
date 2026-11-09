@@ -13,15 +13,25 @@ from app.core.exceptions import APIException
 from app.core.security import get_current_user, require_admin
 from app.database import get_db
 from app.models.user import User
+from app.schemas.integration import IntegrationSecretOut, SecretRevealRequest
 from app.schemas.hosts_optimizer import (
+    AccelerationOverviewOut,
+    AccelerationToggleOut,
+    AccelerationToggleRequest,
+    AdguardDeployRequest,
+    AdguardDeployTaskOut,
+    AdguardRemoveOut,
     HostsOptimizerConfig,
     HostsOptimizerConfigUpdate,
     HostsOptimizerRunOut,
     HostsOptimizerStatusOut,
     HostsOptimizerTestRequest,
     HostsOptimizerTestResult,
+    ManagedDnsRulesOut,
 )
 from app.schemas.system_config import (
+    AutoUpdateTargetsOut,
+    DockerMirrorEffectivenessOut,
     DockerMirrorTestRequest,
     DockerMirrorTestResult,
     ProxyTestRequest,
@@ -43,15 +53,23 @@ from app.schemas.docker import (
     DirectoryRenameRequest,
 )
 from app.services.host.filesystem_service import filesystem_service
-from app.services.system.port_allocator import allocate_free_ports, get_used_ports
+from app.services.system.port_allocator import (
+    allocate_free_ports,
+    get_reserved_ports,
+    get_used_ports,
+)
 from app.services.system import (
     get_browse_roots,
+    hosts_acceleration_service,
     hosts_optimizer_service,
     proxy_test_service,
     registry_mirror_service,
     storage_directory_service,
     system_config_service,
 )
+from app.services.system.hosts_acceleration_service import ADGUARD_PROJECT
+from app.services.integrations.secret_reveal import authorize_secret_reveal
+from app.services.system.hosts_optimizer_service import mask_run_ips
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], route_class=CustomAPIRoute)
 
@@ -66,7 +84,7 @@ async def get_system_config(
     首次调用时若数据库中无记录，会自动创建默认配置。
     """
     config = await system_config_service.get_or_create(db)
-    return system_config_service.to_dict(config)
+    return system_config_service.to_dict(config, include_password=False)
 
 
 @router.put("", response_model=SystemConfigOut)
@@ -76,16 +94,42 @@ async def update_system_config(
     current_user: User = Depends(require_admin),
 ):
     """更新系统全局配置。"""
-    current = await system_config_service.get_or_create(db)
-    if data.auto_update_enabled and not current.auto_update_enabled:
-        from app.services.licensing import licensing_service
-
-        try:
-            await licensing_service.require_valid(db)
-        except APIException as exc:
-            raise APIException("自动更新需要授权版，请先激活授权", 403) from exc
     config = await system_config_service.update(db, data)
-    return system_config_service.to_dict(config)
+    return system_config_service.to_dict(config, include_password=False)
+
+
+@router.post("/secret", response_model=IntegrationSecretOut)
+async def reveal_system_admin_secret(
+    data: SecretRevealRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """通过二次验证后返回统一服务账号的管理员密码。"""
+    grant = authorize_secret_reveal(
+        current_user, data.password, data.reveal_token
+    )
+    config = await system_config_service.get_or_create(db)
+    password = config.default_admin_password or ""
+    if not password:
+        raise APIException("尚未设置统一管理员密码", 404)
+    return IntegrationSecretOut(
+        password=password,
+        reveal_token=grant.token,
+        expires_at=grant.expires_at,
+    )
+
+
+@router.get("/auto-update/targets", response_model=AutoUpdateTargetsOut)
+async def list_auto_update_targets(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出可勾选自动更新的组合部署与单应用实例。"""
+    from app.services.orchestration.auto_update_targets import (
+        list_auto_update_targets as list_targets,
+    )
+
+    return {"targets": await list_targets(db)}
 
 
 @router.post("/proxy/test", response_model=ProxyTestResult)
@@ -119,10 +163,20 @@ async def test_proxy(
 
 @router.get("/docker-mirrors/remote", response_model=RemoteDockerMirrorsOut)
 async def list_remote_docker_mirrors(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """从配套管理端获取启用中的 Docker 镜像加速地址。"""
-    return await registry_mirror_service.fetch_remote()
+    """获取免费镜像加速地址与本机授权专属域名。"""
+    return await registry_mirror_service.fetch_all(db)
+
+
+@router.get("/docker-mirrors/effectiveness", response_model=DockerMirrorEffectivenessOut)
+async def get_docker_mirror_effectiveness(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """实际探测授权专属镜像源，返回加速是否可用。"""
+    return await registry_mirror_service.effectiveness(db)
 
 
 @router.post("/docker-mirrors/test", response_model=DockerMirrorTestResult)
@@ -144,7 +198,7 @@ async def get_hosts_optimizer_config(
 ):
     """获取 Hosts 优选配置。"""
     config = await system_config_service.get_or_create(db)
-    return hosts_optimizer_service.config_from_model(config)
+    return hosts_optimizer_service.config_from_model(config, include_password=False)
 
 
 @router.put("/hosts-optimizer/config", response_model=HostsOptimizerConfig)
@@ -153,10 +207,46 @@ async def update_hosts_optimizer_config(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """保存 Hosts 优选配置（整份提交）。"""
+    """保存 Hosts 优选配置（整份提交）。
+
+    托管 AdGuard 的账号密码变更时同步写入实例配置并重启，避免界面里
+    保存的密码与实际登录凭据不一致。
+    """
+    current = await system_config_service.get_or_create(db)
+    previous = (
+        current.hosts_optimizer_adguard_username,
+        current.hosts_optimizer_adguard_password,
+    )
     config = await hosts_optimizer_service.update_config(db, data)
+    credentials_changed = previous != (
+        config.hosts_optimizer_adguard_username,
+        config.hosts_optimizer_adguard_password,
+    )
+    if config.hosts_optimizer_adguard_managed and credentials_changed:
+        await hosts_acceleration_service.apply_managed_credentials(config)
     hosts_optimizer_service.wake()
-    return hosts_optimizer_service.config_from_model(config)
+    return hosts_optimizer_service.config_from_model(config, include_password=False)
+
+
+@router.post("/hosts-optimizer/secret", response_model=IntegrationSecretOut)
+async def reveal_hosts_optimizer_secret(
+    data: SecretRevealRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """通过二次验证后返回已保存的 AdGuard 登录密码。"""
+    grant = authorize_secret_reveal(
+        current_user, data.password, data.reveal_token
+    )
+    config = await system_config_service.get_or_create(db)
+    password = config.hosts_optimizer_adguard_password or ""
+    if not password:
+        raise APIException("尚未保存密码", 404)
+    return IntegrationSecretOut(
+        password=password,
+        reveal_token=grant.token,
+        expires_at=grant.expires_at,
+    )
 
 
 @router.get("/hosts-optimizer/status", response_model=HostsOptimizerStatusOut)
@@ -164,12 +254,15 @@ async def get_hosts_optimizer_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取当前运行状态与最近一次结果。"""
+    """获取当前运行状态与最近一次结果。
+
+    结果只包含域名数量与最优延迟，具体 IP 不出接口，避免截图或抓包暴露网络环境。
+    """
     config = await system_config_service.get_or_create(db)
     return {
         "running": hosts_optimizer_service.running,
         "next_run_at": hosts_optimizer_service.next_run_at(config),
-        "last_run": config.hosts_optimizer_status or None,
+        "last_run": mask_run_ips(config.hosts_optimizer_status or None),
     }
 
 
@@ -189,36 +282,181 @@ async def run_hosts_optimizer(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """立即执行一次 Hosts 优选（同步等待结果）。"""
+    """立即执行一次 Hosts 优选（同步等待结果）。
+
+    返回结果同样只保留数量与最优延迟，不下发具体 IP。
+    """
     config = await system_config_service.get_or_create(db)
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             hosts_optimizer_service.run_and_save(db, config, mode="manual"),
             timeout=180,
         )
     except asyncio.TimeoutError as exc:
         raise APIException("优选超时（180 秒），请检查 AdGuard 连接与网络", 504) from exc
+    return mask_run_ips(result)
+
+
+# ---------- 应用级 DNS 加速 ----------
+
+
+@router.get(
+    "/hosts-optimizer/acceleration",
+    response_model=AccelerationOverviewOut,
+)
+async def get_hosts_acceleration_overview(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取应用加速、AdGuard 与管理端规则状态。"""
+    config = await system_config_service.get_or_create(db)
+    return await hosts_acceleration_service.overview(db, config)
+
+
+@router.post(
+    "/hosts-optimizer/acceleration/apps/{instance_id}",
+    response_model=AccelerationToggleOut,
+)
+async def toggle_app_acceleration(
+    instance_id: int,
+    data: AccelerationToggleRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """开启或关闭单个应用的 DNS 加速。
+
+    开启时会按需自动部署 AdGuard Home、写入应用覆盖配置并重启该应用。
+    """
+    config = await system_config_service.get_or_create(db)
+    try:
+        return await asyncio.wait_for(
+            hosts_acceleration_service.set_app_acceleration(
+                db, config, instance_id, data.enabled
+            ),
+            timeout=300,
+        )
+    except asyncio.TimeoutError as exc:
+        raise APIException(
+            "应用加速操作超时（300 秒），请查看 AdGuard 或应用容器日志", 504
+        ) from exc
+
+
+@router.post(
+    "/hosts-optimizer/acceleration/adguard/deploy",
+    response_model=AdguardDeployTaskOut,
+)
+async def deploy_hosts_adguard(
+    data: AdguardDeployRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """自动部署并初始化 OneTap 专用的 AdGuard Home。
+
+    `data` 来自应用市场的安装弹窗；不传时由后端自动选择端口和默认配置。
+    接口立即返回部署任务 ID，前端通过统一进度弹窗查看部署与初始化进度。
+    """
+    config = await system_config_service.get_or_create(db)
+    task_id = await hosts_acceleration_service.start_deploy_managed(
+        db,
+        config,
+        app_config=data.config if data else None,
+    )
+    return AdguardDeployTaskOut(
+        task_id=task_id, instance_name=ADGUARD_PROJECT
+    )
+
+
+@router.delete(
+    "/hosts-optimizer/acceleration/adguard",
+    response_model=AdguardRemoveOut,
+)
+async def remove_hosts_adguard(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """关闭所有应用加速并删除 OneTap 托管的 AdGuard Home。"""
+    config = await system_config_service.get_or_create(db)
+    try:
+        return await asyncio.wait_for(
+            hosts_acceleration_service.delete_managed(db, config),
+            timeout=300,
+        )
+    except asyncio.TimeoutError as exc:
+        raise APIException(
+            "删除 AdGuard Home 超时（300 秒），请查看应用或容器日志", 504
+        ) from exc
+
+
+@router.post(
+    "/hosts-optimizer/managed-rules/sync",
+    response_model=ManagedDnsRulesOut,
+)
+async def sync_hosts_managed_rules(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """从配套管理端同步加速域名规则。"""
+    config = await system_config_service.get_or_create(db)
+    try:
+        return await hosts_optimizer_service.sync_managed_rules(db, config)
+    except APIException:
+        raise
+    except Exception as exc:
+        raise APIException(f"同步管理端加速规则失败：{exc}", 502) from exc
 
 
 @router.get("/port-suggestions")
 async def get_port_suggestions(
     count: int = Query(..., ge=1, le=200),
+    preferred: str | None = Query(
+        None, max_length=200, description="优先复用且确认空闲的端口，逗号分隔"
+    ),
+    exclude_container: str | None = Query(
+        None, max_length=100, description="忽略该容器已映射的端口"
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """获取服务端口分配建议。
 
-    从系统设置的 service_port_start 开始顺序挑选 count 个空闲端口，
-    供部署表单初始化时预填，与部署时的顺序分配结果保持一致。
+    优先复用 ``preferred`` 中仍然空闲的端口；不足时从系统设置的
+    service_port_start 开始顺序挑选，供部署表单初始化时预填。
+    ``exclude_container`` 用于重建同一服务时忽略旧容器占用的端口。
     """
     config = await system_config_service.get_or_create(db)
     start = config.service_port_start or 10000
-    used = await asyncio.to_thread(get_used_ports)
-    try:
-        ports = allocate_free_ports(used, count, start)
-    except ValueError as e:
-        raise APIException(str(e), 400) from e
-    return {"ports": ports}
+    excluded = {exclude_container} if exclude_container else None
+    used = (
+        await asyncio.to_thread(get_used_ports, excluded)
+        if excluded
+        else await asyncio.to_thread(get_used_ports)
+    )
+    reserved = get_reserved_ports()
+
+    ports: list[int] = []
+    for part in (preferred or "").split(","):
+        try:
+            port = int(part.strip())
+        except ValueError:
+            continue
+        if port < 1 or port > 65535:
+            continue
+        if port in used or port in reserved or port in ports:
+            continue
+        ports.append(port)
+        if len(ports) >= count:
+            break
+
+    if len(ports) < count:
+        try:
+            ports.extend(
+                allocate_free_ports(
+                    used | set(ports), count - len(ports), start
+                )
+            )
+        except ValueError as e:
+            raise APIException(str(e), 400) from e
+    return {"ports": ports[:count]}
 
 
 @router.get("/directories", response_model=DirectoryList)

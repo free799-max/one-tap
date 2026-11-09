@@ -1,9 +1,9 @@
-"""删除编排实例组时的应用数据目录备份。
+"""删除实例组或 Compose 项目时的应用数据目录备份。
 
-删除实例组时，各应用自身的持久化数据（宿主机上位于应用数据目录下、
-按实例名或 Compose 项目名命名的目录）不会被 ``docker compose down`` 清理。
-若直接保留，同名重建会复用旧数据（如 PostgreSQL 密码已初始化），
-导致新部署无法连接数据库。
+删除实例组或 Compose 项目时，各应用自身的持久化数据（宿主机上位于应用
+数据目录下、按实例名或 Compose 项目名命名的目录）不会被
+``docker compose down`` 清理。若直接保留，同名重建会复用旧数据
+（如 PostgreSQL 密码、AdGuard 管理员密码已初始化），导致新部署失败。
 
 因此删除时把这些目录移入备份目录而不是留在原地：
 
@@ -14,6 +14,10 @@
   之外的路径保持不动；
 - 备份目录内写入 ``backup.json`` 清单，记录来源、各目录映射与部署配置，
   用于“恢复”时把目录移回并按原配置重新部署。
+
+自动升级前的快照（``snapshot_app_data_dirs``）走另一条路径：复制而不是
+移动应用数据目录到 ``_backups/auto-update/``，原目录保持可用，只用于升级
+失败时回滚。
 """
 
 import asyncio
@@ -36,6 +40,8 @@ logger = logging.getLogger(__name__)
 # 备份目录名（位于应用数据目录下）
 BACKUP_DIR_NAME = "_backups"
 MANIFEST_NAME = "backup.json"
+AUTO_BACKUP_DIR_NAME = "auto-update"
+"""自动升级前快照的存放目录（位于 ``_backups`` 下，与删除备份隔离）。"""
 
 _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -259,6 +265,148 @@ async def backup_app_data_dirs(
         logger.warning("写入备份清单失败 %s: %s", backup_dir, exc)
 
     return backup_dir, failures
+
+
+def _auto_backup_base(root: Path) -> Path:
+    """自动升级快照的根目录（``_backups/auto-update``）。"""
+    return root / BACKUP_DIR_NAME / AUTO_BACKUP_DIR_NAME
+
+
+def _prune_auto_backups(base: Path, keep: int) -> None:
+    """只保留最近的 ``keep`` 份自动备份，其余删除。"""
+    limit = max(1, keep)
+    try:
+        dirs = sorted(
+            (item for item in base.iterdir() if item.is_dir() and not item.is_symlink()),
+            key=lambda item: item.name,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for stale in dirs[limit:]:
+        try:
+            shutil.rmtree(stale)
+            logger.info("已清理过期自动备份: %s", stale)
+        except OSError as exc:
+            logger.warning("清理过期自动备份失败 %s: %s", stale, exc)
+
+
+async def snapshot_app_data_dirs(
+    db: AsyncSession,
+    entries: list[AppDataEntry],
+    label: str,
+    keep: int = 3,
+) -> Path | None:
+    """自动升级前把应用数据目录**复制**一份，返回快照目录。
+
+    与删除时的 ``backup_app_data_dirs`` 不同，这里用复制而不是移动：应用
+    升级后仍需使用原目录，快照只用于升级失败时回滚。快照保存在
+    ``<应用数据目录>/_backups/auto-update/<时间戳>-<实例名>/``，写入
+    ``backup.json`` 清单；只处理应用配置里声明的、位于应用数据目录下的
+    目录，共享存储（媒体/下载）不复制。超过 ``keep`` 份的最旧快照会被删掉。
+    """
+    paths = await resolve_app_data_paths(db)
+    if paths is None:
+        logger.info("未配置应用数据目录，跳过 %s 的自动备份", label)
+        return None
+    _, root = paths
+
+    try:
+        root_resolved = root.resolve()
+    except OSError:
+        logger.warning("应用数据目录不可访问，跳过自动备份: %s", root)
+        return None
+
+    base = _auto_backup_base(root)
+    now = datetime.now()
+    name = f"{now.strftime('%Y%m%d-%H%M%S')}-{_safe_name(label)}"
+    destination_root = base / name
+    index = 2
+    while destination_root.exists():
+        destination_root = base / f"{name}-{index}"
+        index += 1
+
+    moved: list[dict] = []
+    seen: set[str] = set()
+    for entry in entries:
+        project_name = (entry.project_name or "").strip()
+        candidates: list[tuple[str, str]] = []
+        if project_name:
+            candidates.append((project_name, "project"))
+        for dir_name in _managed_dir_names(entry, root):
+            if dir_name != project_name:
+                candidates.append((dir_name, "instance"))
+
+        for dir_name, kind in candidates:
+            if dir_name in seen or dir_name == BACKUP_DIR_NAME:
+                continue
+            seen.add(dir_name)
+
+            source = root / dir_name
+            try:
+                if source.is_symlink() or not source.is_dir():
+                    continue
+                if source.resolve().parent != root_resolved:
+                    continue
+            except OSError:
+                continue
+
+            target = destination_root / dir_name
+            try:
+                await asyncio.to_thread(
+                    shutil.copytree,
+                    str(source),
+                    str(target),
+                    symlinks=True,
+                )
+            except (OSError, shutil.Error) as exc:
+                logger.warning(
+                    "自动备份应用数据目录失败 %s -> %s: %s", source, target, exc
+                )
+                try:
+                    if target.exists():
+                        await asyncio.to_thread(shutil.rmtree, str(target))
+                except OSError:
+                    pass
+                continue
+
+            moved.append(
+                {
+                    "instance_name": entry.instance_name,
+                    "app_name": entry.app_name,
+                    "project_name": project_name,
+                    "path": target.name,
+                    "kind": kind,
+                    "config": entry.config or {},
+                }
+            )
+            logger.info("自动备份应用数据目录: %s -> %s", source, target)
+
+    if not moved:
+        try:
+            if destination_root.exists():
+                await asyncio.to_thread(shutil.rmtree, str(destination_root))
+        except OSError:
+            pass
+        return None
+
+    manifest = {
+        "instance_name": label,
+        "auto": True,
+        "reason": "auto_update",
+        "created_at": now.isoformat(timespec="seconds"),
+        "apps": moved,
+    }
+    try:
+        (destination_root / MANIFEST_NAME).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("写入自动备份清单失败 %s: %s", destination_root, exc)
+
+    _prune_auto_backups(base, keep)
+    return destination_root
 
 
 def _read_manifest(backup_dir: Path) -> dict | None:

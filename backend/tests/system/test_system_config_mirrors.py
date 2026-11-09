@@ -158,7 +158,44 @@ async def test_remote_mirrors_requires_manage_url(client, monkeypatch):
         "/api/settings/docker-mirrors/remote", headers=_auth(token)
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == {"configured": False, "mirrors": []}
+    assert resp.json()["data"] == {
+        "configured": False,
+        "licensed": False,
+        "mirrors": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_mirror_effectiveness_requires_reachable_leased_source(
+    client, monkeypatch
+):
+    """只有实际连通的授权专属镜像源才算生效。"""
+    service = registry_mirror_module.registry_mirror_service
+
+    async def _fake_leased(db):
+        return {
+            "licensed": True,
+            "mirrors": [{"url": "https://leased.example.com"}],
+        }
+
+    async def _fake_test(urls):
+        assert urls == ["https://leased.example.com"]
+        return {"ok_count": 1, "total": 1, "results": []}
+
+    monkeypatch.setattr(service, "fetch_leased", _fake_leased)
+    monkeypatch.setattr(service, "test", _fake_test)
+    token = await _register_and_login(client, "mirroreffective")
+
+    resp = await client.get(
+        "/api/settings/docker-mirrors/effectiveness", headers=_auth(token)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {
+        "effective": True,
+        "available_count": 1,
+        "total_count": 1,
+        "message": "1/1 个专属镜像源连通，镜像拉取已接入专属加速",
+    }
 
 
 @pytest.mark.asyncio

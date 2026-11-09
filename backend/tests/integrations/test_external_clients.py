@@ -205,14 +205,30 @@ class _FakeServer:
                                         "NetInterfaceName": "ens2",
                                         "HardwareAddr": "aa:bb:cc:dd:ee:ff",
                                         "AddressList": ["192.168.1.2"],
-                                    }
+                                    },
+                                    {
+                                        "NetInterfaceName": "docker0",
+                                        "AddressList": ["172.17.0.1"],
+                                    },
+                                    {
+                                        "NetInterfaceName": "br-16d13ece6b12",
+                                        "AddressList": ["192.168.96.1"],
+                                    },
+                                    {
+                                        "NetInterfaceName": "veth123456",
+                                        "AddressList": ["172.18.0.1"],
+                                    },
                                 ],
                                 "IPv6NewInterfaces": [
                                     {
                                         "NetInterfaceName": "ens2",
                                         "HardwareAddr": "aa:bb:cc:dd:ee:ff",
                                         "AddressList": ["fd00::2"],
-                                    }
+                                    },
+                                    {
+                                        "NetInterfaceName": "docker_gwbridge",
+                                        "AddressList": ["fd00::1"],
+                                    },
                                 ],
                             },
                         }
@@ -1089,8 +1105,9 @@ async def test_lucky_ddns_interfaces(fake_server):
         await _save_lucky_network(db, fake_server)
         interfaces = await integration_service.network_ddns_interfaces(db)
 
-        assert interfaces.ipv4[0].name == "ens2"
+        assert [item.name for item in interfaces.ipv4] == ["ens2"]
         assert interfaces.ipv4[0].addresses == ["192.168.1.2"]
+        assert [item.name for item in interfaces.ipv6] == ["ens2"]
         assert interfaces.ipv6[0].addresses == ["fd00::2"]
 
     await engine.dispose()

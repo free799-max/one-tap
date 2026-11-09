@@ -301,6 +301,31 @@ def _apply_container_images(rendered_yaml: str, images: dict[str, str]) -> str:
     return yaml.safe_dump(compose, allow_unicode=True, sort_keys=False)
 
 
+def _merge_compose_overrides(rendered_yaml: str, overrides: dict) -> str:
+    """把调用方提供的服务/网络片段合并进渲染后的 Compose。
+
+    仅用于系统级自动部署（如给 AdGuard 注入固定 IP 的加速网络），
+    不改变用户在应用市场中看到的应用模板。
+    """
+    data = yaml.safe_load(rendered_yaml) or {}
+    services = data.get("services")
+    if not isinstance(services, dict):
+        services = {}
+        data["services"] = services
+    for name, patch in (overrides.get("services") or {}).items():
+        service = services.get(name)
+        if isinstance(service, dict) and isinstance(patch, dict):
+            service.update(patch)
+    extra_networks = overrides.get("networks")
+    if isinstance(extra_networks, dict):
+        networks = data.get("networks")
+        if not isinstance(networks, dict):
+            networks = {}
+            data["networks"] = networks
+        networks.update(extra_networks)
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+
+
 def _slugify(name: str) -> str:
     """将实例名称转换为合法 Compose 项目名。"""
     name = name.lower().strip()
@@ -557,8 +582,12 @@ class AppService:
         instance_name: str,
         config: dict,
         user_id: int | None = None,
+        compose_overrides: dict | None = None,
     ) -> tuple[AppInstance, str]:
         """一键部署应用：校验并创建 deploying 实例，后台异步执行部署。
+
+        ``compose_overrides`` 供系统级自动部署使用，在渲染完成后追加
+        服务或网络配置（例如把容器固定接入某个外部 Docker 网络）。
 
         返回 (AppInstance, task_id)，调用方应立即将 task_id 返回给前端。
         """
@@ -604,6 +633,10 @@ class AppService:
                 project_name=project_name,
                 resolver=resolver,
             )
+            if compose_overrides:
+                rendered_yaml = _merge_compose_overrides(
+                    rendered_yaml, compose_overrides
+                )
 
             # 6. 创建 deploying 状态实例
             instance = AppInstance(
@@ -684,6 +717,16 @@ class AppService:
                 await db.commit()
 
                 deploy_task_manager.complete_task(task_id)
+
+                # 自动化方案修复/重新部署、重新安装后，按持久化偏好恢复加速。
+                try:
+                    from app.services.system import hosts_acceleration_service
+
+                    await hosts_acceleration_service.reapply_saved_preferences(
+                        db, instance_id
+                    )
+                except Exception:
+                    logger.exception("恢复应用加速失败: instance=%s", instance_id)
             except Exception as e:
                 logger.exception("应用部署失败: %s", e)
                 error_msg = str(e)

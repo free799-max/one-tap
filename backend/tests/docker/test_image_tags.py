@@ -31,6 +31,47 @@ def test_split_image_ref(image, expected):
     assert image_service._split_image_ref(image) == expected
 
 
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("nginx", ("docker.io", "library/nginx", "latest", None)),
+        ("nginx:1.27", ("docker.io", "library/nginx", "1.27", None)),
+        (
+            "ghcr.io/open-webui/open-webui:main",
+            ("ghcr.io", "open-webui/open-webui", "main", None),
+        ),
+        (
+            "quay.io/prometheus/node-exporter@sha256:abc",
+            ("quay.io", "prometheus/node-exporter", "latest", "sha256:abc"),
+        ),
+        ("localhost:5000/team/app", ("localhost:5000", "team/app", "latest", None)),
+    ],
+)
+def test_parse_image_ref(image, expected):
+    assert image_service._parse_image_ref(image) == expected
+
+
+def test_mirror_ref_and_tag_target():
+    assert (
+        image_service._mirror_ref("ghcr.io/open-webui/open-webui:main", "https://abc.d.1ms.run/")
+        == "abc.d.1ms.run/open-webui/open-webui:main"
+    )
+    assert (
+        image_service._mirror_ref("nginx", "https://mirror.example.com")
+        == "mirror.example.com/library/nginx:latest"
+    )
+    assert image_service._mirror_ref(
+        "ghcr.io/a/b@sha256:abc", "https://abc.d.1ms.run"
+    ) is None
+    assert image_service._original_tag_target(
+        "ghcr.io/open-webui/open-webui:main"
+    ) == ("ghcr.io/open-webui/open-webui", "main")
+    assert image_service._original_tag_target("nginx:1.27") == (
+        "library/nginx",
+        "1.27",
+    )
+
+
 def test_sort_tags_newest_first():
     tags = [
         {"name": "old", "last_updated": "2024-01-01T00:00:00Z"},
@@ -205,3 +246,32 @@ async def test_mirror_tags_use_v2_protocol(monkeypatch):
         url.startswith("https://docker.1ms.run/v2/library/nginx/tags/list")
         for url in requested
     )
+
+
+@pytest.mark.asyncio
+async def test_get_image_tags_ghcr_falls_back_to_source_mirror(monkeypatch):
+    calls = []
+
+    async def fake_registry(host, repo, limit, *, root=None):
+        calls.append((host, root))
+        if root is None:
+            raise RuntimeError("direct down")
+        return [
+            {
+                "name": "latest",
+                "last_updated": "2026-01-01T00:00:00Z",
+                "size": 1,
+                "digest": "sha256:x",
+            }
+        ]
+
+    monkeypatch.setattr(image_service, "_registry_tags", fake_registry)
+    service = image_service.ImageService.__new__(image_service.ImageService)
+
+    tags = await service.get_image_tags(
+        "ghcr.io/open-webui/open-webui",
+        source_mirrors={"ghcr.io": ["https://abc.d.1ms.run"]},
+    )
+
+    assert [t["name"] for t in tags] == ["latest"]
+    assert calls[-1] == ("", "https://abc.d.1ms.run")

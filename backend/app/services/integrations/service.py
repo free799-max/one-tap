@@ -13,10 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import APIException
-from app.core.security import verify_password
 from app.models.docker.compose import DockerComposeProject
 from app.models.integration import IntegrationConfig
-from app.models.user import User
 from app.schemas.integration import (
     DdnsGoConnectionOut,
     IntegrationStatusOut,
@@ -81,6 +79,9 @@ from app.services.integrations.npm import (
 from app.services.integrations.vaultwarden import (
     VaultwardenClient,
     cipher_name,
+)
+from app.services.integrations.vaultwarden_deployment import (
+    vaultwarden_deployment_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -740,6 +741,7 @@ class IntegrationService:
         assert record is not None
         config = record.config or {}
         items = config.get("vaultwarden_items") or {}
+        runtime = await vaultwarden_deployment_service.runtime_status(config)
         return VaultwardenConfigOut(
             enabled=record.enabled,
             configured=self._is_configured(VAULTWARDEN, config),
@@ -748,6 +750,7 @@ class IntegrationService:
             password_set=_mask(config.get("password")),
             synced_count=len(items),
             status=_status_out(record.status),
+            **runtime,
         )
 
     async def save_vaultwarden(
@@ -756,7 +759,8 @@ class IntegrationService:
         record = await self._get_record(db, VAULTWARDEN)
         assert record is not None
         config = dict(record.config or {})
-        config["url"] = data.url.strip().rstrip("/")
+        if not config.get("managed"):
+            config["url"] = data.url.strip().rstrip("/")
         config["email"] = data.email.strip()
         if data.password is not None and data.password.strip():
             config["password"] = data.password.strip()
@@ -764,6 +768,15 @@ class IntegrationService:
         record.enabled = data.enabled
         await db.commit()
         return await self.get_vaultwarden(db)
+
+    async def reveal_vaultwarden_password(self, db: AsyncSession) -> str:
+        """返回已保存的主密码；调用方需先完成二次验证。"""
+        record = await self._get_record(db, VAULTWARDEN)
+        assert record is not None
+        password = _secret((record.config or {}).get("password"))
+        if not password:
+            raise APIException("尚未保存密码", 404)
+        return password
 
     async def test_vaultwarden(
         self,
@@ -1158,12 +1171,8 @@ class IntegrationService:
         self,
         db: AsyncSession,
         provider: str,
-        login_password: str,
-        user: User,
     ) -> str:
-        """验证当前登录账号密码后，返回指定方案或 DDNS 已保存的密钥。"""
-        if not verify_password(login_password, user.hashed_password):
-            raise APIException("账号密码错误", 401)
+        """返回指定方案或 DDNS 已保存的密钥；调用方需先完成二次验证。"""
         record = await self._get_record(db, NETWORK)
         assert record is not None
         config = self._network_config(record)
@@ -1798,7 +1807,7 @@ class IntegrationService:
                 if not isinstance(row, dict):
                     continue
                 name = _text(row.get("NetInterfaceName"))
-                if not name:
+                if not name or name.lower().startswith(("docker", "br-", "veth")):
                     continue
                 addresses = [
                     _text(item)

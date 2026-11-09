@@ -72,6 +72,12 @@ class ComposeProjectOut(BaseModel):
     stack: ComposeStackStatusOut | None = None
     config_files: list[str] | None = None
     working_dir: str | None = None
+    host_config_files: list[str] | None = None
+    """宿主机路径视图；未启用路径别名或与容器路径相同时为 None。"""
+    host_working_dir: str | None = None
+    compose_available: bool = True
+    """Compose 文件与工作目录是否在容器内可见，决定项目能否完整维护。"""
+    compose_unavailable_reason: str | None = None
     created_at: str
     updated_at: str
 

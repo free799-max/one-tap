@@ -1,9 +1,7 @@
 /**
- * 网络集成 Tab
+ * 访问入口 Tab（Lucky 反向代理与 DDNS）
  *
- * 支持两套互斥的反代方案：
- * - Lucky：反向代理与 DDNS 一体
- * - Nginx Proxy Manager + DDNS-Go：反代与 DDNS 分开部署
+ * 当前界面仅展示 Lucky；NPM + DDNS-Go 的配置逻辑保留，暂不开放入口。
  *
  * 连接后可为已部署应用自动写入反向代理，并创建 DDNS 任务。
  */
@@ -21,16 +19,11 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
-import { copyToClipboard } from "@/lib/utils";
+import { RevealSecretDialog } from "@/components/RevealSecretDialog";
 import {
   Table,
   TableBody,
@@ -48,7 +41,6 @@ import {
   useNetworkDdnsInterfaces,
   useNetworkHosts,
   useNpmCertificates,
-  useRevealNetworkSecret,
   useSaveNetworkDdns,
   useTestNetwork,
   useUpdateNetwork,
@@ -95,12 +87,6 @@ const PROVIDERS: ProviderOption[] = [
     title: "Lucky",
     description: "反向代理 + DDNS 一体",
     detail: "OneTap 在 Lucky 中维护「OneTap」规则和 DDNS 任务。",
-  },
-  {
-    value: "npm",
-    title: "Nginx Proxy Manager + DDNS-Go",
-    description: "反代与 DDNS 分开部署",
-    detail: "NPM 负责域名转发，DDNS-Go 负责动态域名解析。",
   },
 ];
 
@@ -192,7 +178,7 @@ interface FormState {
 function formFromConfig(config: NetworkConfig): FormState {
   return {
     enabled: config.enabled,
-    provider: config.provider,
+    provider: "lucky",
     targetHost: config.target_host,
     luckyUrl: config.lucky.url,
     luckyUsername: config.lucky.username,
@@ -548,6 +534,7 @@ function DdnsFamilyCard({
 }
 
 export function NetworkIntegrationTab() {
+  const toast = useToast();
   const { data: config, isLoading, error } = useNetworkConfig();
   const { data: apps = [], isLoading: appsLoading } = useNetworkApps();
   const ddnsStateQuery = useNetworkDdns(!!config?.configured);
@@ -569,6 +556,7 @@ export function NetworkIntegrationTab() {
     useState<NetworkSecretProvider | null>(null);
   const [ddnsForm, setDdnsForm] = useState<DdnsFormState>(EMPTY_DDNS_FORM);
   const [ddnsInitialized, setDdnsInitialized] = useState(false);
+  const [deleteDdnsDialogOpen, setDeleteDdnsDialogOpen] = useState(false);
   const isNpm = form.provider === "npm";
   const hostsQuery = useNetworkHosts();
   const ddnsInterfacesQuery = useNetworkDdnsInterfaces(
@@ -718,6 +706,32 @@ export function NetworkIntegrationTab() {
     );
   };
 
+  const handleRefreshDdns = async () => {
+    const result = await ddnsStateQuery.refetch();
+    if (result.error) {
+      toast.error("状态刷新失败");
+      return;
+    }
+    toast.success("状态已刷新");
+  };
+
+  const handleDeleteDdns = () => {
+    deleteDdns.mutate(undefined, {
+      onSuccess: (data) => {
+        const shared = ddnsSharedFrom(data.ipv4, data.ipv6);
+        setDdnsForm({
+          enabled: data.enabled,
+          provider: shared.provider,
+          accessId: shared.accessId,
+          secret: "",
+          ipv4: ddnsFamilyFrom(data.ipv4, "ipv4"),
+          ipv6: ddnsFamilyFrom(data.ipv6, "ipv6"),
+        });
+        setDeleteDdnsDialogOpen(false);
+      },
+    });
+  };
+
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">加载配置中...</div>;
   }
@@ -751,13 +765,13 @@ export function NetworkIntegrationTab() {
   return (
     <div className="space-y-3">
       <Card size="sm" className="rounded-xl">
-        <CardHeader className="border-b pb-3">
+        <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2">
             <Network className="h-4 w-4 text-muted-foreground" />
             网络方案
           </CardTitle>
           <CardDescription className="text-[11px]">
-            两套方案互斥；切换不会删除旧系统中已写入的规则。
+            在 Lucky 中统一管理反向代理与 DDNS。
           </CardDescription>
           <CardAction>
             <div className="flex items-center gap-2">
@@ -773,38 +787,40 @@ export function NetworkIntegrationTab() {
         </CardHeader>
 
         <CardContent className="space-y-3">
-          <div className="grid gap-2 md:grid-cols-2">
-            {PROVIDERS.map((provider) => {
-              const selected = form.provider === provider.value;
-              return (
-                <button
-                  key={provider.value}
-                  type="button"
-                  title={provider.detail}
-                  onClick={() => handleProviderChange(provider.value)}
-                  className={`flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
-                    selected
-                      ? "border-primary bg-primary/5"
-                      : "border-border hover:border-foreground/30"
-                  }`}
-                >
-                  <span>
-                    <span className="block text-xs font-medium">
-                      {provider.title}
+          {PROVIDERS.length > 1 && (
+            <div className="grid gap-2">
+              {PROVIDERS.map((provider) => {
+                const selected = form.provider === provider.value;
+                return (
+                  <button
+                    key={provider.value}
+                    type="button"
+                    title={provider.detail}
+                    onClick={() => handleProviderChange(provider.value)}
+                    className={`flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+                      selected
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:border-foreground/30"
+                    }`}
+                  >
+                    <span>
+                      <span className="block text-xs font-medium">
+                        {provider.title}
+                      </span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        {provider.description}
+                      </span>
                     </span>
-                    <span className="block text-[11px] text-muted-foreground">
-                      {provider.description}
-                    </span>
-                  </span>
-                  {selected && (
-                    <Badge className="bg-primary/10 text-[10px] text-primary">
-                      当前
-                    </Badge>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                    {selected && (
+                      <Badge className="bg-primary/10 text-[10px] text-primary">
+                        当前
+                      </Badge>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {isNpm ? (
             <div className="space-y-3 border-t border-border pt-3">
@@ -1149,22 +1165,26 @@ export function NetworkIntegrationTab() {
               </div>
 
               <div className="flex min-w-0 items-end justify-start">
-                <span
-                  className={`min-w-0 max-w-[240px] truncate pb-2 text-left text-[11px] ${
-                    config?.status.ok === false
-                      ? "text-destructive"
-                      : "text-muted-foreground"
-                  }`}
-                  title={config?.status.message || undefined}
-                >
-                  {config?.status.message
-                    ? `最近状态：${config.status.message}`
-                    : "尚未测试连接"}
-                </span>
+                {testLucky.data ? (
+                  <div className="pb-2">
+                    <TestFeedback data={testLucky.data} />
+                  </div>
+                ) : (
+                  <span
+                    className={`min-w-0 max-w-[240px] truncate pb-2 text-left text-[11px] ${
+                      config?.status.ok === false
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                    title={config?.status.message || undefined}
+                  >
+                    {config?.status.message
+                      ? `最近状态：${config.status.message}`
+                      : "尚未测试连接"}
+                  </span>
+                )}
               </div>
             </div>
-
-            {testLucky.data && <TestFeedback data={testLucky.data} />}
             </div>
           )}
 
@@ -1564,118 +1584,26 @@ export function NetworkIntegrationTab() {
             <div className="text-[11px] text-amber-600">{ddnsState.message}</div>
           )}
 
-          {ddnsState?.tasks && ddnsState.tasks.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-end">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => ddnsStateQuery.refetch()}
-                  disabled={ddnsStateQuery.isFetching}
-                >
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 ${
-                      ddnsStateQuery.isFetching ? "animate-spin" : ""
-                    }`}
-                  />
-                  刷新状态
-                </Button>
-              </div>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>任务</TableHead>
-                    <TableHead>类型</TableHead>
-                    <TableHead>域名</TableHead>
-                    <TableHead>当前地址</TableHead>
-                    <TableHead>状态</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {ddnsState.tasks.map((task) => (
-                    <TableRow key={task.task_key}>
-                      <TableCell className="text-sm">{task.task_name}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {task.task_type}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {task.domains.join(", ") || "-"}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {task.address || "-"}
-                      </TableCell>
-                      <TableCell>
-                        <div className="space-y-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <Badge
-                              variant={task.enabled ? "default" : "secondary"}
-                            >
-                              {task.enabled ? "已启用" : "已停用"}
-                            </Badge>
-                            {task.status === "ok" && (
-                              <Badge className="bg-emerald-500/10 text-emerald-700">
-                                同步成功
-                              </Badge>
-                            )}
-                            {task.status === "unchanged" && (
-                              <Badge variant="secondary">无变化</Badge>
-                            )}
-                            {task.status === "error" && (
-                              <Badge variant="destructive">同步失败</Badge>
-                            )}
-                            {task.status === null && (
-                              <span className="text-[11px] text-muted-foreground">
-                                尚未同步
-                              </span>
-                            )}
-                          </div>
-                          {task.message && (
-                            <p
-                              className={`text-[11px] ${
-                                task.status === "error"
-                                  ? "text-destructive"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              {task.message}
-                            </p>
-                          )}
-                          <p className="text-[11px] text-muted-foreground">
-                            {task.last_sync
-                              ? `上次同步 ${task.last_sync}`
-                              : "暂无同步记录"}
-                            {task.next_sync ? ` · 下次 ${task.next_sync}` : ""}
-                          </p>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+          <div className="flex items-center justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() =>
-                deleteDdns.mutate(undefined, {
-                  onSuccess: (data) => {
-                    const shared = ddnsSharedFrom(data.ipv4, data.ipv6);
-                    setDdnsForm({
-                      enabled: data.enabled,
-                      provider: shared.provider,
-                      accessId: shared.accessId,
-                      secret: "",
-                      ipv4: ddnsFamilyFrom(data.ipv4, "ipv4"),
-                      ipv6: ddnsFamilyFrom(data.ipv6, "ipv6"),
-                    });
-                  },
-                })
-              }
+              onClick={handleRefreshDdns}
+              disabled={ddnsStateQuery.isFetching}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${
+                  ddnsStateQuery.isFetching ? "animate-spin" : ""
+                }`}
+              />
+              刷新状态
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setDeleteDdnsDialogOpen(true)}
               disabled={deleteDdns.isPending || !config?.configured}
             >
               删除任务
@@ -1694,8 +1622,93 @@ export function NetworkIntegrationTab() {
               保存 DDNS
             </Button>
           </div>
+
+          {ddnsState?.tasks && ddnsState.tasks.length > 0 && (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>任务</TableHead>
+                  <TableHead>类型</TableHead>
+                  <TableHead>域名</TableHead>
+                  <TableHead>当前地址</TableHead>
+                  <TableHead>状态</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {ddnsState.tasks.map((task) => (
+                  <TableRow key={task.task_key}>
+                    <TableCell className="text-sm">{task.task_name}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {task.task_type}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {task.domains.join(", ") || "-"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {task.address || "-"}
+                    </TableCell>
+                    <TableCell>
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            variant={task.enabled ? "default" : "secondary"}
+                          >
+                            {task.enabled ? "已启用" : "已停用"}
+                          </Badge>
+                          {task.status === "ok" && (
+                            <Badge className="bg-emerald-500/10 text-emerald-700">
+                              同步成功
+                            </Badge>
+                          )}
+                          {task.status === "unchanged" && (
+                            <Badge variant="secondary">无变化</Badge>
+                          )}
+                          {task.status === "error" && (
+                            <Badge variant="destructive">同步失败</Badge>
+                          )}
+                          {task.status === null && (
+                            <span className="text-[11px] text-muted-foreground">
+                              尚未同步
+                            </span>
+                          )}
+                        </div>
+                        {task.message && task.status !== "unchanged" && (
+                          <p
+                            className={`text-[11px] ${
+                              task.status === "error"
+                                ? "text-destructive"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {task.message}
+                          </p>
+                        )}
+                        <p className="text-[11px] text-muted-foreground">
+                          {task.last_sync
+                            ? `上次同步 ${task.last_sync}`
+                            : "暂无同步记录"}
+                          {task.next_sync ? ` · 下次 ${task.next_sync}` : ""}
+                        </p>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={deleteDdnsDialogOpen}
+        onOpenChange={setDeleteDdnsDialogOpen}
+        title="删除 DDNS 任务"
+        description="确定要删除 OneTap 创建的 IPv4 和 IPv6 DDNS 任务吗？此操作无法撤销。"
+        confirmText="确认删除"
+        onConfirm={handleDeleteDdns}
+        destructive
+        isPending={deleteDdns.isPending}
+      />
 
       <RevealSecretDialog
         open={revealProvider !== null}
@@ -1714,112 +1727,6 @@ export function NetworkIntegrationTab() {
         }
       />
     </div>
-  );
-}
-
-function RevealSecretDialog({
-  open,
-  onOpenChange,
-  provider,
-  title,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  provider: NetworkSecretProvider | null;
-  title: string;
-}) {
-  const toast = useToast();
-  const reveal = useRevealNetworkSecret();
-  const [loginPassword, setLoginPassword] = useState("");
-  const [secret, setSecret] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) {
-      setLoginPassword("");
-      setSecret(null);
-    }
-  }, [open]);
-
-  const handleVerify = () => {
-    if (!provider || !loginPassword) return;
-    reveal.mutate(
-      { provider, password: loginPassword },
-      { onSuccess: (data) => setSecret(data.password) }
-    );
-  };
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        onOpenChange(next);
-      }}
-    >
-      <DialogContent className="sm:max-w-sm">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-        </DialogHeader>
-
-        {secret === null ? (
-          <div className="space-y-2">
-            <Label htmlFor="reveal_login_password" className="text-xs">
-              当前账号密码
-            </Label>
-            <PasswordInput
-              id="reveal_login_password"
-              autoFocus
-              value={loginPassword}
-              onChange={(e) => setLoginPassword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleVerify();
-              }}
-              placeholder="输入登录 OneTap 的密码"
-              className="h-8"
-            />
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onOpenChange(false)}
-              >
-                取消
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleVerify}
-                disabled={!loginPassword || reveal.isPending}
-              >
-                {reveal.isPending ? "验证中..." : "验证并查看"}
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <Input
-              value={secret}
-              readOnly
-              className="h-8 font-mono"
-              onFocus={(e) => e.currentTarget.select()}
-            />
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={async () => {
-                  await copyToClipboard(secret);
-                  toast.success("已复制密码");
-                }}
-              >
-                复制
-              </Button>
-              <Button size="sm" onClick={() => onOpenChange(false)}>
-                关闭
-              </Button>
-            </div>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }
 

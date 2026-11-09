@@ -579,14 +579,7 @@ class MusicAutoOrganizeService:
 
     async def tick(self) -> None:
         """检查所有启用自动整理的实例组，到点则后台运行。"""
-        from app.services.licensing import licensing_service
-
         async with async_session() as db:
-            try:
-                await licensing_service.require_valid(db)
-            except APIException:
-                logger.info("授权无效，跳过音乐自动整理调度")
-                return
             groups = list(
                 (
                     await db.execute(select(AppOrchestrationInstance))

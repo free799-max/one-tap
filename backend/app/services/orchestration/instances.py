@@ -98,12 +98,15 @@ class InstanceMixin:
         db: AsyncSession,
         scope: str | None = None,
         orchestration_name: str | None = None,
+        mode: str | None = None,
         limit: int = 20,
     ) -> list[OrchestrationUpdateEvent]:
         """查询模板/实例组版本变更记录，按创建时间倒序。"""
         stmt = select(OrchestrationUpdateEvent)
         if scope:
             stmt = stmt.where(OrchestrationUpdateEvent.scope == scope)
+        if mode:
+            stmt = stmt.where(OrchestrationUpdateEvent.mode == mode)
         if orchestration_name:
             stmt = stmt.where(
                 OrchestrationUpdateEvent.orchestration_name == orchestration_name

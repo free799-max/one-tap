@@ -6,6 +6,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
+import { useDeployTasks } from "@/hooks/useDeployTasks";
 import type { ApiError } from "@/api/types";
 import {
   getSystemConfig,
@@ -14,7 +15,9 @@ import {
   listStorageDirectories,
   testProxy,
   listRemoteDockerMirrors,
+  getDockerMirrorEffectiveness,
   testDockerMirrors,
+  listAutoUpdateTargets,
   createStorageDirectory,
   updateStorageDirectory,
   deleteStorageDirectory,
@@ -23,6 +26,11 @@ import {
   getHostsOptimizerStatus,
   testHostsOptimizer,
   runHostsOptimizer,
+  getHostsAccelerationOverview,
+  toggleAppAcceleration,
+  deployHostsAdguard,
+  removeHostsAdguard,
+  syncHostsManagedRules,
   type SystemConfig,
   type SystemConfigUpdate,
   type StorageDirectory,
@@ -30,6 +38,10 @@ import {
   type StorageDirectoryUpdate,
   type HostsOptimizerConfig,
   type HostsOptimizerStatus,
+  type AccelerationOverview,
+  type AccelerationToggleResult,
+  type PortSuggestionOptions,
+  type AutoUpdateTargets,
 } from "@/api/settings";
 import {
   settingsDirectoriesApi,
@@ -50,8 +62,17 @@ export type {
   ProxyTestResult,
   RemoteDockerMirror,
   RemoteDockerMirrors,
+  AutoUpdateTarget,
+  AutoUpdateTargets,
   DockerMirrorTestItem,
   DockerMirrorTestResult,
+  AccelerationOverview,
+  AccelerationApp,
+  AccelerationAdguard,
+  AccelerationToggleResult,
+  AdguardDeployResult,
+  ManagedDnsRule,
+  ManagedDnsRules,
 } from "@/api/settings";
 export type {
   DirectoryList,
@@ -90,12 +111,34 @@ export function useUpdateSystemConfig() {
 }
 
 /**
+ * 查询可勾选自动更新的服务
+ */
+export function useAutoUpdateTargets(enabled = true) {
+  return useQuery<AutoUpdateTargets>({
+    queryKey: ["settings", "auto-update-targets"],
+    queryFn: listAutoUpdateTargets,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+/**
  * 查询服务端口分配建议（部署表单预填端口用）
  */
-export function usePortSuggestions(count: number) {
+export function usePortSuggestions(
+  count: number,
+  options?: PortSuggestionOptions
+) {
+  const preferredKey = options?.preferred?.join(",") ?? "";
   return useQuery<number[]>({
-    queryKey: ["settings", "port-suggestions", count],
-    queryFn: () => getPortSuggestions(count),
+    queryKey: [
+      "settings",
+      "port-suggestions",
+      count,
+      preferredKey,
+      options?.excludeContainer ?? "",
+    ],
+    queryFn: () => getPortSuggestions(count, options),
     enabled: count > 0,
   });
 }
@@ -274,6 +317,16 @@ export function useRemoteDockerMirrors() {
   });
 }
 
+/** 实际核验授权专属镜像源是否可用 */
+export function useDockerMirrorStatus(enabled = true) {
+  return useQuery({
+    queryKey: ["settings", "docker-mirrors", "effectiveness"],
+    queryFn: getDockerMirrorEffectiveness,
+    enabled,
+    refetchInterval: 60000,
+  });
+}
+
 /**
  * 检测镜像加速地址的连通性
  */
@@ -356,13 +409,116 @@ export function useRunHostsOptimizer() {
   const toast = useToast();
 
   return useMutation({
-    mutationFn: runHostsOptimizer,
+    mutationFn: () => runHostsOptimizer(),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer", "status"] });
       toast.success("优选完成");
     },
     onError: (error: ApiError) => {
       toast.error(error.displayMessage || "优选失败");
+    },
+  });
+}
+
+/**
+ * 查询应用加速、AdGuard 与管理端规则状态
+ */
+export function useHostsAccelerationOverview(enabled = true) {
+  return useQuery<AccelerationOverview>({
+    queryKey: ["settings", "hosts-optimizer", "acceleration"],
+    queryFn: getHostsAccelerationOverview,
+    enabled,
+    refetchInterval: 30000,
+  });
+}
+
+/**
+ * 开启或关闭单个应用的 DNS 加速
+ */
+export function useToggleAppAcceleration() {
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  return useMutation({
+    mutationFn: ({
+      instanceId,
+      enabled,
+    }: {
+      instanceId: number;
+      enabled: boolean;
+    }): Promise<AccelerationToggleResult> =>
+      toggleAppAcceleration(instanceId, enabled),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer"] });
+      qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer", "acceleration"] });
+      if (result.warnings.length > 0) {
+        toast.success(result.message);
+        result.warnings.forEach((warning) => toast.error(warning));
+      } else {
+        toast.success(result.message);
+      }
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "应用加速操作失败");
+    },
+  });
+}
+
+/**
+ * 自动部署 OneTap 专用 AdGuard Home
+ */
+export function useDeployHostsAdguard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { startTask } = useDeployTasks();
+
+  return useMutation({
+    mutationFn: deployHostsAdguard,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer"] });
+      startTask(result.task_id);
+      toast.success("部署任务已启动");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "AdGuard Home 部署失败");
+    },
+  });
+}
+
+/**
+ * 关闭所有应用加速并删除 OneTap 托管的 AdGuard Home
+ */
+export function useRemoveHostsAdguard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  return useMutation({
+    mutationFn: removeHostsAdguard,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer"] });
+      toast.success(result.message || "AdGuard Home 已删除");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "删除 AdGuard Home 失败");
+    },
+  });
+}
+
+/**
+ * 从管理端同步加速域名规则
+ */
+export function useSyncHostsManagedRules() {
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  return useMutation({
+    mutationFn: syncHostsManagedRules,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["settings", "hosts-optimizer"] });
+      toast.success(`已同步 ${result.rules.length} 条加速规则`);
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "同步加速规则失败");
     },
   });
 }

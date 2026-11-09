@@ -2,16 +2,16 @@ import { useState } from "react";
 import {
   AlertCircle,
   BadgeCheck,
-  Check,
+  CheckCircle2,
+  Circle,
   Clock3,
-  Copy,
-  Gift,
-  Infinity as InfinityIcon,
+  Crown,
+  Eye,
   KeyRound,
   Loader2,
   RefreshCw,
-  ShieldCheck,
   ShieldOff,
+  Sparkles,
   Unplug,
   WifiOff,
   XCircle,
@@ -26,9 +26,9 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { RevealSecretDialog } from "@/components/RevealSecretDialog";
 import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/ui/password-input";
-import { useToast } from "@/components/ui/toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
   useActivateLicense,
@@ -36,7 +36,10 @@ import {
   useLicenseStatus,
   useRefreshLicense,
 } from "@/hooks/useLicense";
-import { copyToClipboard } from "@/lib/utils";
+import {
+  useDockerMirrorStatus,
+  useHostsAccelerationOverview,
+} from "@/hooks/useSettings";
 import type { LicenseStatus } from "@/api/license";
 
 const INPUT_CLASS =
@@ -50,20 +53,22 @@ function formatTime(value: string | null) {
     : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-/** 半隐藏授权码：保留前 6 位与后 4 位 */
-function maskLicenseKey(key: string) {
-  if (key.length <= 10) return "*".repeat(key.length);
-  return `${key.slice(0, 6)}****${key.slice(-4)}`;
+/** 距离到期还有多少天；无到期时间返回 null */
+function daysUntil(value: string | null): number | null {
+  if (!value) return null;
+  const target = new Date(value).getTime();
+  if (Number.isNaN(target)) return null;
+  return Math.ceil((target - Date.now()) / 86_400_000);
 }
 
-function LicenseStatusBadge({ status }: { status: LicenseStatus }) {
+function AccelerationStatusBadge({ status }: { status: LicenseStatus }) {
   const normalized = status.status.toLowerCase();
-  let label = "授权无效";
+  let label = "状态异常";
   let className = "bg-destructive/10 text-destructive";
   let Icon = XCircle;
 
   if (!status.activated) {
-    label = "免费版";
+    label = "未开通";
     className = "bg-muted text-muted-foreground";
     Icon = ShieldOff;
   } else if (normalized.includes("expired")) {
@@ -73,14 +78,14 @@ function LicenseStatusBadge({ status }: { status: LicenseStatus }) {
     label = "已吊销";
     Icon = ShieldOff;
   } else if (normalized.includes("error")) {
-    label = "授权错误";
+    label = "状态异常";
     Icon = AlertCircle;
   } else if (status.valid && normalized.includes("offline")) {
-    label = "离线有效";
+    label = "已开通（离线）";
     className = "bg-amber-500/10 text-amber-700";
     Icon = WifiOff;
   } else if (status.valid) {
-    label = "授权有效";
+    label = "已开通";
     className = "bg-emerald-500/10 text-emerald-700";
     Icon = BadgeCheck;
   }
@@ -89,6 +94,51 @@ function LicenseStatusBadge({ status }: { status: LicenseStatus }) {
     <Badge className={className}>
       <Icon aria-hidden="true" />
       {label}
+    </Badge>
+  );
+}
+
+function FeatureStatusBadge({
+  label,
+  enabled,
+  loading = false,
+  title,
+}: {
+  label: string;
+  enabled: boolean | null;
+  loading?: boolean;
+  title?: string;
+}) {
+  const Icon = loading
+    ? Loader2
+    : enabled === null
+      ? AlertCircle
+      : enabled
+        ? CheckCircle2
+        : Circle;
+  const stateLabel = loading
+    ? "核验中"
+    : enabled === null
+      ? "状态未知"
+      : enabled
+        ? "已生效"
+        : "未生效";
+  const className = loading
+    ? "border-border bg-muted text-muted-foreground"
+    : enabled === null
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+      : enabled
+        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+        : "border-border bg-muted text-muted-foreground";
+
+  return (
+    <Badge variant="outline" className={className} title={title}>
+      <Icon
+        className={loading ? "animate-spin" : undefined}
+        aria-hidden="true"
+      />
+      {label}
+      <span className="font-normal">{stateLabel}</span>
     </Badge>
   );
 }
@@ -111,34 +161,24 @@ function StatusItem({
 export function LicenseTab() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const toast = useToast();
   const {
     data: license,
     isLoading,
     error,
     refetch,
   } = useLicenseStatus();
+  const hasValidLicense = Boolean(license?.valid);
+  const mirrorQuery = useDockerMirrorStatus(hasValidLicense);
+  const networkQuery = useHostsAccelerationOverview(hasValidLicense);
   const activate = useActivateLicense();
   const refresh = useRefreshLicense();
   const deactivate = useDeactivateLicense();
   const [licenseKey, setLicenseKey] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [revealDialogOpen, setRevealDialogOpen] = useState(false);
 
   const isMutating =
     activate.isPending || refresh.isPending || deactivate.isPending;
-
-  const handleCopyLicenseKey = async () => {
-    if (!license?.license_key) return;
-    const copiedOk = await copyToClipboard(license.license_key);
-    if (copiedOk) {
-      toast.success("授权码已复制");
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } else {
-      toast.error("复制失败，请手动选择授权码复制");
-    }
-  };
 
   const handleActivate = (event: React.FormEvent) => {
     event.preventDefault();
@@ -153,11 +193,17 @@ export function LicenseTab() {
     );
   };
 
+  const openPurchase = () => {
+    if (license?.purchase_url) {
+      window.open(license.purchase_url, "_blank", "noopener,noreferrer");
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-        加载授权状态中...
+        加载专属加速状态中...
       </div>
     );
   }
@@ -168,7 +214,7 @@ export function LicenseTab() {
         <CardContent className="flex flex-col items-start gap-3 py-6">
           <p className="flex items-center gap-2 text-sm text-destructive">
             <AlertCircle className="h-4 w-4" aria-hidden="true" />
-            授权状态加载失败，请稍后重试。
+            专属加速状态加载失败，请稍后重试。
           </p>
           <Button variant="outline" size="sm" onClick={() => refetch()}>
             <RefreshCw aria-hidden="true" />
@@ -179,94 +225,134 @@ export function LicenseTab() {
     );
   }
 
-  return (
-    <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
-      {license.activated && (
-      <Card className="rounded-xl xl:col-span-2">
-        <CardHeader className="pb-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <ShieldCheck className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-              授权状态
-            </CardTitle>
-            <LicenseStatusBadge status={license} />
-          </div>
-          <CardDescription>
-            当前为授权版，自动化方案与定时自动化更新均已解锁；离线有效期间可继续使用已授权功能。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {license.last_error && (
-            <div
-              role="alert"
-              className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            >
-              {license.last_error}
-            </div>
-          )}
+  const remainingDays = daysUntil(license.expires_at);
+  const expiringSoon =
+    license.valid &&
+    remainingDays !== null &&
+    remainingDays <= 7;
+  const purchaseUrl = license.purchase_url;
+  const mirrorEnabled = mirrorQuery.data?.effective ?? null;
+  const networkEnabled = networkQuery.data?.network_effective ?? null;
 
+  return (
+    <Card className="rounded-xl">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Crown className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            专属加速
+          </CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            {license.valid && (
+              <>
+                <FeatureStatusBadge
+                  label="镜像加速"
+                  enabled={mirrorEnabled}
+                  loading={mirrorQuery.isPending}
+                  title={
+                    mirrorQuery.data?.message ||
+                    "镜像加速状态获取失败，请稍后重试"
+                  }
+                />
+                <FeatureStatusBadge
+                  label="网络加速"
+                  enabled={networkEnabled}
+                  loading={networkQuery.isPending}
+                  title={
+                    networkQuery.data?.network_message ||
+                    "网络加速状态获取失败，请稍后重试"
+                  }
+                />
+              </>
+            )}
+            <AccelerationStatusBadge status={license} />
+            {!license.valid && purchaseUrl && (
+              <Button
+                type="button"
+                size="sm"
+                className="bg-violet-600 text-white hover:bg-violet-700"
+                onClick={openPurchase}
+              >
+                <Sparkles aria-hidden="true" />
+                购买专属加速
+              </Button>
+            )}
+            {expiringSoon && purchaseUrl && (
+              <Button type="button" size="sm" variant="outline" onClick={openPurchase}>
+                续费
+              </Button>
+            )}
+          </div>
+        </div>
+        <CardDescription>
+          {license.valid
+            ? "专属加速已开通：镜像下载走专属加速源，指定域名由专属节点解析；其余功能始终免费开放。"
+            : "OneTap 全部功能免费开放。专属加速为可选增值服务，包含镜像下载加速与域名访问加速。作用于 OneTap 拉取的镜像和已开启域名加速的应用容器，不改宿主机配置。"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        {license.last_error && (
+          <div
+            role="alert"
+            className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          >
+            {license.last_error}
+          </div>
+        )}
+
+        {expiringSoon && (
+          <div
+            role="status"
+            className="rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700"
+          >
+            专属加速将在 {remainingDays} 天后到期，到期后域名解析回落到本机优选，
+            其他功能不受影响。
+          </div>
+        )}
+
+        {license.valid ? (
           <div className="flex flex-wrap items-center gap-4">
-            <div className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 xl:grid-cols-4">
+            <div className="grid min-w-0 flex-1 grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
               <StatusItem
                 label="最近刷新"
                 value={formatTime(license.last_refreshed_at)}
               />
               <StatusItem
-                label="离线有效期至"
-                value={formatTime(license.expires_at)}
+                label="剩余时间"
+                value={
+                  remainingDays === null
+                    ? null
+                    : remainingDays > 0
+                      ? `${remainingDays} 天后过期`
+                      : "今天过期"
+                }
               />
-              <div className="flex items-center gap-2">
-                <span className="shrink-0 text-sm text-muted-foreground">
-                  授权时长
-                </span>
-                {license.perpetual ? (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                    <InfinityIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                    永久
-                  </span>
-                ) : (
-                  <span className="text-base text-foreground">-</span>
-                )}
-              </div>
               {isAdmin && (
                 <div className="flex items-center gap-2">
                   <span className="shrink-0 text-sm text-muted-foreground">
                     授权码
                   </span>
-                  <span
-                    className="font-mono text-base text-foreground"
-                    title={
-                      license.license_key
-                        ? maskLicenseKey(license.license_key)
-                        : "重新激活后即可显示"
-                    }
-                  >
-                    {license.license_key
-                      ? maskLicenseKey(license.license_key)
-                      : "未记录"}
+                  <span className="font-mono text-base text-foreground">
+                    {license.license_key_set ? "••••••••" : "未记录"}
                   </span>
-                  {license.license_key && (
+                  {license.license_key_set && (
                     <Button
                       type="button"
                       variant="ghost"
                       size="icon-sm"
                       className="h-6 w-6"
-                      onClick={handleCopyLicenseKey}
-                      title={copied ? "已复制" : "复制授权码"}
-                      aria-label="复制授权码"
+                      onClick={() => setRevealDialogOpen(true)}
+                      title="查看授权码"
+                      aria-label="查看授权码"
                     >
-                      {copied ? (
-                        <Check className="h-4 w-4" aria-hidden="true" />
-                      ) : (
-                        <Copy className="h-4 w-4" aria-hidden="true" />
-                      )}
+                      <Eye className="h-4 w-4" aria-hidden="true" />
                     </Button>
                   )}
                 </div>
               )}
             </div>
 
-            {isAdmin && license.activated && (
+            {isAdmin && (
               <div className="flex shrink-0 flex-wrap gap-2">
                 <Button
                   type="button"
@@ -295,76 +381,64 @@ export function LicenseTab() {
               </div>
             )}
           </div>
-        </CardContent>
-      </Card>
-      )}
+        ) : (
+          <div className="space-y-3">
+            {isAdmin ? (
+              <>
+                <form
+                  onSubmit={handleActivate}
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  <Label
+                    htmlFor="license_key"
+                    className="shrink-0 text-sm font-medium"
+                  >
+                    <KeyRound className="mr-1 inline h-4 w-4" aria-hidden="true" />
+                    授权码
+                  </Label>
+                  <PasswordInput
+                    id="license_key"
+                    value={licenseKey}
+                    onChange={(event) => setLicenseKey(event.target.value)}
+                    placeholder="请输入专属加速授权码"
+                    autoComplete="off"
+                    required
+                    containerClassName="min-w-0 max-w-md flex-1"
+                    className={INPUT_CLASS}
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    className="shrink-0"
+                    disabled={!licenseKey.trim() || isMutating}
+                  >
+                    {activate.isPending && (
+                      <Loader2 className="animate-spin" aria-hidden="true" />
+                    )}
+                    {activate.isPending ? "开通中..." : "开通专属加速"}
+                  </Button>
+                </form>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                未开通专属加速；如需开通请联系管理员。
+              </p>
+            )}
+          </div>
+        )}
 
-      {isAdmin && !license.valid && (
-        <Card className="rounded-xl xl:col-span-2">
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="space-y-1.5">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <KeyRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                  激活授权
-                </CardTitle>
-                <CardDescription>
-                  输入授权码升级为授权版，解锁定时自动化更新。
-                </CardDescription>
-              </div>
-              {!license.activated && (
-                <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500 px-3 py-1 text-sm font-semibold text-white shadow-sm">
-                  <Gift className="h-4 w-4" aria-hidden="true" />
-                  免费版 · 无期限
-                </span>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent>
-            <form
-              onSubmit={handleActivate}
-              className="flex flex-wrap items-center gap-2"
-            >
-              <Label htmlFor="license_key" className="shrink-0 text-sm font-medium">
-                授权码
-              </Label>
-              <PasswordInput
-                id="license_key"
-                value={licenseKey}
-                onChange={(event) => setLicenseKey(event.target.value)}
-                placeholder="请输入授权码"
-                autoComplete="off"
-                required
-                containerClassName="min-w-0 max-w-md flex-1"
-                className={INPUT_CLASS}
-              />
-              <Button
-                type="submit"
-                size="sm"
-                className="shrink-0"
-                disabled={!licenseKey.trim() || isMutating}
-              >
-                {activate.isPending && (
-                  <Loader2 className="animate-spin" aria-hidden="true" />
-                )}
-                {activate.isPending ? "激活中..." : "激活授权"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      )}
-
-      {!isAdmin && (
-        <p className="text-xs text-muted-foreground xl:col-span-2">
-          当前为普通用户，仅可查看授权状态。如需激活、刷新或解绑，请联系管理员。
-        </p>
-      )}
+        {!isAdmin && (
+          <p className="text-xs text-muted-foreground">
+            当前为普通用户，仅可查看专属加速状态。如需开通、刷新或解绑，请联系管理员。
+          </p>
+        )}
+      </CardContent>
 
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title="确认解绑授权？"
-        description="解绑后当前设备将回到免费版，无法使用自动化更新，需要重新激活授权才能恢复。"
+        title="确认解绑专属加速？"
+        description="解绑后当前设备将失去专属加速，域名解析回落到本机优选；其他功能不受影响。"
         confirmText="确认解绑"
         destructive
         isPending={deactivate.isPending}
@@ -374,6 +448,13 @@ export function LicenseTab() {
           })
         }
       />
-    </div>
+
+      <RevealSecretDialog
+        open={revealDialogOpen}
+        onOpenChange={setRevealDialogOpen}
+        provider="license"
+        title="查看专属加速授权码"
+      />
+    </Card>
   );
 }

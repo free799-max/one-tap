@@ -36,11 +36,34 @@ class VaultwardenConfigOut(BaseModel):
     kind: Literal["vaultwarden"] = "vaultwarden"
     enabled: bool = False
     configured: bool = False
+    managed: bool = False
+    running: bool = False
     url: str = ""
+    web_url: str | None = None
+    web_port: int | None = None
     email: str = ""
     password_set: bool = False
     synced_count: int = 0
     status: IntegrationStatusOut = Field(default_factory=IntegrationStatusOut)
+
+
+class VaultwardenDeployRequest(BaseModel):
+    """部署 OneTap 托管实例；空凭据沿用已保存配置。"""
+
+    email: str | None = None
+    password: str | None = None
+    web_port: int | None = Field(default=None, ge=1, le=65535)
+
+
+class VaultwardenDeployTaskOut(BaseModel):
+    task_id: str
+    instance_name: str
+    deploying: bool = True
+
+
+class VaultwardenRemoveOut(BaseModel):
+    removed: bool
+    message: str
 
 
 class VaultwardenUpdate(BaseModel):
@@ -319,17 +342,23 @@ class NetworkProxyResult(BaseModel):
     message: str
 
 
-class NetworkSecretRequest(BaseModel):
-    """查看已保存密码前，用当前登录账号密码二次验证。"""
+class SecretRevealRequest(BaseModel):
+    """首次验证当前账号密码，之后使用三小时内有效的查看授权。"""
 
+    password: str | None = Field(default=None, min_length=1)
+    reveal_token: str | None = Field(default=None, min_length=1)
+
+
+class NetworkSecretRequest(SecretRevealRequest):
     provider: Literal["lucky", "npm", "ddnsgo", "ddns"]
-    password: str = Field(..., min_length=1)
 
 
-class NetworkSecretOut(BaseModel):
-    """已保存的连接密码明文。"""
+class IntegrationSecretOut(BaseModel):
+    """已保存的密码明文及本次查看授权；明文不参与缓存。"""
 
     password: str
+    reveal_token: str
+    expires_at: datetime
 
 
 class NetworkDdnsTaskOut(BaseModel):

@@ -40,6 +40,12 @@ interface AppDeployDialogProps {
     config: Record<string, unknown>;
   }) => void;
   isDeploying?: boolean;
+  /** 预填实例名称（系统托管应用使用固定名称时传入） */
+  initialInstanceName?: string;
+  /** 预填配置，会与 Schema 默认值合并 */
+  initialConfig?: Record<string, unknown>;
+  /** 固定实例名称，不允许在弹窗内修改 */
+  lockInstanceName?: boolean;
 }
 
 function useDebouncedPreview(
@@ -92,6 +98,9 @@ export function AppDeployDialog({
   onOpenChange,
   onDeploy,
   isDeploying = false,
+  initialInstanceName,
+  initialConfig,
+  lockInstanceName = false,
 }: AppDeployDialogProps) {
   // 弹窗内直接请求最新应用详情，不依赖任何缓存
   const [app, setApp] = useState<AppDetail | null>(null);
@@ -138,6 +147,11 @@ export function AppDeployDialog({
   const [instanceName, setInstanceName] = useState("");
   const [config, setConfig] = useState<Record<string, unknown>>({});
 
+  const initialConfigKey = useMemo(
+    () => JSON.stringify(initialConfig ?? {}),
+    [initialConfig]
+  );
+
   const appDisplayName = app?.display_name || "";
   const appConfigSchema = useMemo(() => app?.config_schema || {}, [app]);
 
@@ -151,12 +165,20 @@ export function AppDeployDialog({
   const appliedSlugRef = useRef("");
 
   useEffect(() => {
-    setInstanceName(slugify(appDisplayName));
+    setInstanceName(initialInstanceName ?? slugify(appDisplayName));
     const defaults = extractDefaults(appConfigSchema);
-    setConfig(fillEmptyPasswords(appConfigSchema, defaults));
+    const overrides = JSON.parse(initialConfigKey) as Record<string, unknown>;
+    setConfig(
+      fillEmptyPasswords(appConfigSchema, { ...defaults, ...overrides })
+    );
     portsFilledRef.current = false;
     appliedSlugRef.current = "";
-  }, [appDisplayName, appConfigSchema]);
+  }, [
+    appDisplayName,
+    appConfigSchema,
+    initialInstanceName,
+    initialConfigKey,
+  ]);
 
   // 存储路径：把 schema 的相对默认值物化为
   // `<应用数据目录>/<实例名>/<应用名>/<子目录>`，实例改名时同步旧前缀
@@ -279,8 +301,14 @@ export function AppDeployDialog({
                   onChange={(e) => setInstanceName(sanitizeInstanceName(e.target.value))}
                   onBlur={() => setInstanceName(slugify(instanceName))}
                   placeholder="如：my-moviepilot"
-                  className="h-8 rounded-md border-input bg-white px-2 text-sm shadow-none"
+                  disabled={lockInstanceName}
+                  className="h-8 rounded-md border-input bg-white px-2 text-sm shadow-none disabled:bg-muted disabled:text-muted-foreground"
                 />
+                {lockInstanceName && (
+                  <p className="text-xs text-muted-foreground">
+                    由 OneTap 管理，实例名称固定
+                  </p>
+                )}
               </div>
 
               <SchemaForm

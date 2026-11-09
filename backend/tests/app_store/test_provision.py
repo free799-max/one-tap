@@ -506,6 +506,109 @@ async def test_moviepilot_provision_verify_success():
 
 
 @pytest.mark.asyncio
+async def test_moviepilot_provision_initializes_admin():
+    """新版首次启动时先创建管理员，再登录复验。"""
+    patcher, instance = _mock_http()
+    try:
+        instance.get = AsyncMock(
+            side_effect=[
+                _resp(
+                    200,
+                    json_data={
+                        "success": True,
+                        "data": {
+                            "initialized": False,
+                            "configured_username": "nasadmin",
+                        },
+                    },
+                ),
+                _resp(
+                    200,
+                    json_data={"success": True, "data": {"initialized": True}},
+                ),
+                _resp(200, json_data={"name": "nasadmin"}),
+            ]
+        )
+        instance.post = AsyncMock(
+            side_effect=[
+                _resp(200, json_data={"success": True}, method="POST"),
+                _resp(
+                    200,
+                    json_data={"access_token": "mp-token"},
+                    method="POST",
+                ),
+            ]
+        )
+
+        with patch("app.services.apps.moviepilot.client.asyncio.sleep", new=AsyncMock()):
+            result = await MoviePilotClient().provision(
+                url="http://192.168.1.10:9001",
+                username="nasadmin",
+                password="Unified#Pass1",
+                api_key="mp-api-token-24chars-xxx",
+            )
+
+        assert result.ok is True
+        initialize_call = instance.post.call_args_list[0]
+        assert initialize_call.args[0].endswith("/api/v1/login/initialization")
+        assert initialize_call.kwargs["json"] == {
+            "username": "nasadmin",
+            "password": "Unified#Pass1",
+            "confirm_password": "Unified#Pass1",
+            "api_key": "mp-api-token-24chars-xxx",
+        }
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_moviepilot_provision_respects_login_retry_after():
+    """登录限流时按 Retry-After 等待，避免持续请求加重限流。"""
+    patcher, instance = _mock_http()
+    try:
+        limited_resp = _resp(429, json_data={"detail": "请求过于频繁"}, method="POST")
+        limited_resp.headers["Retry-After"] = "17"
+        instance.get = AsyncMock(
+            side_effect=[
+                _resp(
+                    200,
+                    json_data={"success": True, "data": {"initialized": True}},
+                ),
+                _resp(
+                    200,
+                    json_data={"success": True, "data": {"initialized": True}},
+                ),
+                _resp(200, json_data={"name": "nasadmin"}),
+            ]
+        )
+        instance.post = AsyncMock(
+            side_effect=[
+                limited_resp,
+                _resp(
+                    200,
+                    json_data={"access_token": "mp-token"},
+                    method="POST",
+                ),
+            ]
+        )
+
+        with patch(
+            "app.services.apps.moviepilot.client.asyncio.sleep", new=AsyncMock()
+        ) as sleep:
+            result = await MoviePilotClient().provision(
+                url="http://192.168.1.10:9001",
+                username="nasadmin",
+                password="Unified#Pass1",
+                api_key="mp-api-token-24chars-xxx",
+            )
+
+        assert result.ok is True
+        sleep.assert_awaited_once_with(17.0)
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.asyncio
 async def test_moviepilot_provision_change_password_with_previous():
     """修复场景：目标密码被拒时用旧密码登录，经用户更新接口改密后复验通过。"""
     patcher, instance = _mock_http()

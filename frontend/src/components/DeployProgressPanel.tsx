@@ -42,6 +42,7 @@ const stageMap: Record<string, string> = {
   waiting_services: "等待部署",
   provisioning: "配置账号",
   wiring: "自动装配",
+  initializing: "初始化 DNS",
   completed: "部署完成",
   failed: "部署失败",
 };
@@ -68,6 +69,8 @@ function taskTitleOf(meta: Record<string, unknown>): string | null {
   switch (meta.operation) {
     case "delete":
       return `删除 ${(meta.instance_name as string) || "实例组"}`;
+    case "adguard_deploy":
+      return "部署 AdGuard Home";
     case "provision":
       return "自动配置与装配";
     case "upgrade":
@@ -101,6 +104,11 @@ function successSummary(meta: Record<string, unknown>): {
   hint: string;
 } {
   switch (meta.operation) {
+    case "adguard_deploy":
+      return {
+        title: "AdGuard Home 已部署并完成初始化",
+        hint: "可在网络优化中开启应用加速",
+      };
     case "upgrade":
       return { title: "升级完成，镜像已更新", hint: "配置与数据保持不变" };
     case "compose_action":

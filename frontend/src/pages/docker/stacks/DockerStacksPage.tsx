@@ -158,7 +158,7 @@ export function DockerStacksPage() {
         title="删除编排项目"
         description={
           deleteProject
-            ? `确定删除编排项目${deleteProject.project_name}，将删除容器与网络？`
+            ? `确定删除编排项目${deleteProject.project_name}？将删除容器与网络，应用数据会先备份到应用数据目录的 _backups 下，重新部署将从空数据开始。`
             : undefined
         }
         confirmText="删除"

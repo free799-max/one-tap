@@ -30,6 +30,9 @@ from app.services.compose.log_utils import (
 from app.services.compose.permissions import extract_bind_sources, parse_puid_pgid
 from app.services.apps.asset_copy import AssetCopyError, copy_assets, find_container
 from app.services.apps.offline_assets import apply_offline_profile, profiles_in_compose
+from app.services.docker.mirror_pull import pull_with_mirror
+from app.services.manage_client import manage_base_urls
+from app.services.system.registry_mirror_service import get_acceleration_map
 from app.services.compose.yaml_utils import (
     inject_labels,
     rewrite_ports,
@@ -42,6 +45,7 @@ from app.services.system.port_allocator import (
     release_ports,
 )
 from app.services.system import system_config_service
+from app.services.system.host_path_aliases import host_path_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +95,51 @@ class ComposeService:
         if project.working_dir:
             return Path(project.working_dir)
         return self._project_dir(project.project_name)
+
+    def project_availability(
+        self, project: DockerComposeProject
+    ) -> tuple[bool, str | None]:
+        """检查项目是否具备 Compose 维护所需的文件与工作目录。"""
+        missing_files = [
+            path for path in self._config_files(project) if not path.is_file()
+        ]
+        if missing_files:
+            paths = "、".join(
+                host_path_aliases.to_host_path(path) for path in missing_files
+            )
+            return (
+                False,
+                f"Compose 文件在容器内不可见：{paths}；请挂载项目目录并配置存储映射",
+            )
+
+        working_dir = self._working_dir(project)
+        if not working_dir.is_dir():
+            path = host_path_aliases.to_host_path(working_dir)
+            return (
+                False,
+                f"Compose 工作目录在容器内不可见：{path}；请挂载项目目录并配置存储映射",
+            )
+        return True, None
+
+    def _compose_command(
+        self, project: DockerComposeProject, *args: str
+    ) -> tuple[list[str], str]:
+        """构造 Compose 命令，文件路径与工作目录切换为宿主机路径视图。
+
+        数据库始终保留容器内路径；只有 CLI 调用转换，保证旧项目升级后
+        不需要迁移，关闭路径别名时也能完全沿用旧行为。
+        """
+        config_files = [
+            Path(host_path_aliases.to_host_path(path))
+            for path in self._config_files(project)
+        ]
+        working_dir = host_path_aliases.to_host_path(self._working_dir(project))
+
+        cmd = ["docker", "compose"]
+        for cf in config_files:
+            cmd.extend(["-f", str(cf)])
+        cmd.extend(["-p", project.project_name, *args])
+        return cmd, working_dir
 
     def _lock(self, project_id: int) -> asyncio.Lock:
         """获取项目级操作锁。"""
@@ -163,20 +212,14 @@ class ComposeService:
         if not self.docker_available:
             raise RuntimeError("未找到 docker 命令，请确认 Docker 已安装")
 
-        config_files = self._config_files(project)
-        working_dir = self._working_dir(project)
-
-        cmd = ["docker", "compose"]
-        for cf in config_files:
-            cmd.extend(["-f", str(cf)])
-        cmd.extend(["-p", project.project_name, *args])
+        cmd, working_dir = self._compose_command(project, *args)
 
         logger.info("执行 compose 命令: %s (cwd=%s)", " ".join(cmd), working_dir)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(working_dir),
+            cwd=working_dir,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -204,20 +247,14 @@ class ComposeService:
         if not self.docker_available:
             raise RuntimeError("未找到 docker 命令，请确认 Docker 已安装")
 
-        config_files = self._config_files(project)
-        working_dir = self._working_dir(project)
-
-        cmd = ["docker", "compose"]
-        for cf in config_files:
-            cmd.extend(["-f", str(cf)])
-        cmd.extend(["-p", project.project_name, *args])
+        cmd, working_dir = self._compose_command(project, *args)
 
         logger.info("执行 compose 命令: %s (cwd=%s)", " ".join(cmd), working_dir)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(working_dir),
+            cwd=working_dir,
         )
 
         stdout_lines: list[str] = []
@@ -258,6 +295,59 @@ class ComposeService:
             "stderr": "\n".join(stderr_lines),
         }
 
+    async def _compose_images(self, project: DockerComposeProject) -> list[str]:
+        """解析 compose 配置中需要拉取的镜像（跳过本地 build 服务）。"""
+        result = await self._run(project, "config", "--format", "json", timeout=60)
+        if result["returncode"] != 0:
+            logger.info("解析 compose 镜像失败：%s", result.get("stderr", "")[:200])
+            return []
+        try:
+            data = json.loads(result["stdout"])
+        except ValueError:
+            return []
+        services = data.get("services") if isinstance(data, dict) else None
+        if not isinstance(services, dict):
+            return []
+        images: list[str] = []
+        for service in services.values():
+            if not isinstance(service, dict) or service.get("build"):
+                continue
+            image = service.get("image")
+            if isinstance(image, str) and image.strip():
+                normalized = image.strip()
+                if normalized not in images:
+                    images.append(normalized)
+        return images
+
+    async def _prepull_images(
+        self,
+        project: DockerComposeProject,
+        progress: Callable[..., Any] | None,
+    ) -> None:
+        """部署前按源站用加速域名预拉镜像，成功后改回原 tag。"""
+        if not manage_base_urls():
+            return
+        images = await self._compose_images(project)
+        if not images:
+            return
+        acceleration = await get_acceleration_map()
+        if not acceleration:
+            return
+        for index, image in enumerate(images, start=1):
+            if progress:
+                progress(
+                    "pulling_images",
+                    45,
+                    f"通过加速域名拉取镜像 {index}/{len(images)}",
+                    image,
+                )
+            try:
+                await pull_with_mirror(image, acceleration)
+            except Exception:
+                logger.warning(
+                    "预拉取镜像失败，交给 compose 重试：%s", image, exc_info=True
+                )
+
     async def _run_up_with_progress(
         self,
         project: DockerComposeProject,
@@ -272,6 +362,8 @@ class ComposeService:
             if progress_callback:
                 progress_callback(stage, percentage, message, detail)
 
+        _progress("pulling_images", 45, "准备拉取镜像")
+        await self._prepull_images(project, progress_callback)
         _progress("pulling_images", 50, "拉取镜像并启动服务")
         current_stage = "pulling_images"
         last_progress_at = 0.0
@@ -542,10 +634,94 @@ class ComposeService:
         await db.refresh(project)
         return project
 
-    async def delete_project(
+    def _compose_volume_config(self, project: DockerComposeProject) -> dict[str, Any]:
+        """从 Compose 文件提取宿主机挂载路径，供数据目录备份使用。"""
+        volumes: list[dict[str, str]] = []
+        for path in self._config_files(project):
+            try:
+                data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                continue
+            services = data.get("services") if isinstance(data, dict) else None
+            if not isinstance(services, dict):
+                continue
+            for service in services.values():
+                if not isinstance(service, dict):
+                    continue
+                for volume in service.get("volumes") or []:
+                    if isinstance(volume, str):
+                        host_path = volume.split(":", 1)[0]
+                    elif isinstance(volume, dict):
+                        host_path = volume.get("source") or volume.get("host_path")
+                    else:
+                        continue
+                    if host_path:
+                        volumes.append({"host_path": str(host_path)})
+        return {"volumes": volumes}
+
+    async def _backup_project_data(
         self, db, project: DockerComposeProject
+    ) -> tuple[Path | None, list]:
+        """把项目自身的数据目录移入应用数据目录下的 ``_backups``。"""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from app.services.orchestration.backup import (
+            AppDataEntry,
+            backup_app_data_dirs,
+        )
+
+        result = await db.execute(
+            select(AppInstance)
+            .options(selectinload(AppInstance.app))
+            .where(AppInstance.project_id == project.id)
+        )
+        instances = result.scalars().all()
+        if any(instance.orchestration_group_id for instance in instances):
+            # 实例组内多个应用共用 <应用数据目录>/<实例组名>/ 目录，单独删除
+            # 某个 Compose 项目时不能整体搬走；实例组删除流程会统一备份。
+            logger.info(
+                "项目 %s 属于编排实例组，跳过 Compose 级数据备份",
+                project.project_name,
+            )
+            return None, []
+        entries = [
+            AppDataEntry(
+                instance_name=instance.instance_name,
+                app_name=instance.app.name if instance.app else None,
+                project_name=project.project_name,
+                config=dict(instance.config or {}),
+            )
+            for instance in instances
+        ]
+        if not entries:
+            # 手动创建的 Compose 项目没有 AppInstance，从当前 Compose 文件
+            # 的 bind mount 中提取宿主机路径。
+            entries = [
+                AppDataEntry(
+                    instance_name=project.project_name,
+                    app_name=None,
+                    project_name=project.project_name,
+                    config=self._compose_volume_config(project),
+                )
+            ]
+        return await backup_app_data_dirs(
+            db, entries, group_name=project.project_name
+        )
+
+    async def delete_project(
+        self,
+        db,
+        project: DockerComposeProject,
+        backup_data: bool = False,
     ) -> None:
-        """删除项目。"""
+        """删除项目。
+
+        Args:
+            backup_data: 删除容器后是否先把应用数据目录移入
+                ``<应用数据目录>/_backups``。重新部署时会从空数据开始；
+                内部替换项目（如 AdGuard 重新部署）应保持 False。
+        """
         async with self._lock(project.id):
             try:
                 await self._run(project, "down", "--remove-orphans", timeout=120)
@@ -555,6 +731,20 @@ class ComposeService:
             # 兜底：无论 docker compose down 是否成功，都强制清理归属容器，
             # 避免外部发现的项目或 down 失败的项目反复“复活”。
             await self._remove_project_containers(project.project_name)
+
+            if backup_data:
+                backup_dir, failures = await self._backup_project_data(db, project)
+                if failures:
+                    names = "、".join(item.project_name for item in failures)
+                    raise RuntimeError(
+                        f"数据目录备份失败，已停止删除项目 {project.project_name}：{names}"
+                    )
+                if backup_dir is not None:
+                    logger.info(
+                        "项目 %s 的数据目录已备份到 %s",
+                        project.project_name,
+                        backup_dir,
+                    )
 
             project_dir = self._project_dir(project.project_name)
             if project_dir == self._working_dir(project):
@@ -825,24 +1015,19 @@ class ComposeService:
         if not self.docker_available:
             raise RuntimeError("未找到 docker 命令，请确认 Docker 已安装")
 
-        config_files = self._config_files(project)
-        working_dir = self._working_dir(project)
-
-        cmd = ["docker", "compose"]
-        for cf in config_files:
-            cmd.extend(["-f", str(cf)])
-        cmd.extend(["-p", project.project_name, "logs", "--tail", str(tail)])
+        args = ["logs", "--tail", str(tail)]
         if follow:
-            cmd.append("-f")
+            args.append("-f")
         if services:
-            cmd.extend(services)
+            args.extend(services)
+        cmd, working_dir = self._compose_command(project, *args)
 
         logger.info("执行 compose 日志流: %s (cwd=%s)", " ".join(cmd), working_dir)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=str(working_dir),
+            cwd=working_dir,
         )
 
         def _clean_log_line(raw: str) -> str:

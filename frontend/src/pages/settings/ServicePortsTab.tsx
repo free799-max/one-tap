@@ -74,7 +74,6 @@ function ServicePortConfig() {
       https_proxy: config.https_proxy || null,
       service_port_start: portStart,
       default_admin_username: config.default_admin_username || "admin",
-      default_admin_password: config.default_admin_password,
       docker_registry_mirrors: config.docker_registry_mirrors,
     });
   };

@@ -1,4 +1,4 @@
-"""授权 API、证书验证、刷新与调度门禁测试。"""
+"""授权 API、证书验证与刷新测试。"""
 
 import asyncio
 import base64
@@ -21,8 +21,6 @@ from app.services.licensing.service import (
     LicenseCertificateError,
     validate_certificate,
 )
-from app.services.orchestration.music_auto import music_auto_service
-from app.services.orchestration.reader_auto import reader_auto_service
 
 
 PRIVATE_KEY = Ed25519PrivateKey.generate()
@@ -79,7 +77,8 @@ def certificate(
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
         "installation_id_hash": hashlib.sha256(installation_id.encode()).hexdigest(),
-        "perpetual": True,
+        "perpetual": False,
+        "license_type": "standard",
     }
     claims.update(overrides)
     header = encode({"alg": "EdDSA", "typ": "JWT", "kid": "key-1"})
@@ -141,14 +140,18 @@ async def test_status_is_redacted_and_available_to_regular_user(client):
         "license_id",
         "activation_id",
         "license_key",
+        "license_key_set",
         "device_name",
         "expires_at",
         "last_refreshed_at",
         "last_error",
+        "purchase_url",
     }
     assert data["edition"] == "free"
     assert data["perpetual"] is False
     assert data["license_key"] is None
+    assert data["license_key_set"] is True
+    assert data["purchase_url"] is None
     assert "secret" not in response.text
     assert data["device_name"] == "living-room"
 
@@ -157,7 +160,7 @@ async def test_status_is_redacted_and_available_to_regular_user(client):
     assert admin
 
 
-async def test_license_key_visible_to_admin_only(client):
+async def test_license_key_reveal_requires_admin_and_login_password(client):
     admin = await register(client, "admin")
     user = await register(client, "reader")
     async for db in _test_db(client):
@@ -167,16 +170,49 @@ async def test_license_key_visible_to_admin_only(client):
 
     admin_resp = await client.get("/api/license/status", headers=auth(admin))
     assert admin_resp.status_code == 200
-    assert admin_resp.json()["data"]["license_key"] == "ND-1234-5678-ABCD"
+    assert admin_resp.json()["data"]["license_key"] is None
+    assert admin_resp.json()["data"]["license_key_set"] is True
+    assert "ND-1234-5678-ABCD" not in admin_resp.text
 
     user_resp = await client.get("/api/license/status", headers=auth(user))
     assert user_resp.status_code == 200
     assert user_resp.json()["data"]["license_key"] is None
     assert "ND-1234-5678-ABCD" not in user_resp.text
 
+    forbidden = await client.post(
+        "/api/license/secret",
+        headers=auth(user),
+        json={"password": "password123"},
+    )
+    assert forbidden.status_code == 403, forbidden.text
+
+    wrong = await client.post(
+        "/api/license/secret",
+        headers=auth(admin),
+        json={"password": "wrong-pass"},
+    )
+    assert wrong.status_code == 403, wrong.text
+
+    revealed = await client.post(
+        "/api/license/secret",
+        headers=auth(admin),
+        json={"password": "password123"},
+    )
+    assert revealed.status_code == 200, revealed.text
+    secret = revealed.json()["data"]
+    assert secret["password"] == "ND-1234-5678-ABCD"
+
+    cached = await client.post(
+        "/api/license/secret",
+        headers=auth(admin),
+        json={"reveal_token": secret["reveal_token"]},
+    )
+    assert cached.status_code == 200, cached.text
+    assert cached.json()["data"]["password"] == "ND-1234-5678-ABCD"
+
 
 async def test_free_edition_can_use_orchestration_apis(client):
-    """免费版不再受授权门禁限制，只有后台定时自动化仍需要授权。"""
+    """全部功能免费开放，编排接口不再受授权门禁限制。"""
     token = await register(client, "admin")
     response = await client.post(
         "/api/orchestrations/example/deploy",
@@ -190,16 +226,16 @@ async def test_free_edition_can_use_orchestration_apis(client):
     assert get_response.status_code == 200
 
 
-async def test_auto_update_requires_license(client):
-    """未激活授权时不能开启自动更新，已开启的可以关闭。"""
+async def test_auto_update_toggle_does_not_require_license(client):
+    """自动更新免费开放，未开通专属加速也能开关。"""
     token = await register(client, "admin")
-    denied = await client.put(
+    enabled = await client.put(
         "/api/settings",
         headers=auth(token),
         json={"auto_update_enabled": True},
     )
-    assert denied.status_code == 403
-    assert "自动更新需要授权版" in denied.json()["message"]
+    assert enabled.status_code == 200
+    assert enabled.json()["data"]["auto_update_enabled"] is True
 
     disabled = await client.put(
         "/api/settings",
@@ -217,7 +253,6 @@ async def test_auto_update_requires_license(client):
         (certificate(installation_id="another-device"), "device_mismatch"),
         (certificate(iss="other"), "invalid_issuer"),
         (certificate(aud="other"), "invalid_audience"),
-        (certificate(perpetual=False), "invalid_license_type"),
     ],
 )
 def test_certificate_validation_rejects_invalid_claims(token, reason):
@@ -229,19 +264,18 @@ def test_certificate_validation_rejects_invalid_claims(token, reason):
 def test_certificate_validation_accepts_valid_ed25519_jwt():
     payload = validate_certificate(certificate(), INSTALLATION_ID, PUBLIC_PEM, "key-1")
     assert payload["iss"] == "onetap-manage"
-    assert payload["perpetual"] is True
+    assert payload["perpetual"] is False
 
 
-def test_certificate_validation_rejects_temporary_license():
-    """临时授权下线，只有授权版永久证书有效。"""
-    with pytest.raises(LicenseCertificateError) as caught:
-        validate_certificate(
-            certificate(perpetual=False, temporary=True, temporary_months=12),
-            INSTALLATION_ID,
-            PUBLIC_PEM,
-            "key-1",
-        )
-    assert caught.value.reason == "invalid_license_type"
+def test_certificate_validation_accepts_time_limited_license():
+    """有期限的授权证书按 exp 判断有效期，不再要求永久授权。"""
+    payload = validate_certificate(
+        certificate(perpetual=False, license_type="trial"),
+        INSTALLATION_ID,
+        PUBLIC_PEM,
+        "key-1",
+    )
+    assert payload["license_type"] == "trial"
 
 
 def test_certificate_hardware_fingerprint_is_enforced_when_present():
@@ -333,7 +367,7 @@ async def test_status_reports_edition_free_and_licensed(client, monkeypatch):
     data = activated.json()["data"]
     assert data["valid"] is True
     assert data["edition"] == "licensed"
-    assert data["perpetual"] is True
+    assert data["perpetual"] is False
     assert "temporary_months" not in data
 
 
@@ -368,9 +402,17 @@ async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
     assert "certificate" not in activated.json()["data"]
     assert "refresh_token" not in activated.json()["data"]
     key_status = await client.get("/api/license/status", headers=auth(token))
-    assert key_status.json()["data"]["license_key"] == "license-key"
-    assert key_status.json()["data"]["perpetual"] is True
+    assert key_status.json()["data"]["license_key"] is None
+    assert key_status.json()["data"]["license_key_set"] is True
+    assert key_status.json()["data"]["perpetual"] is False
     assert key_status.json()["data"]["edition"] == "licensed"
+    revealed = await client.post(
+        "/api/license/secret",
+        headers=auth(token),
+        json={"password": "password123"},
+    )
+    assert revealed.status_code == 200, revealed.text
+    assert revealed.json()["data"]["password"] == "license-key"
     post.assert_awaited_with(
         "activate",
         {
@@ -696,15 +738,3 @@ async def test_refresh_tick_and_scheduler_shutdown(monkeypatch):
     await licensing_service.stop_scheduler()
     assert task.cancelled()
     assert licensing_service._scheduler_task is None
-
-
-@pytest.mark.parametrize("service", [music_auto_service, reader_auto_service])
-async def test_auto_tick_does_not_create_jobs_without_license(service, monkeypatch):
-    async def deny(db):
-        raise APIException("需要有效授权", 403)
-
-    start_run = AsyncMock()
-    monkeypatch.setattr(licensing_service, "require_valid", deny)
-    monkeypatch.setattr(service, "start_run", start_run)
-    await service.tick()
-    start_run.assert_not_awaited()

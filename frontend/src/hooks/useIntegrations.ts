@@ -5,10 +5,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/api/types";
+import { useDeployTasks } from "@/hooks/useDeployTasks";
 import {
   listIntegrations,
   getVaultwardenConfig,
   updateVaultwardenConfig,
+  deployVaultwarden,
+  removeVaultwarden,
   testVaultwarden,
   listVaultwardenApps,
   syncVaultwarden,
@@ -19,7 +22,7 @@ import {
   listNetworkApps,
   upsertNetworkProxy,
   deleteNetworkProxy,
-  revealNetworkSecret,
+  revealIntegrationSecret,
   listNpmCertificates,
   listNetworkCertificates,
   autoProvisionNetworkCertificate,
@@ -40,8 +43,8 @@ import {
   type NetworkProxyResult,
   type NetworkCertificate,
   type NetworkCertificateResult,
-  type NetworkSecretOut,
-  type NetworkSecretProvider,
+  type IntegrationSecretOut,
+  type IntegrationSecretProvider,
   type IntegrationTestResult,
   type TestableProvider,
 } from "@/api/integrations";
@@ -113,6 +116,42 @@ export function useUpdateVaultwarden() {
       toast.success("保存成功");
     },
     onError: onMutationError(toast),
+  });
+}
+
+export function useDeployVaultwarden() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { startTask } = useDeployTasks();
+  return useMutation({
+    mutationFn: (data: {
+      email?: string | null;
+      password?: string | null;
+      web_port?: number | null;
+    }) => deployVaultwarden(data),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["integrations"] });
+      startTask(result.task_id);
+      toast.success("Vaultwarden 部署任务已启动");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "Vaultwarden 部署失败");
+    },
+  });
+}
+
+export function useRemoveVaultwarden() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: removeVaultwarden,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["integrations"] });
+      toast.success(result.message);
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "删除 Vaultwarden 失败");
+    },
   });
 }
 
@@ -256,14 +295,18 @@ export function useDeleteNetworkProxy() {
   });
 }
 
-export function useRevealNetworkSecret() {
+export function useRevealIntegrationSecret() {
   const toast = useToast();
   return useMutation<
-    NetworkSecretOut,
+    IntegrationSecretOut,
     ApiError,
-    { provider: NetworkSecretProvider; password: string }
+    {
+      provider: IntegrationSecretProvider;
+      password?: string;
+      reveal_token?: string;
+    }
   >({
-    mutationFn: revealNetworkSecret,
+    mutationFn: revealIntegrationSecret,
     onError: onMutationError(toast),
   });
 }

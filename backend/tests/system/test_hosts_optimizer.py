@@ -9,6 +9,7 @@ from app.models.system_config import SystemConfig
 from app.schemas.hosts_optimizer import DEFAULT_HOSTS_OPTIMIZER_DOMAINS
 from app.services.system import hosts_optimizer_service
 from app.services.system.hosts_optimizer_service import (
+    mask_run_ips,
     normalize_adguard_url,
     normalize_domains,
 )
@@ -166,7 +167,10 @@ async def test_hosts_optimizer_manual_run_saves_status(client, monkeypatch):
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
     assert data["adguard"] == "ok"
-    assert data["domains"]["api.themoviedb.org"]["ips"][0]["ip"] == "18.244.214.89"
+    masked = data["domains"]["api.themoviedb.org"]
+    assert "ips" not in masked
+    assert masked["ip_count"] == 1
+    assert masked["best_latency_ms"] == 650
     assert captured["adguard_url"] == "http://192.168.1.23:8081"
     assert captured["mode"] == "manual"
 
@@ -177,7 +181,21 @@ async def test_hosts_optimizer_manual_run_saves_status(client, monkeypatch):
     status_data = status.json()["data"]
     assert status_data["running"] is False
     assert status_data["last_run"]["duration_ms"] == 18000
-    assert status_data["last_run"]["domains"]["api.themoviedb.org"]["status"] == "ok"
+    status_domain = status_data["last_run"]["domains"]["api.themoviedb.org"]
+    assert status_domain["status"] == "ok"
+    assert "ips" not in status_domain
+    assert status_domain["ip_count"] == 1
+
+
+def test_mask_run_ips_keeps_counts_only():
+    masked = mask_run_ips(_fake_run())
+    assert masked is not None
+    domain = masked["domains"]["api.themoviedb.org"]
+    assert "ips" not in domain
+    assert domain["ip_count"] == 1
+    assert domain["best_latency_ms"] == 650
+    assert masked["duration_ms"] == 18000
+    assert mask_run_ips(None) is None
 
 
 def test_normalize_domains_validates_and_deduplicates():

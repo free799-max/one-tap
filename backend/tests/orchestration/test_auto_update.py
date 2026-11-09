@@ -24,6 +24,7 @@ from app.models.orchestration import (
     OrchestrationUpdateEvent,
 )
 from app.models.storage_directory import StorageDirectory
+from app.models.system_config import SystemConfig
 from app.services.compose.compose_service import compose_manager
 from app.services.orchestration import auto_update as auto_update_module
 from app.services.orchestration import deploy as deploy_module
@@ -257,10 +258,21 @@ async def _events(db) -> list[OrchestrationUpdateEvent]:
     return list(result.scalars().all())
 
 
+async def _select(db, *keys: str) -> None:
+    """写入自动更新目标选择。"""
+    config = await db.get(SystemConfig, 1)
+    if config is None:
+        config = SystemConfig(id=1)
+        db.add(config)
+    config.auto_update_targets = list(keys)
+    await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_auto_update_upgrades_single_app(
     db, session_factory, single_instance, updater
 ):
+    await _select(db, f"app:{single_instance.id}")
     stats = await auto_update_module.run_auto_update()
 
     assert stats["apps"] == 1
@@ -290,6 +302,7 @@ async def test_auto_update_skips_imported_container(
     config["imported"] = True
     single_instance.config = config
     await db.commit()
+    await _select(db, f"app:{single_instance.id}")
 
     stats = await auto_update_module.run_auto_update()
 
@@ -330,6 +343,7 @@ async def test_auto_update_syncs_version_when_image_current(
     db.add(instance)
     await db.commit()
     instance_id = instance.id
+    await _select(db, f"app:{instance_id}")
 
     await auto_update_module.run_auto_update()
 
@@ -347,6 +361,7 @@ async def test_auto_update_syncs_version_when_image_current(
 async def test_auto_update_upgrades_group(
     db, session_factory, group_instance, updater
 ):
+    await _select(db, f"group:{group_instance.id}")
     stats = await auto_update_module.run_auto_update()
 
     assert stats["groups"] == 1
@@ -383,6 +398,7 @@ async def test_auto_update_skips_group_with_new_template_app(
         {"app_name": "newapp", "relation": "optional"},
     ]
     await db.commit()
+    await _select(db, f"group:{group_instance.id}")
 
     stats = await auto_update_module.run_auto_update()
 
@@ -408,6 +424,7 @@ async def test_auto_update_marks_failed_version_and_stops_retry(
 
     monkeypatch.setattr(compose_manager, "edit_and_deploy_async", boom)
     monkeypatch.setattr(compose_manager, "rollback_version", fake_rollback)
+    await _select(db, f"app:{single_instance.id}")
 
     stats = await auto_update_module.run_auto_update()
 
@@ -426,3 +443,34 @@ async def test_auto_update_marks_failed_version_and_stops_retry(
     stats = await auto_update_module.run_auto_update()
     assert stats["apps"] == 0
     assert stats["apps_skipped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_update_requires_selected_targets(
+    db, session_factory, single_instance, updater
+):
+    """未勾选任何服务时不执行自动更新。"""
+    stats = await auto_update_module.run_auto_update()
+
+    assert stats["skipped"] is True
+    assert stats["reason"] == "no_targets"
+    assert updater["calls"] == []
+    async with session_factory() as check_db:
+        instance = await check_db.get(AppInstance, single_instance.id)
+        assert instance.orchestration_version == "1.0.0"
+
+
+@pytest.mark.asyncio
+async def test_auto_update_only_updates_selected_target(
+    db, session_factory, single_instance, group_instance, updater
+):
+    """只勾选单应用时不会升级未勾选的组合部署。"""
+    await _select(db, f"app:{single_instance.id}")
+
+    stats = await auto_update_module.run_auto_update()
+
+    assert stats["apps"] == 1
+    assert stats["groups"] == 0
+    async with session_factory() as check_db:
+        group = await check_db.get(AppOrchestrationInstance, group_instance.id)
+        assert group.orchestration_version == "1.0.0"

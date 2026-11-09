@@ -15,6 +15,18 @@ async def _fake_session():
     yield SimpleNamespace(commit=AsyncMock())
 
 
+async def _host_details():
+    return {
+        "hostname": "nas-host",
+        "platform": "Debian GNU/Linux 12 (bookworm) · x86_64",
+        "device_info": {
+            "cpu_model": "Intel N100",
+            "cpu_cores": 4,
+            "memory_total_bytes": 8 * 1024**3,
+        },
+    }
+
+
 async def test_report_once_sends_installation_details(monkeypatch):
     state = SimpleNamespace(
         installation_id="0df2f287-026b-47b2-a4f5-1b8efacdb734",
@@ -45,6 +57,7 @@ async def test_report_once_sends_installation_details(monkeypatch):
 
     monkeypatch.setattr(installation_report, "async_session", _fake_session)
     monkeypatch.setattr(installation_report.licensing_service, "get_state", get_state)
+    monkeypatch.setattr(installation_report, "get_host_details", _host_details)
     monkeypatch.setattr(installation_report.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(installation_report.settings, "MANAGE_BASE_URL", "https://m.one-tap.vip")
     monkeypatch.setattr(installation_report.settings, "APP_VERSION", "v0.4.0")
@@ -54,7 +67,13 @@ async def test_report_once_sends_installation_details(monkeypatch):
     payload = captured["payload"]
     assert payload["installation_id"] == state.installation_id
     assert payload["device_name"] == "客厅 NAS"
-    assert payload["hostname"]
+    assert payload["hostname"] == "nas-host"
+    assert payload["platform"] == "Debian GNU/Linux 12 (bookworm) · x86_64"
+    assert payload["device_info"] == {
+        "cpu_model": "Intel N100",
+        "cpu_cores": 4,
+        "memory_total_bytes": 8 * 1024**3,
+    }
     assert payload["app_version"] == "v0.4.0"
     assert len(payload["platform"] or "") <= 100
 
@@ -85,6 +104,7 @@ async def test_report_once_returns_false_on_all_addresses_failed(monkeypatch):
 
     monkeypatch.setattr(installation_report, "async_session", _fake_session)
     monkeypatch.setattr(installation_report.licensing_service, "get_state", get_state)
+    monkeypatch.setattr(installation_report, "get_host_details", _host_details)
     monkeypatch.setattr(installation_report.httpx, "AsyncClient", BrokenClient)
     monkeypatch.setattr(
         installation_report.settings,

@@ -16,6 +16,7 @@ import {
   History,
   Trash2,
   Info,
+  CircleAlert,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -128,6 +129,10 @@ export function StackCard({
   const status = stack?.status || "unknown";
   const statusConfig = composeStatusConfig(status);
   const isRunning = status === "running";
+  const composeAvailable = project.compose_available;
+  const unavailableReason =
+    project.compose_unavailable_reason ||
+    "Compose 文件或工作目录在容器内不可见，请挂载项目目录并配置存储映射";
 
   return (
     <Card className="flex flex-col h-full rounded-xl gap-1 pt-0">
@@ -195,6 +200,16 @@ export function StackCard({
             </>
           )}
         </div>
+
+        {!composeAvailable && (
+          <div
+            className="flex items-start gap-1.5 rounded-md border border-dashed bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground"
+            title={unavailableReason}
+          >
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
+            <span>Compose 文件不可见，无法在此维护；请挂载项目目录并配置存储映射</span>
+          </div>
+        )}
       </CardContent>
 
       <CardFooter className="pt-2 pb-3 px-4 gap-1 flex-wrap border-t justify-end">
@@ -204,21 +219,21 @@ export function StackCard({
             icon={Square}
             title="停止"
             onClick={() => onAction(project, "down")}
-            disabled={isActionPending}
+            disabled={!composeAvailable || isActionPending}
           />
         ) : (
           <ActionButton
             icon={Play}
             title="启动"
             onClick={() => onAction(project, "up")}
-            disabled={isActionPending}
+            disabled={!composeAvailable || isActionPending}
           />
         )}
         <ActionButton
           icon={RotateCcw}
           title="重启"
           onClick={() => onAction(project, "restart")}
-          disabled={isActionPending || !isRunning}
+          disabled={!composeAvailable || isActionPending || !isRunning}
         />
 
         <div className="w-px h-4 bg-border mx-1" />
@@ -228,16 +243,19 @@ export function StackCard({
           icon={FileText}
           title="查看日志"
           onClick={() => onViewLogs(project)}
+          disabled={!composeAvailable}
         />
         <ActionButton
           icon={History}
           title="版本管理"
           onClick={() => onViewVersions(project)}
+          disabled={!composeAvailable}
         />
         <ActionButton
           icon={Info}
           title="查看详情"
           onClick={() => onViewDetail(project)}
+          disabled={!composeAvailable}
         />
 
         <div className="w-px h-4 bg-border mx-1" />
@@ -248,18 +266,24 @@ export function StackCard({
             <Button
               size="icon-xs"
               variant="ghost"
-              className="h-6 w-6 p-0 text-muted-foreground hover:text-primary"
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-primary disabled:opacity-40"
+              disabled={!composeAvailable}
+              title={composeAvailable ? "更多操作" : unavailableReason}
             >
               <MoreHorizontal className="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => onEdit(project)}>
+            <DropdownMenuItem
+              onClick={() => onEdit(project)}
+              disabled={!composeAvailable}
+            >
               编辑项目
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onDelete(project)}
+              disabled={!composeAvailable}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" />

@@ -4,7 +4,7 @@
  * 功能说明：
  * - 创建以 /api 为基础路径的 Axios 实例
  * - 请求拦截器：自动读取 token 并附加到 Authorization 请求头
- * - 响应拦截器：捕获 401 未授权响应，清除本地 token 并跳转到登录页
+ * - 响应拦截器：捕获 401 未授权响应，清除本地 token 和集成秘密查看授权并跳转到登录页
  *
  * token 存储策略（配合登录页「记住我」）：
  * - 勾选记住我：写入 localStorage，浏览器重启后仍有效
@@ -12,6 +12,7 @@
  */
 
 import axios from "axios";
+import { clearSecretRevealAuthorization } from "@/lib/secret-reveal";
 
 const TOKEN_KEY = "token";
 
@@ -31,10 +32,11 @@ export function setToken(token: string, remember: boolean) {
   }
 }
 
-/** 清除 token（两个存储位置都清） */
+/** 清除 token（两个存储位置都清）及集成秘密查看授权 */
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(TOKEN_KEY);
+  clearSecretRevealAuthorization();
 }
 
 // 创建 Axios 实例，所有请求默认以 /api 为前缀

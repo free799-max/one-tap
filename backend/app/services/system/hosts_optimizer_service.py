@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import ssl
@@ -32,6 +33,11 @@ from app.schemas.hosts_optimizer import (
     DEFAULT_HOSTS_OPTIMIZER_TOP_N,
     HostsOptimizerConfigUpdate,
     HostsOptimizerTestRequest,
+)
+from app.services.manage_client import (
+    ManageRequestError,
+    manage_base_urls,
+    with_manage_fallback,
 )
 from app.services.system.config_service import system_config_service
 
@@ -102,6 +108,12 @@ _DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
 )
 
+MAX_MANAGED_RULES = 200
+"""管理端下发的加速规则数量上限。"""
+
+MANAGE_RULES_TIMEOUT = 10.0
+"""请求管理端加速规则的超时时间（秒）。"""
+
 
 def normalize_domains(raw: list[str]) -> list[str]:
     """校验并规范化域名列表：去空白、转小写、去重。"""
@@ -118,6 +130,110 @@ def normalize_domains(raw: list[str]) -> list[str]:
         raise APIException("至少配置一个优选域名", 400)
     if len(result) > MAX_DOMAINS:
         raise APIException(f"优选域名最多 {MAX_DOMAINS} 个", 400)
+    return result
+
+
+def _normalize_answers(raw: Any) -> list[str]:
+    """把管理端返回的 IP 字段统一成去重后的字符串列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = re.split(r"[\s,;]+", raw)
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        items = [raw]
+
+    answers: list[str] = []
+    for item in items:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        try:
+            address = str(ipaddress.ip_address(value))
+        except ValueError:
+            logger.warning("忽略管理端下发的非法 IP：%s", value)
+            continue
+        if address not in answers:
+            answers.append(address)
+    return answers
+
+
+def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
+    """把管理端返回的加速规则整理成统一结构。
+
+    兼容以下形态：
+    - ``["api.themoviedb.org", ...]``
+    - ``[{"domain": "...", "answers": ["1.2.3.4"]}, ...]``
+    - ``{"data": [...]}`` / ``{"dns_rules": [...]}`` / ``{"rules": [...]}``
+    """
+    items = payload
+    if isinstance(payload, dict):
+        for key in ("data", "dns_rules", "rules", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+        else:
+            items = []
+
+    if not isinstance(items, list):
+        return []
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            domain = item
+            answers: list[str] = []
+            priority = 100
+            description = None
+            tier = "free"
+        elif isinstance(item, dict):
+            if item.get("enabled") is False:
+                continue
+            domain = (
+                item.get("domain")
+                or item.get("host")
+                or item.get("name")
+                or ""
+            )
+            answers = _normalize_answers(
+                item.get("answers")
+                if item.get("answers") is not None
+                else item.get("ips")
+                if item.get("ips") is not None
+                else item.get("answer")
+            )
+            priority = item.get("priority")
+            priority = priority if isinstance(priority, int) else 100
+            description = item.get("description") or item.get("note")
+            tier = "subscription" if item.get("tier") == "subscription" else "free"
+        else:
+            continue
+
+        normalized = str(domain or "").strip().lower().rstrip(".")
+        if not normalized:
+            continue
+        if not _DOMAIN_RE.match(normalized):
+            logger.warning("忽略管理端下发的非法域名：%s", normalized)
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(
+            {
+                "domain": normalized,
+                "answers": answers,
+                "priority": priority,
+                "description": str(description).strip() if description else None,
+                "tier": tier,
+            }
+        )
+        if len(result) >= MAX_MANAGED_RULES:
+            break
+
+    result.sort(key=lambda rule: (rule["priority"], rule["domain"]))
     return result
 
 
@@ -146,6 +262,38 @@ def _parse_iso(value: str | None) -> datetime | None:
     return parsed
 
 
+def mask_run_ips(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    """去掉优选结果里的具体 IP，只保留数量与最优延迟。
+
+    所有对外接口都返回该结果，避免截图、日志或抓包暴露当前网络能直连的
+    节点地址（可反推所在地区）；完整地址只留在数据库和写 AdGuard 的流程里。
+    """
+    if not isinstance(run, dict):
+        return run
+    domains = run.get("domains")
+    if not isinstance(domains, dict):
+        return run
+
+    masked: dict[str, Any] = {}
+    for domain, result in domains.items():
+        if not isinstance(result, dict):
+            masked[domain] = result
+            continue
+        ips = result.get("ips") or []
+        latencies = [
+            item.get("latency_ms")
+            for item in ips
+            if isinstance(item, dict)
+            and isinstance(item.get("latency_ms"), (int, float))
+        ]
+        masked[domain] = {
+            **{key: value for key, value in result.items() if key != "ips"},
+            "ip_count": len(ips),
+            "best_latency_ms": min(latencies) if latencies else None,
+        }
+    return {**run, "domains": masked}
+
+
 class HostsOptimizerService:
     """Hosts 优选业务服务。"""
 
@@ -162,9 +310,13 @@ class HostsOptimizerService:
 
     # ---------- 配置 ----------
 
-    def config_from_model(self, config: SystemConfig) -> dict[str, Any]:
+    def config_from_model(
+        self, config: SystemConfig, include_password: bool = True
+    ) -> dict[str, Any]:
         """把 ORM 配置转换为前端可用的结构。"""
         domains = config.hosts_optimizer_domains or list(DEFAULT_HOSTS_OPTIMIZER_DOMAINS)
+        synced_at = config.hosts_optimizer_managed_rules_synced_at
+        password = config.hosts_optimizer_adguard_password or ""
         return {
             "enabled": bool(config.hosts_optimizer_enabled),
             "mode": (
@@ -178,7 +330,15 @@ class HostsOptimizerService:
             "domains": list(domains),
             "adguard_url": config.hosts_optimizer_adguard_url or None,
             "adguard_username": config.hosts_optimizer_adguard_username or "admin",
-            "adguard_password": config.hosts_optimizer_adguard_password or "",
+            "adguard_password": password if include_password else "",
+            "adguard_password_set": bool(password),
+            "adguard_managed": bool(config.hosts_optimizer_adguard_managed),
+            "adguard_dns_ip": config.hosts_optimizer_adguard_dns_ip or None,
+            "manage_configured": bool(manage_base_urls()),
+            "managed_rules": list(config.hosts_optimizer_managed_rules or []),
+            "managed_rules_synced_at": synced_at.isoformat(timespec="seconds")
+            if isinstance(synced_at, datetime)
+            else (str(synced_at) if synced_at else None),
         }
 
     def _runtime_config(self, config: SystemConfig) -> dict[str, Any]:
@@ -189,7 +349,28 @@ class HostsOptimizerService:
             if config.proxy_enabled
             else None
         )
+        values["managed_rules"] = list(config.hosts_optimizer_managed_rules or [])
         return values
+
+    def effective_rules(self, config: SystemConfig) -> list[dict[str, Any]]:
+        """返回本次应写入 AdGuard 的规则。
+
+        管理端下发规则优先；没有管理端规则时回退到本地优选域名。
+        """
+        managed = normalize_managed_rules(config.hosts_optimizer_managed_rules or [])
+        if managed:
+            return managed
+        domains = config.hosts_optimizer_domains or list(DEFAULT_HOSTS_OPTIMIZER_DOMAINS)
+        return [
+            {
+                "domain": domain,
+                "answers": [],
+                "priority": 100,
+                "description": None,
+                "tier": "free",
+            }
+            for domain in domains
+        ]
 
     async def update_config(
         self, db: AsyncSession, data: HostsOptimizerConfigUpdate
@@ -197,7 +378,8 @@ class HostsOptimizerService:
         """保存 Hosts 优选配置（整份提交）。"""
         config = await system_config_service.get_or_create(db)
         config.hosts_optimizer_enabled = bool(data.enabled)
-        config.hosts_optimizer_mode = data.mode
+        # 开关即模式：UI 不再单独提供“手动/自动”，开启即定时运行。
+        config.hosts_optimizer_mode = "auto" if data.enabled else "manual"
         config.hosts_optimizer_interval_minutes = max(
             5, min(10080, int(data.interval_minutes))
         )
@@ -207,14 +389,15 @@ class HostsOptimizerService:
         config.hosts_optimizer_adguard_username = (
             data.adguard_username.strip() or "admin"
         )
-        config.hosts_optimizer_adguard_password = data.adguard_password or ""
+        if data.adguard_password:
+            config.hosts_optimizer_adguard_password = data.adguard_password
         await db.flush()
         await db.refresh(config)
         return config
 
     def next_run_at(self, config: SystemConfig) -> str | None:
-        """计算下一次自动运行时间；非自动模式返回 None。"""
-        if not config.hosts_optimizer_enabled or config.hosts_optimizer_mode != "auto":
+        """计算下一次自动运行时间；未开启自动优选时返回 None。"""
+        if not config.hosts_optimizer_enabled:
             return None
         interval = max(
             5,
@@ -333,6 +516,60 @@ class HostsOptimizerService:
                     errors.append(f"{domain}: {exc}")
         return errors
 
+    # ---------- 管理端规则 ----------
+
+    async def fetch_managed_rules(self) -> dict[str, Any]:
+        """从配套管理端拉取加速域名规则。
+
+        ``MANAGE_BASE_URL`` 未配置时返回 ``configured=False``；请求失败
+        或响应格式异常时抛出 ``APIException``，由调用方决定是否回退缓存。
+        """
+        if not manage_base_urls():
+            return {"configured": False, "rules": [], "synced_at": None}
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=MANAGE_RULES_TIMEOUT,
+                follow_redirects=True,
+            ) as client:
+                resp, _ = await with_manage_fallback(
+                    lambda url: client.get(f"{url}/api/public/dns-rules")
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+        except ManageRequestError as exc:
+            raise APIException(f"从管理端获取加速规则失败：{exc}", 502) from exc
+        except httpx.HTTPError as exc:
+            raise APIException(f"从管理端获取加速规则失败：{exc}", 502) from exc
+        except ValueError as exc:
+            raise APIException("管理端加速规则响应不是合法 JSON", 502) from exc
+
+        rules = normalize_managed_rules(payload)
+        return {
+            "configured": True,
+            "rules": rules,
+            "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+    async def sync_managed_rules(
+        self, db: AsyncSession, config: SystemConfig
+    ) -> dict[str, Any]:
+        """拉取并缓存管理端加速规则。"""
+        result = await self.fetch_managed_rules()
+        rules = normalize_managed_rules(result["rules"])
+        if result["configured"]:
+            config.hosts_optimizer_managed_rules = rules
+            config.hosts_optimizer_managed_rules_synced_at = datetime.now(
+                timezone.utc
+            )
+            await db.flush()
+        return {
+            "configured": result["configured"],
+            "rules": rules,
+            "synced_at": result["synced_at"],
+            "error": None,
+        }
+
     # ---------- 解析与探测 ----------
 
     def _make_doh_clients(
@@ -430,12 +667,28 @@ class HostsOptimizerService:
         if not url or not password:
             raise APIException("请先配置 AdGuard 管理地址和管理员密码", 400)
 
-        domains = list(config.get("domains") or DEFAULT_HOSTS_OPTIMIZER_DOMAINS)
+        managed = normalize_managed_rules(config.get("managed_rules") or [])
+        if managed:
+            rules = managed
+        else:
+            rules = [
+                {"domain": domain, "answers": []}
+                for domain in (
+                    config.get("domains") or DEFAULT_HOSTS_OPTIMIZER_DOMAINS
+                )
+            ]
+        domains = [rule["domain"] for rule in rules]
+        preset = {
+            rule["domain"]: list(rule.get("answers") or [])
+            for rule in rules
+            if rule.get("answers")
+        }
         top_n = max(1, min(5, int(config.get("top_n") or DEFAULT_HOSTS_OPTIMIZER_TOP_N)))
         proxy = config.get("proxy")
         started = time.monotonic()
         started_at = datetime.now(timezone.utc)
 
+        resolve_domains = [domain for domain in domains if domain not in preset]
         direct, proxied = self._make_doh_clients(proxy)
         try:
             resolve_semaphore = asyncio.Semaphore(RESOLVE_CONCURRENCY)
@@ -444,7 +697,9 @@ class HostsOptimizerService:
                 async with resolve_semaphore:
                     return domain, await self._resolve_domain(direct, proxied, domain)
 
-            resolved = await asyncio.gather(*(resolve_one(d) for d in domains))
+            resolved = await asyncio.gather(
+                *(resolve_one(d) for d in resolve_domains)
+            )
         finally:
             await direct.aclose()
             if proxied is not None:
@@ -468,10 +723,15 @@ class HostsOptimizerService:
             if latency is not None:
                 reachable.setdefault(domain, []).append((ip, latency))
 
-        best = {
-            domain: sorted(reachable.get(domain, []), key=lambda item: item[1])[:top_n]
-            for domain in domains
-        }
+        best: dict[str, list[tuple[str, float]]] = {}
+        for domain in domains:
+            if domain in preset:
+                # 管理端明确指定了解析结果，直接写入，不再按延迟筛选。
+                best[domain] = [(ip, 0.0) for ip in preset[domain]]
+            else:
+                best[domain] = sorted(
+                    reachable.get(domain, []), key=lambda item: item[1]
+                )[:top_n]
 
         adguard_errors = await self._sync_adguard(
             url,
@@ -490,7 +750,14 @@ class HostsOptimizerService:
             "errors": adguard_errors,
             "domains": {
                 domain: {
-                    "status": "ok" if best[domain] else "unreachable",
+                    "status": (
+                        "managed"
+                        if domain in preset
+                        else "ok"
+                        if best[domain]
+                        else "unreachable"
+                    ),
+                    "source": "managed" if domain in preset else "local",
                     "ips": [
                         {"ip": ip, "latency_ms": round(latency)}
                         for ip, latency in best[domain]
@@ -504,11 +771,29 @@ class HostsOptimizerService:
         self, db: AsyncSession, config: SystemConfig, mode: str = "manual"
     ) -> dict[str, Any]:
         """执行一次优选并把结果写回 system_config。"""
+        if manage_base_urls():
+            try:
+                await self.sync_managed_rules(db, config)
+            except Exception as exc:
+                # 管理端临时不可用时继续使用上一次缓存，避免加速中断。
+                logger.warning("同步管理端加速规则失败，使用本地缓存：%s", exc)
+
+        # 托管 AdGuard 时先刷新管理地址：优先使用容器 IP，宿主机 IP 变化不影响同步。
+        if config.hosts_optimizer_adguard_managed:
+            try:
+                from app.services.system.hosts_acceleration_service import (
+                    hosts_acceleration_service as acceleration_service,
+                )
+
+                await acceleration_service.refresh_managed_url(db, config)
+            except Exception as exc:
+                logger.warning("刷新 AdGuard 管理地址失败：%s", exc)
+
         runtime = self._runtime_config(config)
         if not runtime["adguard_url"] or not runtime["adguard_password"]:
             raise APIException("请先配置 AdGuard 管理地址和管理员密码", 400)
         if self._running:
-            raise APIException("Hosts 优选正在运行，请稍后再试", 409)
+            raise APIException("网络优化正在运行，请稍后再试", 409)
 
         self._running = True
         started_at = datetime.now(timezone.utc)
@@ -586,7 +871,7 @@ class HostsOptimizerService:
     async def _scheduler_tick(self) -> None:
         async with async_session() as db:
             config = await system_config_service.get_or_create(db)
-            if not config.hosts_optimizer_enabled or config.hosts_optimizer_mode != "auto":
+            if not config.hosts_optimizer_enabled:
                 return
             if self._running:
                 return

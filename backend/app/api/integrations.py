@@ -15,6 +15,7 @@ from app.core.security import get_current_user, require_admin
 from app.database import get_db
 from app.models.user import User
 from app.schemas.integration import (
+    IntegrationSecretOut,
     IntegrationSummaryOut,
     IntegrationSyncResult,
     IntegrationTestResult,
@@ -29,19 +30,27 @@ from app.schemas.integration import (
     NetworkHostsOut,
     NetworkProxyRequest,
     NetworkProxyResult,
-    NetworkSecretOut,
     NetworkSecretRequest,
     NetworkTestRequest,
     NetworkUpdate,
     NpmCertificateOut,
+    SecretRevealRequest,
     VaultwardenAppOut,
     VaultwardenConfigOut,
+    VaultwardenDeployRequest,
+    VaultwardenDeployTaskOut,
+    VaultwardenRemoveOut,
     VaultwardenSyncRequest,
     VaultwardenTestRequest,
     VaultwardenUpdate,
 )
 from app.services.integrations import integration_service
 from app.services.integrations.hosts import host_candidates
+from app.services.integrations.secret_reveal import authorize_secret_reveal
+from app.services.integrations.vaultwarden_deployment import (
+    VAULTWARDEN_PROJECT,
+    vaultwarden_deployment_service,
+)
 
 router = APIRouter(
     prefix="/api/integrations",
@@ -87,6 +96,50 @@ async def update_vaultwarden(
 ):
     """保存 Vaultwarden 连接配置。"""
     return await integration_service.save_vaultwarden(db, data)
+
+
+@router.post("/vaultwarden/deploy", response_model=VaultwardenDeployTaskOut)
+async def deploy_vaultwarden(
+    data: VaultwardenDeployRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """后台部署 Vaultwarden，并自动初始化账号和验证登录。"""
+    task_id = await vaultwarden_deployment_service.start_deploy_managed(
+        db,
+        email=data.email,
+        password=data.password,
+        web_port=data.web_port,
+    )
+    return VaultwardenDeployTaskOut(
+        task_id=task_id, instance_name=VAULTWARDEN_PROJECT
+    )
+
+
+@router.delete("/vaultwarden/managed", response_model=VaultwardenRemoveOut)
+async def remove_vaultwarden(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """删除 OneTap 托管实例并备份其数据。"""
+    return await vaultwarden_deployment_service.delete_managed(db)
+
+
+@router.post("/vaultwarden/secret", response_model=IntegrationSecretOut)
+async def reveal_vaultwarden_secret(
+    data: SecretRevealRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """通过二次验证后返回已保存的 Vaultwarden 主密码。"""
+    grant = authorize_secret_reveal(
+        current_user, data.password, data.reveal_token
+    )
+    return IntegrationSecretOut(
+        password=await integration_service.reveal_vaultwarden_password(db),
+        reveal_token=grant.token,
+        expires_at=grant.expires_at,
+    )
 
 
 @router.post("/vaultwarden/test", response_model=IntegrationTestResult)
@@ -166,17 +219,22 @@ async def test_network(
     return await integration_service.test_network(db, data)
 
 
-@router.post("/network/secret", response_model=NetworkSecretOut)
+@router.post("/network/secret", response_model=IntegrationSecretOut)
 async def reveal_network_secret(
     data: NetworkSecretRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    """验证当前账号密码后，返回已保存的连接密码明文。"""
-    return NetworkSecretOut(
+    """通过二次验证后返回已保存的连接密码明文。"""
+    grant = authorize_secret_reveal(
+        current_user, data.password, data.reveal_token
+    )
+    return IntegrationSecretOut(
         password=await integration_service.reveal_network_password(
-            db, data.provider, data.password, current_user
-        )
+            db, data.provider
+        ),
+        reveal_token=grant.token,
+        expires_at=grant.expires_at,
     )
 
 

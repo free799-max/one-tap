@@ -13,6 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -150,6 +151,10 @@ class AppInstance(Base):
     orchestration_version: Mapped[str] = mapped_column(String(20), default="1.0.0")
     # 实例运行状态：running / stopped / error / upgrading / deploying
     status: Mapped[str] = mapped_column(String(20), default="running")
+    # 是否通过应用级 DNS 加速接入 AdGuard（只影响该应用的 Compose 服务）
+    acceleration_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     # 实例级备份配置，可覆盖编排默认配置
     backup_config: Mapped[dict] = mapped_column(
         MutableDict.as_mutable(JSON), default=dict

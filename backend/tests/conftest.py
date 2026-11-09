@@ -44,6 +44,16 @@ def _restore_docker_client():
 
 
 @pytest.fixture(autouse=True)
+def _reset_host_path_aliases():
+    """路径别名是全局运行时状态，测试间清空避免映射泄漏。"""
+    from app.services.system.host_path_aliases import host_path_aliases
+
+    host_path_aliases.reset()
+    yield
+    host_path_aliases.reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_deploy_tasks():
     """部署任务管理器是全局单例，测试间清空任务避免残留任务互相影响。"""
     from app.services.orchestration.deploy_task_service import deploy_task_manager

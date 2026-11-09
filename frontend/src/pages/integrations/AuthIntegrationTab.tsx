@@ -19,6 +19,15 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { RevealSecretDialog } from "@/components/RevealSecretDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -28,19 +37,25 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  useDeployVaultwarden,
+  useRemoveVaultwarden,
   useSyncVaultwarden,
   useTestVaultwarden,
   useUpdateVaultwarden,
   useVaultwardenApps,
   useVaultwardenConfig,
 } from "@/hooks/useIntegrations";
+import { useSystemConfig } from "@/hooks/useSettings";
 import {
   CheckCircle2,
   ExternalLink,
+  Globe2,
   KeyRound,
   Loader2,
   RefreshCw,
+  Server,
   ShieldCheck,
+  Trash2,
   XCircle,
 } from "lucide-react";
 
@@ -63,13 +78,20 @@ const EMPTY_FORM: FormState = {
 
 export function AuthIntegrationTab() {
   const { data: config, isLoading, error } = useVaultwardenConfig();
+  const { data: systemConfig } = useSystemConfig();
   const { data: apps = [], isLoading: appsLoading } = useVaultwardenApps();
   const updateConfig = useUpdateVaultwarden();
+  const deploy = useDeployVaultwarden();
+  const remove = useRemoveVaultwarden();
   const testConnection = useTestVaultwarden();
   const sync = useSyncVaultwarden();
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [initialized, setInitialized] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const [deployDialogOpen, setDeployDialogOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [revealDialogOpen, setRevealDialogOpen] = useState(false);
 
   useEffect(() => {
     if (config && !initialized) {
@@ -82,6 +104,16 @@ export function AuthIntegrationTab() {
       setInitialized(true);
     }
   }, [config, initialized]);
+
+  useEffect(() => {
+    if (!config?.managed || !config.url) return;
+    setForm((prev) => ({
+      ...prev,
+      enabled: config.enabled,
+      url: config.url,
+      email: prev.email || config.email,
+    }));
+  }, [config]);
 
   const isDirty =
     !!config &&
@@ -111,6 +143,39 @@ export function AuthIntegrationTab() {
     );
   };
 
+  const unifiedUsername = systemConfig?.default_admin_username.trim() || "admin";
+  const unifiedEmail = unifiedUsername.includes("@")
+    ? unifiedUsername
+    : systemConfig?.default_email_domain
+      ? `${unifiedUsername}@${systemConfig.default_email_domain}`
+      : "";
+  const unifiedPasswordConfigured =
+    systemConfig?.default_admin_password_set ?? false;
+  const canUseUnifiedCredentials = !!(
+    unifiedEmail && unifiedPasswordConfigured
+  );
+  const hasDeployCredentials =
+    (!!form.email.trim() &&
+      (!!form.password ||
+        !!config?.password_set ||
+        unifiedPasswordConfigured)) ||
+    canUseUnifiedCredentials;
+
+  const handleDeploy = () => {
+    if (!hasDeployCredentials) {
+      setForm((prev) => ({ ...prev, email: prev.email || unifiedEmail }));
+      setDeployDialogOpen(true);
+      return;
+    }
+    deploy.mutate(
+      {
+        email: form.email.trim() || undefined,
+        password: form.password || undefined,
+      },
+      { onSuccess: () => setDeployDialogOpen(false) }
+    );
+  };
+
   const handleTest = () => {
     testConnection.mutate({
       url: form.url.trim() || null,
@@ -122,6 +187,7 @@ export function AuthIntegrationTab() {
   const syncableApps = apps.filter((app) => app.has_credentials);
   const canSync =
     !!config?.enabled && !!config?.configured && syncableApps.length > 0;
+  const canDeploy = !deploy.isPending && !remove.isPending;
 
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">加载配置中...</div>;
@@ -139,163 +205,267 @@ export function AuthIntegrationTab() {
       <Card className="rounded-xl">
         <CardHeader className="border-b">
           <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-            Vaultwarden
+            <KeyRound className="h-4 w-4 text-muted-foreground" />
+            认证集成
+            <Badge variant="secondary">免费</Badge>
           </CardTitle>
           <CardDescription className="text-xs">
-            使用 Vaultwarden 的主密码登录，在浏览器端完成条目加密后写入密码库。
+            OneTap 可以自动部署专用 Vaultwarden，把已部署应用的账号密码加密写入密码库。
           </CardDescription>
-          <CardAction>
-            {/^https?:\/\//i.test(form.url.trim()) && (
-              <a
-                href={form.url.trim()}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                打开 Vaultwarden
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
-          </CardAction>
         </CardHeader>
 
-        <CardContent className="space-y-4 pt-4">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <Label htmlFor="vaultwarden_enabled" className="text-sm font-medium">
-                启用认证集成
-              </Label>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                启用后可在下方同步已部署应用的账号密码。
-              </p>
-            </div>
-            <Switch
-              id="vaultwarden_enabled"
-              checked={form.enabled}
-              onCheckedChange={(checked) =>
-                setForm((prev) => ({ ...prev, enabled: checked }))
-              }
-            />
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="vaultwarden_url" className="text-xs font-medium">
-                服务地址
-              </Label>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  id="vaultwarden_url"
-                  value={form.url}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, url: e.target.value }))
-                  }
-                  placeholder="http://192.168.1.23:8080"
-                  className={`${INPUT_CLASS} min-w-0 flex-1`}
-                />
+        <CardHeader className="pb-0">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+            Vaultwarden
+            {config?.managed && (
+              <Badge
+                className={
+                  config.running
+                    ? "bg-emerald-500/10 text-emerald-700"
+                    : "bg-amber-500/10 text-amber-700"
+                }
+              >
+                {config.running ? "运行中" : "未运行"}
+              </Badge>
+            )}
+          </CardTitle>
+          <CardDescription className="text-xs">
+            {config?.managed
+              ? "由 OneTap 托管，自动初始化账号并维护服务地址。"
+              : "自动部署专用实例，或填写已有 Vaultwarden 的地址和登录凭据。"}
+          </CardDescription>
+          <CardAction>
+            <div className="flex items-center gap-2">
+              {config?.managed && (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={handleTest}
-                  disabled={testConnection.isPending}
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => setConfirmRemove(true)}
+                  disabled={remove.isPending || deploy.isPending}
                 >
-                  {testConnection.isPending ? (
+                  {remove.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <KeyRound className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4" />
                   )}
-                  测试连接
+                  关闭并删除
                 </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleDeploy}
+                disabled={!canDeploy}
+              >
+                {deploy.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : config?.managed ? (
+                  <RefreshCw className="h-4 w-4" />
+                ) : (
+                  <Server className="h-4 w-4" />
+                )}
+                {config?.managed ? "重新部署" : "部署 Vaultwarden"}
+              </Button>
+            </div>
+          </CardAction>
+        </CardHeader>
+
+        <CardContent className="space-y-3">
+          {!config?.managed && !config?.configured && !showManual ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-3">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">尚未配置 Vaultwarden</div>
+                <p className="text-xs text-muted-foreground">
+                  {canUseUnifiedCredentials
+                    ? "推荐直接点右上角「部署 Vaultwarden」，OneTap 会使用系统统一账号密码创建实例并完成接入，不需要重复填写。"
+                    : "推荐直接点右上角「部署 Vaultwarden」，补充首次登录邮箱和主密码后，OneTap 会创建专用实例并完成接入。"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setShowManual(true)}
+              >
+                使用已有 Vaultwarden
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3 rounded-lg border p-3">
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="space-y-1">
+                  <Label htmlFor="vaultwarden_url" className="text-xs">
+                    服务地址
+                  </Label>
+                  <Input
+                    id="vaultwarden_url"
+                    value={form.url}
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, url: e.target.value }))
+                    }
+                    disabled={config?.managed}
+                    placeholder="http://192.168.1.23:8080"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="vaultwarden_email" className="text-xs">
+                    登录邮箱
+                  </Label>
+                  <Input
+                    id="vaultwarden_email"
+                    type="email"
+                    value={form.email}
+                    onChange={(e) =>
+                      setForm((prev) => ({ ...prev, email: e.target.value }))
+                    }
+                    placeholder="admin@example.com"
+                    className={INPUT_CLASS}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="vaultwarden_password" className="text-xs">
+                    主密码
+                  </Label>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <PasswordInput
+                      id="vaultwarden_password"
+                      value={form.password}
+                      onChange={(e) =>
+                        setForm((prev) => ({ ...prev, password: e.target.value }))
+                      }
+                      placeholder={
+                        config?.password_set
+                          ? "••••••••"
+                          : "Vaultwarden 主密码"
+                      }
+                      onToggleClick={() => {
+                        if (!form.password && config?.password_set) {
+                          setRevealDialogOpen(true);
+                          return true;
+                        }
+                        return false;
+                      }}
+                      containerClassName="min-w-0 flex-1"
+                      className={INPUT_CLASS}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleTest}
+                      disabled={testConnection.isPending}
+                      className="h-8 shrink-0"
+                    >
+                      {testConnection.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Globe2 className="h-3.5 w-3.5" />
+                      )}
+                      测试
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex min-w-0 items-end justify-start">
+                  {testConnection.data ? (
+                    <div
+                      className={`flex items-start gap-1.5 pb-2 text-[11px] ${
+                        testConnection.data.ok
+                          ? "text-emerald-600"
+                          : "text-destructive"
+                      }`}
+                    >
+                      {testConnection.data.ok ? (
+                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      ) : (
+                        <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      )}
+                      <span>
+                        {testConnection.data.message}
+                        {testConnection.data.version
+                          ? `（${testConnection.data.version}）`
+                          : ""}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="pb-2 text-left text-[11px] text-muted-foreground">
+                      尚未测试连接
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {config?.status.message && (
+                <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    最近状态：{config.status.message}
+                    {config.status.last_synced_at
+                      ? ` · 上次同步 ${new Date(
+                          config.status.last_synced_at
+                        ).toLocaleString()}`
+                      : ""}
+                  </span>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="vaultwarden_enabled"
+                      checked={form.enabled}
+                      onCheckedChange={(checked) =>
+                        setForm((prev) => ({ ...prev, enabled: checked }))
+                      }
+                    />
+                    <Label htmlFor="vaultwarden_enabled" className="text-xs">
+                      启用认证集成
+                    </Label>
+                  </div>
+                  <span>已同步 {config?.synced_count ?? 0} 个应用</span>
+                  {config?.web_url && (
+                    <a
+                      href={config.web_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-primary hover:underline"
+                    >
+                      Vaultwarden 管理界面
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {!config?.configured && (
+                    <button
+                      type="button"
+                      onClick={() => setShowManual(false)}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      取消，改用自动部署
+                    </button>
+                  )}
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleSave}
+                    disabled={updateConfig.isPending || !isDirty}
+                    className="rounded-md"
+                  >
+                    {updateConfig.isPending ? "保存中..." : "保存配置"}
+                  </Button>
+                </div>
               </div>
             </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="vaultwarden_email" className="text-xs font-medium">
-                登录邮箱
-              </Label>
-              <Input
-                id="vaultwarden_email"
-                type="email"
-                value={form.email}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, email: e.target.value }))
-                }
-                placeholder="admin@example.com"
-                className={INPUT_CLASS}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="vaultwarden_password" className="text-xs font-medium">
-                主密码
-              </Label>
-              <PasswordInput
-                id="vaultwarden_password"
-                value={form.password}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, password: e.target.value }))
-                }
-                placeholder={
-                  config?.password_set ? "已保存，留空则不修改" : "Vaultwarden 主密码"
-                }
-                className={INPUT_CLASS}
-              />
-              <p className="text-xs text-muted-foreground">
-                主密码仅用于登录并派生加密密钥，不会出现在同步的条目中。
-                暂不支持开启两步验证或使用 Argon2id KDF 的账号。
-              </p>
-            </div>
-          </div>
-
-          {testConnection.data && (
-            <div
-              className={`flex items-start gap-1.5 text-xs ${
-                testConnection.data.ok ? "text-emerald-600" : "text-destructive"
-              }`}
-            >
-              {testConnection.data.ok ? (
-                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              ) : (
-                <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              )}
-              <span>
-                {testConnection.data.message}
-                {testConnection.data.version
-                  ? `（${testConnection.data.version}）`
-                  : ""}
-              </span>
-            </div>
           )}
-
-          {config?.status.message && (
-            <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-              <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>
-                最近状态：{config.status.message}
-                {config.status.last_synced_at
-                  ? ` · 上次同步 ${new Date(
-                      config.status.last_synced_at
-                    ).toLocaleString()}`
-                  : ""}
-              </span>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between border-t border-border pt-4">
-            <p className="text-xs text-muted-foreground">
-              已同步 {config?.synced_count ?? 0} 个应用
-            </p>
-            <Button
-              type="button"
-              onClick={handleSave}
-              disabled={updateConfig.isPending || !isDirty}
-              className="rounded-md"
-            >
-              {updateConfig.isPending ? "保存中..." : "保存配置"}
-            </Button>
-          </div>
         </CardContent>
       </Card>
 
@@ -413,6 +583,98 @@ export function AuthIntegrationTab() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={deployDialogOpen} onOpenChange={setDeployDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>部署 Vaultwarden</DialogTitle>
+            <DialogDescription>
+              系统统一账号的邮箱后缀或密码尚未配置完整，请补充本次部署使用的登录信息。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="deploy_vaultwarden_email" className="text-xs">
+                登录邮箱
+              </Label>
+              <Input
+                id="deploy_vaultwarden_email"
+                type="email"
+                value={form.email}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, email: e.target.value }))
+                }
+                placeholder="admin@example.com"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="deploy_vaultwarden_password" className="text-xs">
+                主密码
+              </Label>
+              <PasswordInput
+                id="deploy_vaultwarden_password"
+                value={form.password}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, password: e.target.value }))
+                }
+                placeholder="用于首次创建的 Vaultwarden 账号"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setDeployDialogOpen(false)}
+                disabled={deploy.isPending}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleDeploy}
+                disabled={!hasDeployCredentials || deploy.isPending}
+              >
+                {deploy.isPending && (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                )}
+                开始部署
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onOpenChange={setConfirmRemove}
+        title="删除 Vaultwarden"
+        description="将停止并移除 OneTap 托管的 Vaultwarden，认证集成会停用，已同步记录会清空。密码库数据会备份到应用数据目录的 _backups 下。"
+        confirmText="删除"
+        destructive
+        isPending={remove.isPending}
+        onConfirm={() => {
+          remove.mutate(undefined, {
+            onSuccess: () => {
+              setConfirmRemove(false);
+              setForm((prev) => ({
+                ...prev,
+                enabled: false,
+                url: "",
+                password: "",
+              }));
+            },
+          });
+        }}
+      />
+
+      <RevealSecretDialog
+        open={revealDialogOpen}
+        onOpenChange={setRevealDialogOpen}
+        provider="vaultwarden"
+        title="查看 Vaultwarden 主密码"
+      />
     </div>
   );
 }
