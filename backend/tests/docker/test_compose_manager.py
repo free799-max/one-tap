@@ -443,3 +443,125 @@ async def test_up_reports_foreign_static_ip_conflict(compose_manager, tmp_path):
 
     assert "movie-moviepilot" in str(excinfo.value)
     mock_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_action_up_uses_local_images_without_pulling(compose_manager):
+    """已有项目停止后启动时只使用本机镜像，不进入部署拉取流程。"""
+    project = MagicMock()
+    project.id = 1
+    project.project_name = "vaultwarden-1"
+    db = AsyncMock()
+    stack = MagicMock(service_count=1, running_count=1)
+
+    with (
+        patch.object(compose_manager, "_prepull_images", AsyncMock()) as prepull,
+        patch.object(compose_manager, "_copy_offline_assets", AsyncMock()),
+        patch.object(
+            compose_manager,
+            "_run",
+            AsyncMock(return_value={"returncode": 0, "stdout": "", "stderr": ""}),
+        ) as run,
+        patch.object(
+            compose_manager, "sync_stack_status", AsyncMock(return_value=stack)
+        ),
+    ):
+        await compose_manager.action_async(db, project, "up")
+
+    up_calls = [call for call in run.await_args_list if call.args[1] == "up"]
+    assert len(up_calls) == 1
+    assert up_calls[0].args[1:] == ("up", "-d", "--pull", "never")
+    prepull.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepull_forwards_download_progress(compose_manager):
+    project = MagicMock()
+    events = []
+
+    async def fake_pull(image, acceleration, *, progress=None):
+        assert progress is not None
+        progress({
+            "percentage": 50,
+            "size_text": "50.0 MB / 100.0 MB",
+            "speed": 25 * 1024 * 1024,
+            "completed_layers": 1,
+            "total_layers": 2,
+            "determinate": True,
+            "layers": [
+                {
+                    "id": "aaaaaaaaaaaa",
+                    "status": "Downloading",
+                    "status_text": "下载中",
+                    "current": 50 * 1024 * 1024,
+                    "total": 100 * 1024 * 1024,
+                    "percentage": 50,
+                    "speed": 25 * 1024 * 1024,
+                },
+                {
+                    "id": "bbbbbbbbbbbb",
+                    "status": "Waiting",
+                    "status_text": "等待中",
+                    "current": 0,
+                    "total": 0,
+                    "percentage": 0,
+                    "speed": 0,
+                },
+            ],
+        })
+
+    with (
+        patch(
+            "app.services.compose.compose_service.manage_base_urls",
+            return_value=["https://manage.example.com"],
+        ),
+        patch.object(
+            compose_manager, "_compose_images", AsyncMock(return_value=["app:latest"])
+        ),
+        patch(
+            "app.services.compose.compose_service.get_acceleration_map",
+            AsyncMock(return_value={"docker.io": []}),
+        ),
+        patch(
+            "app.services.compose.compose_service.pull_with_mirror",
+            side_effect=fake_pull,
+        ),
+    ):
+        await compose_manager._prepull_images(project, lambda *args: events.append(args))
+
+    assert events[0][:3] == (
+        "pulling_images",
+        26,
+        "通过加速域名拉取镜像 1/1",
+    )
+    # 头部进度必须跟着真实下载字节走，不能一直停在固定值
+    assert events[-1] == (
+        "pulling_images",
+        58,
+        "通过加速域名拉取镜像 1/1",
+        "\n".join([
+            "[+] 拉取 app:latest 1/2 · 50% · 50.0 MB / 100.0 MB · 25.0 MB/s",
+            "aaaaaaaaaaaa ⠸ 下载中 [==========          ] "
+            "50.0 MB / 100.0 MB · 25.0 MB/s",
+            "bbbbbbbbbbbb ⠸ 等待中",
+        ]),
+    )
+
+
+def test_parse_ps_preserves_restarting_status(compose_manager):
+    """重启循环不计入运行数，也不能归类为正常运行或已退出。"""
+    restarting = compose_manager._parse_ps(
+        [{"State": "restarting", "Publishers": []}]
+    )
+    assert restarting["status"] == "restarting"
+    assert restarting["running_count"] == 0
+    assert restarting["service_count"] == 1
+
+    mixed = compose_manager._parse_ps(
+        [
+            {"State": "running", "Publishers": []},
+            {"State": "restarting", "Publishers": []},
+        ]
+    )
+    assert mixed["status"] == "partial"
+    assert mixed["running_count"] == 1

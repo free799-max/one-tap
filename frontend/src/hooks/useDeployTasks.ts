@@ -110,13 +110,12 @@ const statusWordMap: Record<string, string> = {
 };
 
 function translateStatusWord(line: string): string {
-  const tokens = line.trim().split(/\s+/);
-  if (tokens.length === 0) return line;
-  const last = tokens[tokens.length - 1];
-  if (statusWordMap[last]) {
-    tokens[tokens.length - 1] = statusWordMap[last];
-  }
-  return tokens.join(" ");
+  // 只翻译行尾状态词，不能重排中间空白：进度条靠空格对齐，且 detail
+  // 可能是多行进度块，整段 split/join 会把换行压成空格
+  const match = line.match(/^([\s\S]*?)(\S+)(\s*)$/);
+  if (!match) return line;
+  const translated = statusWordMap[match[2]];
+  return translated ? `${match[1]}${translated}${match[3]}` : line;
 }
 
 const ANSI_ESC = String.fromCharCode(27);
@@ -135,30 +134,53 @@ function cleanDetailLine(detail: string): string {
     .trimStart()
     .replace(/^Network\s+/, "网络 ")
     .replace(/^Container\s+/, "容器 ");
-  return translateStatusWord(translatedPrefix);
+  return translateStatusWord(translatedPrefix).trimEnd();
 }
 
-// docker 层状态行：12 位十六进制层 ID + 状态词（尺寸单位为 MB/GB，可能不带 /总量）
-const DOCKER_LAYER_LINE_RE =
-  /^[0-9a-f]{12}\s+(Waiting|Pulling fs layer|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)\b/;
+// docker 层状态行：12 位十六进制层 ID 开头（后续状态词中文/英文都认）
+const DOCKER_LAYER_LINE_RE = /^[0-9a-f]{12}\s+/;
+// 镜像拉取块的表头：「[+] 拉取 <镜像> 3/14 · 47% …」
+const PULL_HEADER_RE = /^\[\+\] 拉取 \S+/;
 // 通用进度条：current/total，单位覆盖 docker（KB/MB/GB）与包管理器（KiB/MiB/GiB）
 const SIZE_PROGRESS_RE =
   /\d+(\.\d+)?\s*(KiB|MiB|GiB|KB|MB|GB)\s*\/\s*\d+(\.\d+)?\s*(KiB|MiB|GiB|KB|MB|GB)/;
 
 /**
- * 判断一行日志是否属于进度条行（docker 层状态或 current/total 尺寸）。
+ * 判断一行日志是否属于进度条行（docker 层状态、拉取表头或 current/total 尺寸）。
  * 例如："c949c4a16af4 Downloading 22.02MB"、"click ---- 94.81 KiB/116.45 KiB"
  */
 function isProgressLine(line: string): boolean {
-  return DOCKER_LAYER_LINE_RE.test(line) || SIZE_PROGRESS_RE.test(line);
+  return (
+    PULL_HEADER_RE.test(line) ||
+    DOCKER_LAYER_LINE_RE.test(line) ||
+    SIZE_PROGRESS_RE.test(line)
+  );
 }
 
 /**
  * 提取进度条行的包名/标识前缀，用于判断是否可以覆盖上一条同类进度。
+ * 镜像拉取块按镜像名定位，避免多镜像时互相覆盖。
  */
 function progressLineKey(line: string): string | null {
+  const pullHeader = line.match(/^\[\+\] 拉取 (\S+)/);
+  if (pullHeader) return `[+] 拉取 ${pullHeader[1]}`;
   const match = line.match(/^(\S+)/);
   return match ? match[1] : null;
+}
+
+/** 覆盖同标识的旧进度行，找不到时追加，保持每层/每镜像只有一行 */
+function upsertProgressLine(logs: string[], line: string): void {
+  const key = progressLineKey(line);
+  if (key) {
+    const searchStart = Math.max(0, logs.length - 200);
+    for (let i = logs.length - 1; i >= searchStart; i--) {
+      if (isProgressLine(logs[i]) && progressLineKey(logs[i]) === key) {
+        logs[i] = line;
+        return;
+      }
+    }
+  }
+  logs.push(line);
 }
 
 function appendDeployLogs(
@@ -183,24 +205,31 @@ function appendDeployLogs(
     logs.push(message);
   }
   if (detail) {
-    const cleaned = cleanDetailLine(detail);
-    const lastCleaned = lastDetail ? cleanDetailLine(lastDetail) : undefined;
-    if (cleaned && cleaned !== lastCleaned) {
-      // 进度行按标识覆盖：docker 多层下载是交错的（A B C A' B'...），
-      // 只比较最后一行会漏掉，需向前回溯找同层行原地替换，每层只保留最新一帧
-      if (isProgressLine(cleaned)) {
-        const key = progressLineKey(cleaned);
-        if (key) {
-          const searchStart = Math.max(0, logs.length - 50);
-          for (let i = logs.length - 1; i >= searchStart; i--) {
-            if (isProgressLine(logs[i]) && progressLineKey(logs[i]) === key) {
-              logs[i] = cleaned;
-              return logs;
-            }
-          }
+    // detail 可能是整块进度（表头 + 每层一行）：先按行拆开再清洗，
+    // 否则清洗过程会把换行压平，整块挤成一行
+    const detailLines = detail
+      .split("\n")
+      .map((line) => cleanDetailLine(line))
+      .filter((line) => line.length > 0);
+    const lastDetailLines = lastDetail
+      ? lastDetail
+          .split("\n")
+          .map((line) => cleanDetailLine(line))
+          .filter((line) => line.length > 0)
+      : [];
+    if (
+      detailLines.length > 0 &&
+      detailLines.join("\n") !== lastDetailLines.join("\n")
+    ) {
+      // docker 多层下载是交错的（A B C A' B'...），只比较最后一行会漏掉，
+      // 需要向前回溯找同层行原地替换，每层只保留最新一帧
+      for (const line of detailLines) {
+        if (isProgressLine(line)) {
+          upsertProgressLine(logs, line);
+        } else {
+          logs.push(line);
         }
       }
-      logs.push(cleaned);
     }
   }
   return logs;

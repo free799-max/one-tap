@@ -117,8 +117,8 @@ def test_container_action_restart(mock_time, mock_docker_module):
 
 @patch("app.services.docker.docker_common.docker")
 @patch("app.services.docker.docker_common.time")
-def test_pull_progress_monotonic_on_new_layer(mock_time, mock_docker_module):
-    """新层动态发现时，总进度不应回退。"""
+def test_pull_progress_recomputes_when_new_layer_discovered(mock_time, mock_docker_module):
+    """新层被发现后按真实字节重算，不能虚高卡住。"""
 
     # 让每次事件间隔 0.5 秒，既触发节流又触发速度计算
     fake_now = [0.0]
@@ -138,6 +138,15 @@ def test_pull_progress_monotonic_on_new_layer(mock_time, mock_docker_module):
                 "progressDetail": {"current": 80, "total": 100},
             }
             for i in range(8)
+        ],
+        # 清单稳定后按真实字节算出 640/800 = 80%
+        *[
+            {
+                "id": "layer0",
+                "status": "Downloading",
+                "progressDetail": {"current": 80, "total": 100},
+            }
+            for _ in range(3)
         ],
         # 第 9 层先被发现
         {"id": "layer8", "status": "Pulling fs layer", "progressDetail": {}},
@@ -168,11 +177,9 @@ def test_pull_progress_monotonic_on_new_layer(mock_time, mock_docker_module):
 
     manager.pull_image_async("test:latest", task_id, task_manager)
 
-    # 验证无回退
-    for i in range(1, len(recorded)):
-        assert recorded[i] >= recorded[i - 1], (
-            f"进度从 {recorded[i - 1]}% 回退到 {recorded[i]}%"
-        )
+    # 9 层都已给出大小：已下载 8×80=640，总大小 900 → 71%
+    assert recorded[-1] == 71
+    assert max(recorded) == 80
 
     # 最终完成 100%
     task = task_manager.get_task(task_id)
@@ -209,6 +216,15 @@ def test_pull_progress_byte_weighted(mock_time, mock_docker_module):
             "status": "Downloading",
             "progressDetail": {"current": 0, "total": 100 * mb},
         },
+        # 清单稳定后再推进一帧，触发按字节计算
+        *[
+            {
+                "id": "big",
+                "status": "Downloading",
+                "progressDetail": {"current": 800 * mb, "total": 1 * gb},
+            }
+            for _ in range(3)
+        ],
     ]
 
     mock_client = MagicMock()
@@ -277,7 +293,7 @@ def test_pull_progress_completes_at_100(mock_time, mock_docker_module):
 @patch("app.services.docker.docker_common.docker")
 @patch("app.services.docker.docker_common.time")
 def test_pull_progress_all_completed_with_zero_byte_data(mock_time, mock_docker_module):
-    """所有层已完成但无字节信息时，进度应基于层平均到达 99%（完成前置 100）。"""
+    """所有层已完成但无字节信息时，流内不给百分比，任务完成再置 100%。"""
 
     fake_now = [0.0]
 
@@ -310,8 +326,9 @@ def test_pull_progress_all_completed_with_zero_byte_data(mock_time, mock_docker_
 
     manager.pull_image_async("test:latest", task_id, task_manager)
 
-    # 层平均 100%， capped 到 99%
-    assert recorded[-1]["percentage"] == 99
+    # 没有字节信息就不猜百分比，完成态由任务管理器置 100%
+    assert recorded[-1]["percentage"] == 0
+    assert recorded[-1]["determinate"] is False
     assert recorded[-1]["completed_layers"] == 2
     assert recorded[-1]["total_layers"] == 2
 

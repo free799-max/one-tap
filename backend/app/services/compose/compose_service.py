@@ -30,7 +30,7 @@ from app.services.compose.log_utils import (
 from app.services.compose.permissions import extract_bind_sources, parse_puid_pgid
 from app.services.apps.asset_copy import AssetCopyError, copy_assets, find_container
 from app.services.apps.offline_assets import apply_offline_profile, profiles_in_compose
-from app.services.docker.mirror_pull import pull_with_mirror
+from app.services.docker.mirror_pull import _format_pull_block, pull_with_mirror
 from app.services.manage_client import manage_base_urls
 from app.services.system.registry_mirror_service import get_acceleration_map
 from app.services.compose.yaml_utils import (
@@ -334,15 +334,33 @@ class ComposeService:
         if not acceleration:
             return
         for index, image in enumerate(images, start=1):
+            pull_progress: Callable[[dict], None] | None = None
             if progress:
-                progress(
-                    "pulling_images",
-                    45,
-                    f"通过加速域名拉取镜像 {index}/{len(images)}",
-                    image,
-                )
+                # 拉取阶段占据 26%～90% 的进度区间，按真实下载字节推进
+                span_start = 26 + int(64 * (index - 1) / len(images))
+                span_end = 26 + int(64 * index / len(images))
+                message = f"通过加速域名拉取镜像 {index}/{len(images)}"
+                progress("pulling_images", span_start, message, image)
+
+                def pull_progress(
+                    state: dict,
+                    _start: int = span_start,
+                    _end: int = span_end,
+                    _message: str = message,
+                    _image: str = image,
+                ) -> None:
+                    percentage = int(state.get("percentage", 0) or 0)
+                    progress(
+                        "pulling_images",
+                        _start + int((_end - _start) * percentage / 100),
+                        _message,
+                        _format_pull_block(_image, state),
+                    )
+
             try:
-                await pull_with_mirror(image, acceleration)
+                await pull_with_mirror(
+                    image, acceleration, progress=pull_progress
+                )
             except Exception:
                 logger.warning(
                     "预拉取镜像失败，交给 compose 重试：%s", image, exc_info=True
@@ -494,22 +512,29 @@ class ComposeService:
         project: DockerComposeProject,
         progress_callback: Callable[..., Any] | None,
         timeout: int = 300,
+        pull: bool = True,
     ) -> dict:
         """统一执行 docker compose up -d 并推送进度。
 
         若未提供 progress_callback，则退化为非流式执行。
         固定容器 IP 被占用时清理本项目残留容器并重试一次，避免
         Docker 的 ``Address already in use`` 直接导致部署失败。
+        ``pull=False`` 用于已有项目的启动，只使用本机已有镜像。
         """
         def _progress(stage: str, percentage: int, message: str, detail: str | None = None):
             if progress_callback:
                 progress_callback(stage, percentage, message, detail)
 
-        _progress("pulling_images", 45, "准备拉取镜像")
-        await self._prepull_images(project, progress_callback)
-        _progress("pulling_images", 50, "拉取镜像并启动服务")
-        current_stage = "pulling_images"
+        if pull:
+            _progress("pulling_images", 26, "准备拉取镜像")
+            await self._prepull_images(project, progress_callback)
+            _progress("pulling_images", 90, "拉取镜像并启动服务")
+            current_stage = "pulling_images"
+        else:
+            _progress("starting_services", 90, "启动服务中")
+            current_stage = "starting_services"
         last_progress_at = 0.0
+        up_args = ("up", "-d") if pull else ("up", "-d", "--pull", "never")
 
         def _on_line(line: str, name: str):
             detected = detect_stage(line)
@@ -524,7 +549,7 @@ class ComposeService:
                 last_progress_at = now
             _progress(
                 current_stage,
-                50,
+                90,
                 "拉取镜像中" if current_stage == "pulling_images" else "启动服务中",
                 line,
             )
@@ -532,9 +557,9 @@ class ComposeService:
         async def _up() -> dict:
             if progress_callback:
                 return await self._run_streaming(
-                    project, "up", "-d", on_line=_on_line, timeout=timeout
+                    project, *up_args, on_line=_on_line, timeout=timeout
                 )
-            return await self._run(project, "up", "-d", timeout=timeout)
+            return await self._run(project, *up_args, timeout=timeout)
 
         # 开跑前先处理残留的静态地址占用，避免启动阶段才失败。
         _, foreign = await self._heal_static_ip_conflicts(project)
@@ -548,7 +573,7 @@ class ComposeService:
                 raise RuntimeError(self._format_ip_conflicts(foreign))
             if removed:
                 logger.info("清理残留容器后重试 compose up: %s", removed)
-                _progress("starting_services", 60, "清理残留容器后重试")
+                _progress("starting_services", 91, "清理残留容器后重试")
                 result = await _up()
 
         if result["returncode"] != 0:
@@ -1130,7 +1155,9 @@ class ComposeService:
             _progress("preparing", 5, f"准备执行 {action}")
 
             if action == "up":
-                await self._run_up_with_progress(project, progress_callback, timeout=300)
+                await self._run_up_with_progress(
+                    project, progress_callback, timeout=300, pull=False
+                )
             elif action == "down":
                 _progress("starting_services", 50, "停止服务中")
                 result = await self._run(
@@ -1249,11 +1276,14 @@ class ComposeService:
         """解析 docker compose ps --format json 输出。"""
         total = len(services)
         running = 0
+        restarting = 0
         port_set: set[str] = set()
         for svc in services:
             state = svc.get("State", "")
             if state == "running":
                 running += 1
+            elif state == "restarting":
+                restarting += 1
             publishers = svc.get("Publishers") or []
             for pub in publishers:
                 url = pub.get("URL", "")
@@ -1268,6 +1298,8 @@ class ComposeService:
             status = "running"
         elif running > 0:
             status = "partial"
+        elif restarting > 0:
+            status = "restarting"
         else:
             status = "exited"
 

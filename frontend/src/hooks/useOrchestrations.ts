@@ -107,6 +107,7 @@ export function useOrchestrationInstances(category?: string) {
   return useQuery<OrchestrationInstanceGroup[]>({
     queryKey: ["orchestration-instances", { category }],
     queryFn: () => orchestrationsApi.listOrchestrationInstances(category),
+    refetchInterval: 10000,
   });
 }
 
@@ -119,6 +120,7 @@ export function useOrchestrationInstanceDetail(instanceId: number | null) {
     queryFn: () =>
       orchestrationsApi.getOrchestrationInstanceDetail(instanceId!),
     enabled: !!instanceId,
+    refetchInterval: 10000,
   });
 }
 

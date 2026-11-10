@@ -176,11 +176,38 @@ def _map_pull_status(status: str) -> str:
     return status
 
 
-def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
-    """消费 docker pull 流并推送分层进度。"""
+_PULL_DONE_STATUSES = (
+    "Download complete",
+    "Pull complete",
+    "Already exists",
+    "Layer already exists",
+    # 能进入解压说明下载已经结束
+    "Extracting",
+)
+
+# 新层被发现后，等清单稳定一小段时间再按字节比例显示进度，避免先算出
+# 「1.9 MB / 1.9 MB = 99%」再掉回真实值
+PULL_DISCOVERY_SETTLE = 1.0
+
+
+def _consume_pull_stream(stream, on_progress: Callable[[dict], None]) -> None:
+    """消费 docker pull 流并推送分层进度。
+
+    总分比只按真实下载字节计算：已完成层计入完整大小，未完成层计入
+    已下载字节。不能对各层百分比求平均，否则一个 753 MB 的镜像只下到
+    358 MB 时也会被已完成的小层拉高到 99%。
+
+    还有层没报出大小时（Pulling fs layer / Waiting），只知道部分层的
+    总量，比例会虚高，此时保持上一次的百分比不动；刚发现新层的
+    一小段时间内也不显示百分比，等层的清单稳定下来再算。
+    """
     layers = {}
     last_progress_time = common.time.time()
-    last_overall_percentage = 0
+    last_progress = None
+    last_emitted_progress = None
+    last_percentage = 0
+    last_discovery = None
+    primed = False
 
     for line in stream:
         if not line:
@@ -194,28 +221,44 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
 
         now = common.time.time()
 
-        if layer_id:
-            if layer_id not in layers:
-                layers[layer_id] = {
+        # 「Pulling from <仓库>」带的是 tag 而不是层 ID，不能当层统计
+        if layer_id and not status.startswith("Pulling from"):
+            state = layers.get(layer_id)
+            if state is None:
+                state = {
                     "status": status,
-                    "current": current,
-                    "total": total,
-                    "last_current": current,
+                    "current": 0,
+                    "total": 0,
+                    "last_current": 0,
                     "last_time": now,
                     "speed": 0,
                 }
+                layers[layer_id] = state
+                last_discovery = now
+            state["status"] = status
+            if status == "Extracting":
+                # 解压阶段的 current/total 是解压字节，不能混进下载量
+                state["speed"] = 0
             else:
-                old = layers[layer_id]
-                time_delta = now - old["last_time"]
-                if time_delta >= 0.5 and current > old["last_current"]:
-                    speed = int((current - old["last_current"]) / time_delta)
-                    old["speed"] = speed
-                    old["last_current"] = current
-                    old["last_time"] = now
-                old["status"] = status
-                old["current"] = current
                 if total > 0:
-                    old["total"] = total
+                    if state["total"] == 0:
+                        last_discovery = now
+                    state["total"] = total
+                if current > 0:
+                    if state["last_current"] == 0:
+                        state["last_current"] = current
+                        state["last_time"] = now
+                    state["current"] = current
+                if status == "Downloading":
+                    time_delta = now - state["last_time"]
+                    if time_delta >= 0.5 and current > state["last_current"]:
+                        state["speed"] = int(
+                            (current - state["last_current"]) / time_delta
+                        )
+                        state["last_current"] = current
+                        state["last_time"] = now
+                else:
+                    state["speed"] = 0
 
         layer_progress_list = []
         total_size = 0
@@ -223,26 +266,24 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
         total_speed = 0
         downloading_count = 0
         completed_layers = 0
+        unknown_layers = 0
 
         for lid, ldata in layers.items():
-            l_total = ldata.get("total", 0)
-            l_current = ldata.get("current", 0)
-            l_status = ldata.get("status", "")
-            l_speed = ldata.get("speed", 0)
+            l_total = ldata["total"]
+            l_current = ldata["current"]
+            l_status = ldata["status"]
+            l_speed = ldata["speed"]
 
-            completed_statuses = (
-                "Pull complete",
-                "Already exists",
-                "Layer already exists",
-                "Download complete",
+            l_done = l_status in _PULL_DONE_STATUSES or (
+                l_total > 0 and l_current >= l_total
             )
             l_percentage = 0
-            if l_status in completed_statuses:
+            if l_done:
                 l_percentage = 100
             elif l_total > 0 and l_current > 0:
                 l_percentage = int((l_current / l_total) * 100)
 
-            if l_status in completed_statuses:
+            if l_done:
                 progress_text = "已完成"
             elif l_total > 0:
                 progress_text = f"{_format_bytes(l_current)} / {_format_bytes(l_total)}"
@@ -260,14 +301,19 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
                 "speed": l_speed,
             })
 
-            if l_status in completed_statuses or l_percentage == 100:
+            if l_done:
                 completed_layers += 1
 
             if l_total > 0:
                 total_size += l_total
-                downloaded_size += min(l_current, l_total)
+                downloaded_size += (
+                    l_total if l_done else min(l_current, l_total)
+                )
+            elif not l_done:
+                # 还没上报大小的层（Pulling fs layer / Waiting），总量未知
+                unknown_layers += 1
 
-            if l_speed > 0:
+            if l_speed > 0 and l_status == "Downloading" and not l_done:
                 total_speed += l_speed
                 downloading_count += 1
 
@@ -276,16 +322,21 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
         if total_size > 0:
             byte_percentage = int((downloaded_size / total_size) * 100)
 
-        layer_average_percentage = 0
-        if total_layers > 0:
-            layer_percentage_sum = sum(
-                layer["percentage"] for layer in layer_progress_list
-            )
-            layer_average_percentage = int(layer_percentage_sum / total_layers)
-
-        calculated_percentage = max(byte_percentage, layer_average_percentage)
-        percentage = max(calculated_percentage, last_overall_percentage)
-        last_overall_percentage = percentage
+        # 有层还没上报大小时，字节比例只是「已知部分」的进度，会严重偏高；
+        # 刚发现新层的瞬间同理（配置层先下完时尤其明显），先保持不动
+        settled = (
+            last_discovery is not None
+            and now - last_discovery >= PULL_DISCOVERY_SETTLE
+        )
+        determinate = (
+            (primed or settled) and unknown_layers == 0 and total_size > 0
+        )
+        if determinate:
+            percentage = min(byte_percentage, 99)
+            primed = True
+        else:
+            percentage = last_percentage
+        last_percentage = percentage
 
         if downloading_count > 0:
             overall_status = f"下载中 {downloading_count} 个层"
@@ -294,17 +345,22 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
         else:
             overall_status = "处理中"
 
-        size_text = (
-            f"{_format_bytes(downloaded_size)} / {_format_bytes(total_size)}"
-            if total_size > 0
-            else "--"
-        )
+        if determinate and total_size > 0:
+            size_text = (
+                f"{_format_bytes(downloaded_size)} / {_format_bytes(total_size)}"
+            )
+        elif downloaded_size > 0:
+            size_text = f"已下载 {_format_bytes(downloaded_size)}"
+        else:
+            size_text = "--"
 
         progress = {
             "total_layers": total_layers,
             "completed_layers": completed_layers,
             "current_layer": layer_id,
-            "percentage": min(percentage, 99),
+            "percentage": percentage,
+            "determinate": determinate,
+            "unknown_layers": unknown_layers,
             "status": overall_status,
             "speed": total_speed,
             "total_size": total_size,
@@ -313,9 +369,14 @@ def _consume_pull_stream(stream, task_manager, task_id: str) -> None:
             "layers": layer_progress_list,
         }
 
+        last_progress = progress
         if now - last_progress_time >= 0.3:
-            task_manager.update_progress(task_id, progress)
+            on_progress(progress)
+            last_emitted_progress = progress
             last_progress_time = now
+
+    if last_progress is not None and last_progress is not last_emitted_progress:
+        on_progress(last_progress)
 
 
 def _parse_bearer_challenge(header: str) -> dict[str, str]:
@@ -1018,7 +1079,9 @@ class ImageService(common.BaseDockerService):
 
         def _pull(ref: str) -> None:
             stream = self._client.api.pull(ref, stream=True, decode=True)
-            _consume_pull_stream(stream, task_manager, task_id)
+            _consume_pull_stream(
+                stream, lambda progress: task_manager.update_progress(task_id, progress)
+            )
 
         try:
             if target != image:

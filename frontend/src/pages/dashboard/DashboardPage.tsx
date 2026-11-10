@@ -68,6 +68,11 @@ const STATUS_META: Record<string, { label: string; dot: string; text: string }> 
     dot: "bg-emerald-500",
     text: "text-emerald-600",
   },
+  restarting: {
+    label: "重启中",
+    dot: "bg-amber-500 animate-pulse",
+    text: "text-amber-600",
+  },
   deploying: {
     label: "部署中",
     dot: "bg-amber-500 animate-pulse",
@@ -286,9 +291,11 @@ function ServiceCard({
           <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
             {subtitle}
           </p>
-          <span className={cn("shrink-0 text-[10px]", status.text)}>
-            {status.label}
-          </span>
+          {app.status !== "running" && app.status !== "stopped" && (
+            <span className={cn("shrink-0 text-[10px]", status.text)}>
+              {status.label}
+            </span>
+          )}
           {!app.url && (
             <span className="shrink-0 text-[10px] text-muted-foreground/70">
               无地址

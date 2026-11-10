@@ -39,6 +39,7 @@ function statusVariant(status: string): string {
     case "running":
       return "bg-green-500/10 text-green-600 border-green-500/20";
     case "partial":
+    case "restarting":
       return "bg-amber-500/10 text-amber-600 border-amber-500/20";
     case "exited":
     case "stopped":
@@ -46,6 +47,17 @@ function statusVariant(status: string): string {
     default:
       return "bg-muted text-muted-foreground border-border";
   }
+}
+
+function statusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    running: "运行中",
+    partial: "部分运行",
+    restarting: "重启中",
+    exited: "已退出",
+    stopped: "已停止",
+  };
+  return labels[status] ?? status;
 }
 
 /** 信息卡片项 */
@@ -132,9 +144,9 @@ export function StackDetailDialog({
                 <InfoItem label="状态">
                   <Badge
                     variant="outline"
-                    className={`text-[10px] ${statusVariant(status?.status || "unknown")}`}
+                    className={`text-[10px] ${statusVariant(status?.status || project.stack?.status || "unknown")}`}
                   >
-                    {status?.status || project.stack?.status || "unknown"}
+                    {statusLabel(status?.status || project.stack?.status || "unknown")}
                   </Badge>
                 </InfoItem>
                 <InfoItem label="服务运行数">

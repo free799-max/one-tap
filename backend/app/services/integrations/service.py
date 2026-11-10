@@ -736,11 +736,18 @@ class IntegrationService:
         record.status = {**(record.status or {}), **values}
         await db.commit()
 
+    async def _vaultwarden_sync_apps(
+        self, db: AsyncSession, host: str = ""
+    ) -> list[DeployedApp]:
+        apps = await list_deployed_apps(db, host)
+        return [app for app in apps if app.password]
+
     async def get_vaultwarden(self, db: AsyncSession) -> VaultwardenConfigOut:
         record = await self._get_record(db, VAULTWARDEN)
         assert record is not None
         config = record.config or {}
         items = config.get("vaultwarden_items") or {}
+        apps = await self._vaultwarden_sync_apps(db)
         runtime = await vaultwarden_deployment_service.runtime_status(config)
         return VaultwardenConfigOut(
             enabled=record.enabled,
@@ -748,7 +755,7 @@ class IntegrationService:
             url=_text(config.get("url")),
             email=_text(config.get("email")),
             password_set=_mask(config.get("password")),
-            synced_count=len(items),
+            synced_count=sum(str(app.instance_id) in items for app in apps),
             status=_status_out(record.status),
             **runtime,
         )
@@ -831,7 +838,7 @@ class IntegrationService:
     ) -> list[VaultwardenAppOut]:
         record = await self._get_record(db, VAULTWARDEN)
         items = self._vaultwarden_items(record.config if record else {})
-        apps = await list_deployed_apps(db, host)
+        apps = await self._vaultwarden_sync_apps(db, host)
         result = []
         for app in apps:
             synced = str(app.instance_id) in items
@@ -872,12 +879,11 @@ class IntegrationService:
         if not self._is_configured(VAULTWARDEN, config):
             raise APIException("请先保存 Vaultwarden 连接配置", 400)
 
-        apps = await list_deployed_apps(db, host)
+        targets = await self._vaultwarden_sync_apps(db, host)
         if instance_ids:
             wanted = set(instance_ids)
-            apps = [app for app in apps if app.instance_id in wanted]
+            targets = [app for app in targets if app.instance_id in wanted]
 
-        targets = [app for app in apps if app.password]
         if not targets:
             raise APIException("没有可同步的账号密码，请先完成应用自动配置", 400)
 

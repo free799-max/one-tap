@@ -81,6 +81,12 @@ function composeStatusConfig(status: string): ComposeStatusConfig {
         dotColor: "bg-yellow-500",
         badgeClass: "bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-50",
       };
+    case "restarting":
+      return {
+        label: "重启中",
+        dotColor: "bg-yellow-500",
+        badgeClass: "bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-50",
+      };
     case "exited":
       return {
         label: "已退出",

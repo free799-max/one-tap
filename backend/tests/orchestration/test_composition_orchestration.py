@@ -859,3 +859,76 @@ def test_render_app_explicit_image_in_config_wins():
         _make_renderable_app(), {"image": "registry.example.com/gotson/komga:1.16.0"}
     )
     assert "image: registry.example.com/gotson/komga:1.16.0" in rendered
+
+
+def test_refresh_instance_status_uses_project_when_container_ref_missing(monkeypatch):
+    """配置未记录容器 ID 时，仍按 Compose 项目获取实时重启状态。"""
+    from unittest.mock import MagicMock
+
+    from app.models.docker import DockerComposeProject
+    from app.services.docker import docker_manager
+
+    instance = AppInstance(
+        instance_name="movie-cloud-openlist",
+        config={},
+        status="running",
+        project=DockerComposeProject(project_name="movie-cloud-openlist"),
+    )
+    container = MagicMock()
+    container.status = "restarting"
+    container.attrs = {"State": {"Status": "restarting"}}
+    get_project_container = MagicMock(return_value=container)
+    monkeypatch.setattr(
+        orchestration_service, "_get_project_container", get_project_container
+    )
+    monkeypatch.setattr(docker_manager, "_client_obj", MagicMock())
+
+    orchestration_service._refresh_instance_status(instance)
+
+    get_project_container.assert_called_once_with("movie-cloud-openlist")
+    container.reload.assert_called_once_with()
+    assert instance.status == "restarting"
+
+
+@pytest.mark.asyncio
+async def test_list_instances_refreshes_project_container_status(
+    db, media_orchestration, monkeypatch
+):
+    """编排列表可刷新仅有项目关联的实例，不触发异步懒加载。"""
+    from unittest.mock import MagicMock
+
+    from app.models.docker import DockerComposeProject
+    from app.services.docker import docker_manager
+
+    project = DockerComposeProject(project_name="movie-cloud-openlist")
+    db.add(project)
+    await db.flush()
+    group = AppOrchestrationInstance(
+        orchestration_id=media_orchestration.id,
+        instance_name="movie-cloud",
+        status="running",
+    )
+    db.add(group)
+    await db.flush()
+    db.add(
+        AppInstance(
+            orchestration_group_id=group.id,
+            project_id=project.id,
+            instance_name="movie-cloud-openlist",
+            config={},
+            status="running",
+        )
+    )
+    await db.commit()
+
+    container = MagicMock()
+    container.status = "restarting"
+    container.attrs = {"State": {"Status": "restarting"}}
+    client = MagicMock()
+    client.containers.get.return_value = container
+    monkeypatch.setattr(docker_manager, "_client_obj", client)
+
+    groups = await orchestration_service.list_instances(db)
+
+    client.containers.get.assert_called_once_with("movie-cloud-openlist")
+    assert groups[0].instances[0].status == "restarting"

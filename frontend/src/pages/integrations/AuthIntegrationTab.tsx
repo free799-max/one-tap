@@ -296,7 +296,7 @@ export function AuthIntegrationTab() {
             </div>
           ) : (
             <div className="space-y-3 rounded-lg border p-3">
-              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.1fr)]">
                 <div className="space-y-1">
                   <Label htmlFor="vaultwarden_url" className="text-xs">
                     服务地址
@@ -338,7 +338,10 @@ export function AuthIntegrationTab() {
                       id="vaultwarden_password"
                       value={form.password}
                       onChange={(e) =>
-                        setForm((prev) => ({ ...prev, password: e.target.value }))
+                        setForm((prev) => ({
+                          ...prev,
+                          password: e.target.value,
+                        }))
                       }
                       placeholder={
                         config?.password_set
@@ -375,46 +378,25 @@ export function AuthIntegrationTab() {
 
                 <div className="flex min-w-0 items-end justify-start">
                   {testConnection.data ? (
-                    <div
-                      className={`flex items-start gap-1.5 pb-2 text-[11px] ${
-                        testConnection.data.ok
-                          ? "text-emerald-600"
-                          : "text-destructive"
-                      }`}
-                    >
-                      {testConnection.data.ok ? (
-                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      ) : (
-                        <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                      )}
-                      <span>
-                        {testConnection.data.message}
-                        {testConnection.data.version
-                          ? `（${testConnection.data.version}）`
-                          : ""}
-                      </span>
+                    <div className="pb-2">
+                      <TestFeedback data={testConnection.data} />
                     </div>
                   ) : (
-                    <span className="pb-2 text-left text-[11px] text-muted-foreground">
-                      尚未测试连接
+                    <span
+                      className={`min-w-0 max-w-[240px] truncate pb-2 text-left text-[11px] ${
+                        config?.status.ok === false
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                      }`}
+                      title={config?.status.message || undefined}
+                    >
+                      {config?.status.message
+                        ? `最近状态：${config.status.message}`
+                        : "尚未测试连接"}
                     </span>
                   )}
                 </div>
               </div>
-
-              {config?.status.message && (
-                <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
-                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>
-                    最近状态：{config.status.message}
-                    {config.status.last_synced_at
-                      ? ` · 上次同步 ${new Date(
-                          config.status.last_synced_at
-                        ).toLocaleString()}`
-                      : ""}
-                  </span>
-                </div>
-              )}
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5">
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
@@ -475,9 +457,6 @@ export function AuthIntegrationTab() {
             <KeyRound className="h-4 w-4 text-muted-foreground" />
             已部署应用
           </CardTitle>
-          <CardDescription className="text-xs">
-            同步后条目会以「OneTap · 应用名」命名，重复同步会更新原条目。
-          </CardDescription>
           <CardAction>
             <Button
               type="button"
@@ -511,9 +490,9 @@ export function AuthIntegrationTab() {
           ) : apps.length === 0 ? (
             <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed py-10">
               <KeyRound className="h-7 w-7 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">还没有已部署的应用</p>
+              <p className="text-sm text-muted-foreground">暂无可同步凭据的应用</p>
               <p className="text-xs text-muted-foreground/80">
-                前往应用市场或自动化页面部署应用后即可同步凭据。
+                仅显示已取得真实账号密码的已部署应用。
               </p>
             </div>
           ) : (
@@ -562,7 +541,12 @@ export function AuthIntegrationTab() {
                           已同步
                         </Badge>
                       ) : (
-                        <Badge variant="outline">未同步</Badge>
+                        <Badge
+                          variant="outline"
+                          title="同步后条目会以「OneTap · 应用名」命名，重复同步会更新原条目。"
+                        >
+                          未同步
+                        </Badge>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -675,6 +659,30 @@ export function AuthIntegrationTab() {
         provider="vaultwarden"
         title="查看 Vaultwarden 主密码"
       />
+    </div>
+  );
+}
+
+function TestFeedback({
+  data,
+}: {
+  data: { ok: boolean; message: string; version?: string | null };
+}) {
+  return (
+    <div
+      className={`flex items-start gap-1.5 text-[11px] ${
+        data.ok ? "text-emerald-600" : "text-destructive"
+      }`}
+    >
+      {data.ok ? (
+        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      ) : (
+        <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+      )}
+      <span>
+        {data.message}
+        {data.version ? `（${data.version}）` : ""}
+      </span>
     </div>
   );
 }

@@ -13,6 +13,11 @@ export const APP_STATUS_META: Record<
     dot: "bg-emerald-500",
     text: "text-emerald-600",
   },
+  restarting: {
+    label: "重启中",
+    dot: "bg-amber-500 animate-pulse",
+    text: "text-amber-600",
+  },
   stopped: {
     label: "已停止",
     dot: "bg-muted-foreground/40",
@@ -33,6 +38,7 @@ export const APP_STATUS_META: Record<
 /** 应用状态胶囊的背景与文字配色 */
 export const APP_STATUS_PILL: Record<string, string> = {
   running: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  restarting: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
   stopped: "bg-muted text-muted-foreground",
   error: "bg-destructive/10 text-destructive",
   deploying: "bg-primary/10 text-primary",

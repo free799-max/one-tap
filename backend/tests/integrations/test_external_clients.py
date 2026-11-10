@@ -651,7 +651,29 @@ async def test_vaultwarden_sync_discovers_and_tracks_items(fake_server):
             config={"url": "http://192.168.1.2:8096"},
             status="running",
         )
-        db.add_all([app, orchestration, group, instance])
+        app_without_credentials = App(
+            name="komga",
+            display_name="Komga",
+            category="comic",
+            yaml_template="",
+        )
+        instance_without_credentials = AppInstance(
+            app=app_without_credentials,
+            orchestration=orchestration,
+            instance_name="komga",
+            config={"url": "http://192.168.1.2:25600"},
+            status="running",
+        )
+        db.add_all(
+            [
+                app,
+                orchestration,
+                group,
+                instance,
+                app_without_credentials,
+                instance_without_credentials,
+            ]
+        )
         await db.commit()
 
         await integration_service.save_vaultwarden(

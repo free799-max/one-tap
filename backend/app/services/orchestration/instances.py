@@ -41,6 +41,9 @@ class InstanceMixin:
                 selectinload(AppOrchestrationInstance.instances).selectinload(
                     AppInstance.app
                 ),
+                selectinload(AppOrchestrationInstance.instances).selectinload(
+                    AppInstance.project
+                ),
             )
         )
         if category:
@@ -170,6 +173,9 @@ class InstanceMixin:
                 selectinload(AppOrchestrationInstance.orchestration),
                 selectinload(AppOrchestrationInstance.instances).selectinload(
                     AppInstance.app
+                ),
+                selectinload(AppOrchestrationInstance.instances).selectinload(
+                    AppInstance.project
                 ),
             )
         )

@@ -227,9 +227,11 @@ class DockerSnapshot:
 
 
 def _container_status(state: str) -> str:
-    """把 Docker 容器状态归一化为概览使用的 running/stopped。"""
-    if state in {"running", "restarting"}:
+    """把 Docker 容器状态归一化为概览使用的运行状态。"""
+    if state == "running":
         return "running"
+    if state == "restarting":
+        return "restarting"
     if state in {"exited", "dead", "paused", "created"}:
         return "stopped"
     return state

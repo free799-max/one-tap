@@ -428,6 +428,20 @@ class TestOverviewService:
         assert overview.running == 0
         assert overview.categories[0].apps[0].status == "stopped"
 
+        restarting = await overview_service.get_overview(
+            db_session,
+            host="nas.local",
+            docker_snapshot=DockerSnapshot(
+                available=True,
+                project_status={"media-jellyfin": "restarting"},
+            ),
+        )
+        from app.services.overview import _container_status
+
+        assert _container_status("restarting") == "restarting"
+        assert restarting.running == 0
+        assert restarting.categories[0].apps[0].status == "restarting"
+
         stopped = await overview_service.get_overview(
             db_session,
             host="nas.local",

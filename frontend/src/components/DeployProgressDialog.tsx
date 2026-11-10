@@ -24,13 +24,13 @@ export function DeployProgressDialog() {
   // 已结束（完成/失败/停止）的任务：卡片保留展示，关闭弹窗时才清理
   const finishedRef = useRef<Set<string>>(new Set());
 
-  // 任务结束（无论完成、失败或停止）后刷新编排实例、Compose 项目/Stack 状态与应用卡片
+  // 任务结束（无论完成、失败或停止）后刷新编排实例、Compose 项目/Stack 状态、应用卡片与当前详情
   // Compose 启停/重启是异步任务，完成时主动失效缓存，避免界面等下一次轮询
   const invalidateInstances = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["orchestration-instances"] });
     queryClient.invalidateQueries({ queryKey: ["apps", "instances"] });
     queryClient.invalidateQueries({ queryKey: ["orchestration-backups"] });
-    queryClient.invalidateQueries({ queryKey: ["dashboard", "overview"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     queryClient.invalidateQueries({ queryKey: ["compose"] });
     queryClient.invalidateQueries({ queryKey: ["docker", "containers"] });
     // AdGuard 部署完成后刷新网络优化页的运行状态与加速列表

@@ -795,22 +795,25 @@ class ProvisionMixin:
     def _refresh_instance_status(self, instance: AppInstance) -> None:
         """根据 Docker 容器实际运行状态刷新 AppInstance.status。
 
-        优先读取 instance.config 中的 container_id；未找到时尝试用
-        container_name 兜底。Docker 不可用时保持原状态不变。
+        优先读取 instance.config 中的 container_id，依次使用 container_name、
+        关联 Compose 项目兜底。Docker 不可用时保持原状态不变。
         """
         config = instance.config or {}
         container_id = config.get("container_id")
         if not container_id:
-            container_name = config.get("container_name")
-            if not container_name:
-                return
-            container_id = container_name
+            container_id = config.get("container_name")
+        project = instance.project
+        if not container_id and project is None:
+            return
 
         client = docker_manager._client
         if client is None:
             return
         try:
-            container = client.containers.get(container_id)
+            if container_id:
+                container = client.containers.get(container_id)
+            else:
+                container = self._get_project_container(project.project_name)
             container.reload()
         except docker.errors.NotFound:
             instance.status = "stopped"
