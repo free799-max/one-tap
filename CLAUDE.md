@@ -210,15 +210,6 @@ DockerComposeProject 1--1 DockerComposeStack
 - 重新部署（修复）不走备份：它有意保留数据卷，并继承上次部署的密钥类 env。修复时可只勾选需要重部署的应用（包括取消必选应用），未勾选的应用保持运行；后端 `_validate_composition(require_required=False)` 只校验所选应用。
 - 普通 Compose 项目删除同样复用这套备份：`DELETE /api/docker/compose/{id}` 调用 `compose_manager.delete_project(..., backup_data=True)`，先 `down` 并移除容器，再把实例配置或当前 Compose 文件声明的数据目录移入 `_backups`，最后删除项目记录。重新部署时原路径为空，会全新初始化；手动 Compose 项目没有实例记录时从 Compose 文件的 bind mount 推导目录。`backup_data` 默认 False，内部替换项目（如 AdGuard 重新部署）不会搬走数据。
 
-## 离线资源（客户端内置档案）
-
-- MoviePilot 这类应用启动时需要额外的插件依赖和浏览器内核，离线档案由客户端维护在 `services/apps/offline_assets.py`，管理端的应用模板保持官方原样，不再携带资源镜像/挂载信息。
-- 写盘时（`ComposeService._write_compose_file`）给匹配的服务注入固定镜像与离线环境变量（关闭程序/资源包/内核自动更新），因此实际落盘的 compose 与模板会略有差异。
-- 服务启动后 `_copy_offline_assets` 把资源镜像目录 `docker cp` 进容器：先从资源镜像解包到宿主机缓存 `<DATA_ROOT>/offline-assets/<镜像>`（docker 不支持容器间直接 cp，缓存按镜像复用），再 `docker cp` 进容器；拷贝期间先 `docker stop`，完成后 `docker start`。
-- 完成标记写在容器可写层 `/opt/venv/.onetap-assets`，标记一致则跳过。容器重建后标记丢失，会随下一次 `up` 自动重拷（命中本地缓存，不再解包镜像）。
-- 拷贝失败不阻断部署，只在进度里提示；用户可在应用详情页手动重试。
-- 前端入口：自动化实例详情 → MoviePilot → 集成 → 「离线数据」卡片；接口为 `GET/POST /api/orchestrations/instances/{id}/apps/{app}/assets[/copy]`，拷贝走后台任务并通过部署任务 SSE 展示进度。
-
 ## 服务概览
 
 - 首页采用 sun-panel 式应用墙：顶部展示宿主机 CPU/内存/磁盘/运行时间与当前时间，下方按应用分类（`apps.category`，缺失时回落到编排分类）自动分组；分组顺序取管理端下发的分类字典（`GET /api/public/categories`），前端展示名称同样来自该字典。

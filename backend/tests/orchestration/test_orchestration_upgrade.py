@@ -667,6 +667,23 @@ async def test_upgrade_preview_images(db, legacy_group):
         )
         == "gotson/komga:1.29.1"
     )
+    # 浮动的 latest 跟随方案 tag，明确固定的版本标签不被覆盖
+    assert (
+        resolve_target_image(
+            {"app_name": "kavita", "image": "lscr.io/linuxserver/kavita:latest", "tag": "v0.9.1"},
+            db_app,
+            instance.config,
+        )
+        == "lscr.io/linuxserver/kavita:v0.9.1"
+    )
+    assert (
+        resolve_target_image(
+            {"app_name": "komga", "image": "gotson/komga:1.29.0", "tag": "1.30.0"},
+            db_app,
+            instance.config,
+        )
+        == "gotson/komga:1.29.0"
+    )
     # 用户显式选择的 image_tag 在模板未覆盖时保留
     assert (
         resolve_target_image({"app_name": "moviepilot"}, db_app, {"image_tag": "v1.5"})

@@ -275,3 +275,101 @@ async def test_get_image_tags_ghcr_falls_back_to_source_mirror(monkeypatch):
 
     assert [t["name"] for t in tags] == ["latest"]
     assert calls[-1] == ("", "https://abc.d.1ms.run")
+
+
+def test_managed_release_tags_maps_metadata_and_filters_repository():
+    from app.api.docker.images import _managed_release_tags
+
+    releases = [
+        {
+            "version": "v2.4.2490",
+            "image": "ghcr.io/suwayomi/suwayomi-server:v2.4.2490",
+            "image_size": 678509168,
+            "pushed_at": "2026-11-07T18:27:23Z",
+            "published_at": "2026-11-07T21:34:11Z",
+            "digest": "sha256:new",
+        },
+        {
+            "version": "latest",
+            "image": None,
+            "published_at": "2026-10-29T04:04:50Z",
+        },
+        {
+            "version": "old",
+            "image": "docker.io/suwayomi/suwayomi-server:old",
+        },
+        {"version": "", "image": None},
+    ]
+
+    assert _managed_release_tags(
+        releases, "ghcr.io/suwayomi/suwayomi-server"
+    ) == [
+        {
+            "name": "v2.4.2490",
+            "last_updated": "2026-11-07T18:27:23Z",
+            "size": 678509168,
+            "digest": "sha256:new",
+        },
+        {
+            "name": "latest",
+            "last_updated": "2026-10-29T04:04:50Z",
+            "size": 0,
+            "digest": "",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_market_image_tags_prefer_managed_releases(monkeypatch):
+    from app.api.docker import images
+
+    async def fake_versions(name):
+        assert name == "suwayomi"
+        return [
+            {
+                "version": "v2.4.2490",
+                "image": "ghcr.io/suwayomi/suwayomi-server:v2.4.2490",
+            }
+        ]
+
+    async def unexpected_registry(*args, **kwargs):
+        raise AssertionError("管理端有发布版本时不应查询实时仓库")
+
+    monkeypatch.setattr(images.catalog_sync, "fetch_app_versions", fake_versions)
+    monkeypatch.setattr(images.docker_manager, "get_image_tags", unexpected_registry)
+
+    tags = await images.get_image_tags(
+        image="ghcr.io/suwayomi/suwayomi-server",
+        app_name="suwayomi",
+        db=None,
+        current_user=None,
+    )
+
+    assert [tag["name"] for tag in tags] == ["v2.4.2490"]
+
+
+@pytest.mark.asyncio
+async def test_market_image_tags_fall_back_to_registry(monkeypatch):
+    from app.api.docker import images
+
+    async def failed_versions(name):
+        raise RuntimeError("manage unavailable")
+
+    async def registry_tags(*args, **kwargs):
+        return [{"name": "latest", "last_updated": "", "size": 0, "digest": ""}]
+
+    async def no_mirrors(db):
+        return {}
+
+    monkeypatch.setattr(images.catalog_sync, "fetch_app_versions", failed_versions)
+    monkeypatch.setattr(images.docker_manager, "get_image_tags", registry_tags)
+    monkeypatch.setattr(images, "_acceleration_map", no_mirrors)
+
+    tags = await images.get_image_tags(
+        image="ghcr.io/suwayomi/suwayomi-server",
+        app_name="suwayomi",
+        db=None,
+        current_user=None,
+    )
+
+    assert [tag["name"] for tag in tags] == ["latest"]

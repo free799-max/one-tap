@@ -31,8 +31,9 @@ from app.schemas.docker import (
     PullTaskResponse,
     PullTaskStatus,
 )
+from app.services import catalog_sync
 from app.services.docker import docker_manager, task_manager
-from app.services.docker.image_service import ImageTagsUnavailable
+from app.services.docker.image_service import ImageTagsUnavailable, _split_image_ref
 from app.services.system.registry_mirror_service import registry_mirror_service
 
 logger = logging.getLogger(__name__)
@@ -154,18 +155,51 @@ async def _tag_mirrors(db: AsyncSession) -> list[str]:
     return (await _acceleration_map(db)).get("docker.io", [])
 
 
+def _managed_release_tags(releases: list[dict], image: str) -> list[dict]:
+    """把管理端发布记录转成标签元数据，只保留当前镜像仓库的记录。"""
+    repository = _split_image_ref(image)
+    tags = []
+    for release in releases:
+        name = str(release.get("version") or "").strip()
+        if not name:
+            continue
+        release_image = release.get("image")
+        if release_image and _split_image_ref(release_image) != repository:
+            continue
+        tags.append(
+            {
+                "name": name,
+                "last_updated": release.get("pushed_at")
+                or release.get("published_at")
+                or "",
+                "size": release.get("image_size") or 0,
+                "digest": release.get("digest") or "",
+            }
+        )
+    return tags
+
+
 @router.get("/images/tags", response_model=list[ImageTag])
 async def get_image_tags(
     image: str,
+    app_name: str | None = None,
     refresh: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取指定镜像的可用标签列表。
+    """市场应用优先返回管理端发布版本，其他镜像直接查询上游仓库。"""
+    if app_name:
+        try:
+            tags = _managed_release_tags(
+                await catalog_sync.fetch_app_versions(app_name), image
+            )
+            if tags:
+                return tags
+        except Exception:
+            logger.warning(
+                "读取管理端 %s 发布版本失败，回退镜像仓库", app_name, exc_info=True
+            )
 
-    Docker Hub 不可达时按镜像加速地址重试；仍失败则返回 502 与具体原因，
-    避免前端只看到空列表而不知道发生了什么。
-    """
     try:
         return await docker_manager.get_image_tags(
             image,

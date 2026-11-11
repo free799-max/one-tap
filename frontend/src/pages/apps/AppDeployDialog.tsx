@@ -312,6 +312,7 @@ export function AppDeployDialog({
               </div>
 
               <SchemaForm
+                appName={app.name}
                 schema={
                   app.config_schema as {
                     properties?: Record<string, SchemaProperty>;

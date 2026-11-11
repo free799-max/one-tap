@@ -479,31 +479,6 @@ async def install_app_plugin(
     return {"ok": True, "message": "插件安装成功"}
 
 
-@router.get("/instances/{instance_id}/apps/{app_name}/assets")
-async def get_app_assets(
-    instance_id: int,
-    app_name: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    """查询应用离线资源（插件依赖/浏览器内核）的拷贝状态。"""
-    return await orchestration_service.get_app_assets(db, instance_id, app_name)
-
-
-@router.post(path="/instances/{instance_id}/apps/{app_name}/assets/copy")
-async def copy_app_assets(
-    instance_id: int,
-    app_name: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    """把离线资源拷贝到应用容器（后台任务，返回 task_id）。"""
-    task_id = await orchestration_service.copy_app_assets(
-        db, instance_id, app_name
-    )
-    return {"ok": True, "task_id": task_id}
-
-
 @router.post("/auth/verify", response_model=AppAuthVerifyResponse)
 async def verify_app_auth(
     data: AppAuthVerifyRequest,

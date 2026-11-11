@@ -36,6 +36,7 @@ function splitImageReference(image: string): {
 interface ContainerImageFieldProps {
   containerName: string;
   defaultImage: string;
+  appName?: string;
   value?: ContainerImageConfig;
   onChange: (value: ContainerImageConfig) => void;
 }
@@ -43,6 +44,7 @@ interface ContainerImageFieldProps {
 export function ContainerImageField({
   containerName,
   defaultImage,
+  appName,
   value,
   onChange,
 }: ContainerImageFieldProps) {
@@ -60,7 +62,7 @@ export function ContainerImageField({
     data: imageTags = [],
     isFetching,
     error,
-  } = useImageTags(current.repository, refreshToken);
+  } = useImageTags(current.repository, refreshToken, appName);
 
   // 点击面板外部或按 Esc 收起
   useEffect(() => {

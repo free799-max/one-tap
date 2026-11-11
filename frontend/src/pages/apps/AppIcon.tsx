@@ -14,9 +14,11 @@ import type { App } from "@/hooks/useApps";
 interface AppIconProps {
   app: Pick<App, "name" | "icon">;
   className?: string;
+  /** 不画白色底框，只显示图标本身（用于方案流程等不需要卡片底色的场景） */
+  frameless?: boolean;
 }
 
-export function AppIcon({ app, className }: AppIconProps) {
+export function AppIcon({ app, className, frameless = false }: AppIconProps) {
   const [failed, setFailed] = useState(false);
 
   const src =
@@ -40,7 +42,8 @@ export function AppIcon({ app, className }: AppIconProps) {
   return (
     <div
       className={cn(
-        "relative flex items-center justify-center overflow-hidden rounded-[22%] bg-white",
+        "relative flex items-center justify-center overflow-hidden rounded-[22%]",
+        !frameless && "bg-white",
         className
       )}
     >

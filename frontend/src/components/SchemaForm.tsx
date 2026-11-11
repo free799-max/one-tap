@@ -86,6 +86,7 @@ interface SchemaFormProps {
   image?: string;
   /** 各 Compose 服务的默认镜像，用于逐容器镜像配置 */
   containerImages?: Record<string, string>;
+  appName?: string;
   /** 目录字段选中来源后子路径为空时自动填入的默认值（如实例名称） */
   defaultDirectorySubPath?: string;
   /**
@@ -519,6 +520,7 @@ function ContainerSchemaForm({
   onChange,
   image,
   containerImages,
+  appName,
   directoryServices,
   defaultDirectorySubPath,
 }: {
@@ -527,6 +529,7 @@ function ContainerSchemaForm({
   onChange: (data: Record<string, unknown>) => void;
   image?: string;
   containerImages?: Record<string, string>;
+  appName?: string;
   directoryServices: DirectoryServices;
   defaultDirectorySubPath?: string;
 }) {
@@ -630,6 +633,7 @@ function ContainerSchemaForm({
 
             {defaultContainerImage !== undefined && (
               <ContainerImageField
+                appName={appName}
                 containerName={container.name}
                 defaultImage={defaultContainerImage}
                 value={
@@ -706,6 +710,7 @@ function PlainSchemaForm({
   onChange,
   image,
   containerImages,
+  appName,
   directoryServices,
   defaultDirectorySubPath,
 }: {
@@ -714,6 +719,7 @@ function PlainSchemaForm({
   onChange: (data: Record<string, unknown>) => void;
   image?: string;
   containerImages?: Record<string, string>;
+  appName?: string;
   directoryServices: DirectoryServices;
   defaultDirectorySubPath?: string;
 }) {
@@ -732,6 +738,7 @@ function PlainSchemaForm({
     <div className="space-y-4">
       {defaultImage && (
         <ContainerImageField
+          appName={appName}
           containerName={imageContainerName}
           defaultImage={defaultImage}
           value={
@@ -808,6 +815,7 @@ export function SchemaForm({
   onChange,
   image,
   containerImages,
+  appName,
   defaultDirectorySubPath,
   relativeToAppDataDir = true,
 }: SchemaFormProps) {
@@ -833,6 +841,7 @@ export function SchemaForm({
         onChange={onChange}
         image={image}
         containerImages={containerImages}
+        appName={appName}
         directoryServices={directoryServices}
         defaultDirectorySubPath={defaultDirectorySubPath}
       />
@@ -846,6 +855,7 @@ export function SchemaForm({
       onChange={onChange}
       image={image}
       containerImages={containerImages}
+      appName={appName}
       directoryServices={directoryServices}
       defaultDirectorySubPath={defaultDirectorySubPath}
     />

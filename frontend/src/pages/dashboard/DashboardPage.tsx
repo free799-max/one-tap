@@ -2,7 +2,8 @@
  * 服务概览页面
  *
  * 采用 sun-panel 式的应用墙布局：顶部展示宿主机实时状态，
- * 已部署应用按分类自动分组，访问地址由后端根据部署端口自动生成。
+ * 已部署应用可切换「按分类分组」或「全部平铺」展示（选择持久化到浏览器），
+ * 访问地址由后端根据部署端口自动生成。
  * 只展示实际存在容器/项目的应用，失败或已清理的部署记录不会出现。
  */
 
@@ -11,6 +12,8 @@ import { Link } from "react-router-dom";
 import {
   BookImage,
   BookOpen,
+  Check,
+  ChevronDown,
   Clapperboard,
   Clock,
   Container,
@@ -23,6 +26,7 @@ import {
   Info,
   Images,
   LayoutGrid,
+  LayoutList,
   MemoryStick,
   Music,
   Network,
@@ -36,6 +40,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { AppIcon } from "@/pages/apps/AppIcon";
 import { AppDetailDialog } from "./AppDetailDialog";
@@ -44,6 +54,27 @@ import { categoryLabel } from "@/lib/categories";
 import { useCategories } from "@/hooks/useApps";
 import { cn, formatBytes, formatUptime } from "@/lib/utils";
 import { useOverview, type OverviewApp } from "@/hooks/useDashboard";
+
+/** 展示方式：按分类分组，或全部应用平铺展示 */
+type DashboardView = "category" | "flat";
+
+const VIEW_STORAGE_KEY = "dashboard.view";
+
+function readStoredView(): DashboardView {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "flat" ? "flat" : "category";
+  } catch {
+    return "category";
+  }
+}
+
+function storeView(view: DashboardView) {
+  try {
+    localStorage.setItem(VIEW_STORAGE_KEY, view);
+  } catch {
+    // 隐私模式等场景无法写入，忽略即可，仅本次会话有效
+  }
+}
 
 const CATEGORY_ICONS: Record<string, LucideIcon> = {
   movie: Film,
@@ -130,6 +161,8 @@ function HostStatusBar({
   onSearchChange,
   onRefresh,
   refreshing,
+  view,
+  onViewChange,
 }: {
   hostname?: string;
   cpuPercent?: number;
@@ -143,6 +176,8 @@ function HostStatusBar({
   onSearchChange: (value: string) => void;
   onRefresh: () => void;
   refreshing: boolean;
+  view: DashboardView;
+  onViewChange: (view: DashboardView) => void;
 }) {
   const [now, setNow] = useState(() => new Date());
 
@@ -211,14 +246,32 @@ function HostStatusBar({
           <span className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground lg:inline">
             {clock}
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            render={<Link to="/appstore" />}
-          >
-            <Store />
-            应用市场
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                title="切换展示方式"
+              >
+                {view === "category" ? <LayoutList /> : <LayoutGrid />}
+                {view === "category" ? "分类" : "全部"}
+                <ChevronDown className="text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center" className="w-28">
+              <DropdownMenuItem onClick={() => onViewChange("category")}>
+                <LayoutList />
+                分类
+                {view === "category" && <Check className="ml-auto" />}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onViewChange("flat")}>
+                <LayoutGrid />
+                全部
+                {view === "flat" && <Check className="ml-auto" />}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -321,6 +374,25 @@ function ServiceCard({
   );
 }
 
+const SERVICE_GRID_CLASS =
+  "grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6";
+
+function ServiceGrid({
+  apps,
+  onShowDetail,
+}: {
+  apps: OverviewApp[];
+  onShowDetail: (app: OverviewApp) => void;
+}) {
+  return (
+    <div className={SERVICE_GRID_CLASS}>
+      {apps.map((app) => (
+        <ServiceCard key={app.id} app={app} onShowDetail={onShowDetail} />
+      ))}
+    </div>
+  );
+}
+
 function CategorySection({
   category,
   label,
@@ -349,15 +421,34 @@ function CategorySection({
         </span>
         <div className="h-px flex-1 bg-border/70" />
       </div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-        {apps.map((app) => (
-          <ServiceCard
-            key={app.id}
-            app={app}
-            onShowDetail={onShowDetail}
-          />
-        ))}
+      <ServiceGrid apps={apps} onShowDetail={onShowDetail} />
+    </section>
+  );
+}
+
+function FlatSection({
+  apps,
+  running,
+  onShowDetail,
+}: {
+  apps: OverviewApp[];
+  running: number;
+  onShowDetail: (app: OverviewApp) => void;
+}) {
+  return (
+    <section className="space-y-2.5">
+      <div className="flex items-center gap-2">
+        <LayoutGrid className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold text-foreground">全部应用</h2>
+        <span className="text-xs text-muted-foreground">
+          {apps.length} 个应用
+          {running > 0 && (
+            <span className="ml-1.5 text-emerald-600">{running} 运行中</span>
+          )}
+        </span>
+        <div className="h-px flex-1 bg-border/70" />
       </div>
+      <ServiceGrid apps={apps} onShowDetail={onShowDetail} />
     </section>
   );
 }
@@ -394,6 +485,12 @@ export function DashboardPage() {
   const { data: categoryOptions = [] } = useCategories();
   const [search, setSearch] = useState("");
   const [detailAppId, setDetailAppId] = useState<number | null>(null);
+  const [view, setView] = useState<DashboardView>(readStoredView);
+
+  const changeView = (next: DashboardView) => {
+    setView(next);
+    storeView(next);
+  };
 
   const categories = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -418,6 +515,12 @@ export function DashboardPage() {
     (total, category) => total + category.apps.length,
     0
   );
+  const runningTotal = categories.reduce(
+    (total, category) =>
+      total + category.apps.filter((app) => app.status === "running").length,
+    0
+  );
+  const allApps = categories.flatMap((category) => category.apps);
   const isFiltering = search.trim().length > 0;
   const resources = hostInfo?.resources;
 
@@ -436,6 +539,8 @@ export function DashboardPage() {
         onSearchChange={setSearch}
         onRefresh={() => refetch()}
         refreshing={isFetching}
+        view={view}
+        onViewChange={changeView}
       />
 
       {isLoading ? (
@@ -482,17 +587,25 @@ export function DashboardPage() {
         </div>
       ) : (
         <div className="rounded-xl border border-border/70 bg-card p-4 shadow-[var(--shadow-card)] sm:p-5">
-          <div className="space-y-6">
-            {categories.map((category) => (
-              <CategorySection
-                key={category.category}
-                category={category.category}
-                label={categoryLabel(categoryOptions, category.category)}
-                apps={category.apps}
-                onShowDetail={(app) => setDetailAppId(app.id)}
-              />
-            ))}
-          </div>
+          {view === "flat" ? (
+            <FlatSection
+              apps={allApps}
+              running={runningTotal}
+              onShowDetail={(app) => setDetailAppId(app.id)}
+            />
+          ) : (
+            <div className="space-y-6">
+              {categories.map((category) => (
+                <CategorySection
+                  key={category.category}
+                  category={category.category}
+                  label={categoryLabel(categoryOptions, category.category)}
+                  apps={category.apps}
+                  onShowDetail={(app) => setDetailAppId(app.id)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -94,6 +94,23 @@ def _parse_naive_utc(value: str | None) -> datetime | None:
     return parsed
 
 
+def _managed_default_image(item: dict) -> str | None:
+    """自动发布时把未固定标签的默认镜像对齐到管理端最新版本。"""
+    image = item.get("image")
+    version = str(item.get("latest_version") or "").strip()
+    if not image or not version or not item.get("auto_publish", False):
+        return image
+    if "@" in image:
+        return image
+    last_segment = image.rsplit("/", 1)[-1]
+    if ":" in last_segment:
+        repository, current_tag = image.rsplit(":", 1)
+        if current_tag != "latest":
+            return image
+        image = repository
+    return f"{image}:{version}"
+
+
 async def _delete_removed_apps(session, remote_names: set[str]) -> int:
     """删除管理端已下架/移除的应用缓存。
 
@@ -232,7 +249,7 @@ async def sync_apps() -> dict:
                 "website": item.get("homepage"),
                 "source_url": item.get("repo_url"),
                 "architectures": item.get("architectures") or [],
-                "image": item.get("image"),
+                "image": _managed_default_image(item),
                 "image_size": item.get("image_size"),
                 "image_pushed_at": _parse_naive_utc(item.get("image_pushed_at")),
                 "image_digest": item.get("image_digest"),
@@ -280,6 +297,20 @@ async def sync_apps() -> dict:
     }
     logger.info("应用市场同步完成：%s", stats)
     return stats
+
+
+async def fetch_app_versions(name: str) -> list[dict]:
+    """按需读取单个应用在管理端最新发布的 20 个版本。"""
+    if not manage_base_urls():
+        return []
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        resp, _ = await with_manage_fallback(
+            lambda base_url: client.get(
+                f"{base_url}/api/public/apps/{name}/versions"
+            )
+        )
+        resp.raise_for_status()
+        return _extract_items(resp.json())[:20]
 
 
 async def _find_renamed_orchestration(

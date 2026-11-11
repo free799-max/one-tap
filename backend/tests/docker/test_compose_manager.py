@@ -72,6 +72,37 @@ async def test_config_files_returns_default_for_legacy_project(compose_manager, 
 
 
 @pytest.mark.asyncio
+async def test_write_moviepilot_without_offline_profile(compose_manager, tmp_path):
+    """MoviePilot 写盘保留模板镜像与环境变量，不再注入离线资源档案。"""
+    project = DockerComposeProject(
+        id=1,
+        project_name="movie-moviepilot",
+        config_files='["' + str(tmp_path / "movie" / "docker-compose.yml") + '"]',
+        working_dir=str(tmp_path / "movie"),
+    )
+    version = DockerComposeVersion(
+        project_id=1,
+        version_number=1,
+        content="""services:
+  moviepilot:
+    image: jxxghp/moviepilot-v2:latest
+    environment:
+      TZ: Asia/Shanghai
+""",
+        is_current=True,
+    )
+
+    compose_file = await compose_manager._write_compose_file(project, version)
+
+    content = compose_file.read_text(encoding="utf-8")
+    assert "jxxghp/moviepilot-v2:latest" in content
+    assert "@sha256:" not in content
+    assert "MOVIEPILOT_AUTO_UPDATE" not in content
+    assert "AUTO_UPDATE_RESOURCE" not in content
+    assert "CLOAKBROWSER_AUTO_UPDATE" not in content
+
+
+@pytest.mark.asyncio
 async def test_create_project_auto_deploy(compose_manager, tmp_path):
     """创建项目后自动执行 docker compose up -d 并同步状态。"""
     compose_manager.workspace = tmp_path
@@ -387,7 +418,6 @@ async def test_up_retries_after_cleaning_stale_static_ip(compose_manager, tmp_pa
 
     with (
         patch.object(compose_manager, "_prepull_images", AsyncMock()),
-        patch.object(compose_manager, "_copy_offline_assets", AsyncMock()),
         patch.object(
             compose_manager, "_static_ip_targets", AsyncMock(return_value=[target])
         ),
@@ -456,7 +486,6 @@ async def test_action_up_uses_local_images_without_pulling(compose_manager):
 
     with (
         patch.object(compose_manager, "_prepull_images", AsyncMock()) as prepull,
-        patch.object(compose_manager, "_copy_offline_assets", AsyncMock()),
         patch.object(
             compose_manager,
             "_run",

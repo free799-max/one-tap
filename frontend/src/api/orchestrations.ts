@@ -447,29 +447,6 @@ export interface AppPluginsResponse {
   market: AppPlugin[];
 }
 
-/** 离线资源拷贝项 */
-export interface AppAssetCopy {
-  label: string;
-  size: string;
-  source: string;
-  target: string;
-}
-
-/** 应用离线资源状态（插件依赖/浏览器内核） */
-export interface AppAssetsStatus {
-  supported: boolean;
-  app_name?: string;
-  assets_image?: string;
-  revision?: string;
-  container?: string | null;
-  running?: boolean;
-  copied?: boolean;
-  copied_at?: string | null;
-  marker_image?: string | null;
-  copies?: AppAssetCopy[];
-  message?: string;
-}
-
 /** 装配记录（下载器/媒体服务器） */
 export interface IntegrationRecord {
   name: string;
@@ -757,30 +734,6 @@ export function installOrchestrationAppPlugin(
     .post<{ ok: boolean; message?: string }>(
       `/orchestrations/instances/${instanceId}/apps/${appName}/plugins/install`,
       data
-    )
-    .then((r) => r.data);
-}
-
-/** 查询应用离线资源（插件依赖/浏览器内核）的拷贝状态 */
-export function getOrchestrationAppAssets(
-  instanceId: number,
-  appName: string
-) {
-  return api
-    .get<AppAssetsStatus>(
-      `/orchestrations/instances/${instanceId}/apps/${appName}/assets`
-    )
-    .then((r) => r.data);
-}
-
-/** 把离线资源拷贝到应用容器（后台任务） */
-export function copyOrchestrationAppAssets(
-  instanceId: number,
-  appName: string
-) {
-  return api
-    .post<{ ok: boolean; task_id?: string | null }>(
-      `/orchestrations/instances/${instanceId}/apps/${appName}/assets/copy`
     )
     .then((r) => r.data);
 }

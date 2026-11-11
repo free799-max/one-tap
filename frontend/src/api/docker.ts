@@ -425,12 +425,16 @@ export function getImageDetail(imageId: string) {
 /** 查询指定镜像的可用标签列表；refresh 为 true 时跳过服务端缓存 */
 export function getImageTags(
   image: string,
-  options: { refresh?: boolean; signal?: AbortSignal } = {}
+  options: { refresh?: boolean; appName?: string; signal?: AbortSignal } = {}
 ) {
-  const { refresh = false, signal } = options;
+  const { refresh = false, appName, signal } = options;
   return api
     .get<ImageTag[]>("/docker/images/tags", {
-      params: refresh ? { image, refresh: true } : { image },
+      params: {
+        image,
+        ...(refresh ? { refresh: true } : {}),
+        ...(appName ? { app_name: appName } : {}),
+      },
       signal,
     })
     .then((r) => r.data);

@@ -145,13 +145,17 @@ export function useImageDetail(image_id: string | null) {
  *
  * @param image 镜像名称（不含标签）
  * @param refreshToken 递增即强制重新获取，用于「重新获取」按钮
+ * @param appName 市场应用标识；提供时优先读取管理端已发布版本
  * @returns useQuery 对象，data 类型为 ImageTag 数组
  */
-export function useImageTags(image: string, refreshToken = 0) {
+export function useImageTags(image: string, refreshToken = 0, appName?: string) {
   return useQuery<ImageTag[]>({
-    queryKey: ["docker", "images", "tags", image, refreshToken],
+    queryKey: ["docker", "images", "tags", image, refreshToken, appName],
     queryFn: () =>
-      dockerApi.getImageTags(image, { refresh: refreshToken > 0 }),
+      dockerApi.getImageTags(image, {
+        refresh: refreshToken > 0,
+        appName,
+      }),
     enabled: !!image.trim(),
     staleTime: 60_000,
     placeholderData: (previousData) => previousData,

@@ -670,6 +670,35 @@ async def _get_app(SessionLocal, name: str) -> App | None:
         return result.scalar_one_or_none()
 
 
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"auto_publish": True}, "example/image:2.0.0"),
+        ({"auto_publish": False}, "example/image"),
+        ({"auto_publish": True, "image": "example/image:latest"}, "example/image:2.0.0"),
+        ({"auto_publish": True, "image": "example/image:1.9.0"}, "example/image:1.9.0"),
+        ({"auto_publish": True, "latest_version": None}, "example/image"),
+        (
+            {"auto_publish": True, "image": "example/image@sha256:abc"},
+            "example/image@sha256:abc",
+        ),
+    ],
+)
+def test_managed_default_image(overrides, expected):
+    item = _make_app_item("suwayomi", **overrides)
+    assert catalog_sync._managed_default_image(item) == expected
+
+
+async def test_fetch_app_versions_reads_latest_20_published_releases(sync_db, monkeypatch):
+    releases = [
+        {"version": f"2.4.{2490 - index}", "image": "ghcr.io/suwayomi/suwayomi-server"}
+        for index in range(25)
+    ]
+    _patch_http(monkeypatch, payload={"success": True, "data": releases})
+
+    assert await catalog_sync.fetch_app_versions("suwayomi") == releases[:20]
+
+
 async def test_sync_apps_creates_new_app(sync_db, monkeypatch):
     """远端应用在本地不存在时新建记录，并完成字段映射。"""
     _patch_http(monkeypatch, payload={"success": True, "data": [_make_app_item("jellyfin")]})

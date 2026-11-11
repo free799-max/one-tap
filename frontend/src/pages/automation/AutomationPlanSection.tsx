@@ -65,10 +65,7 @@ export function AutomationPlanSection({
                 : `/api/orchestrations/${orchestration.name}/icon`
             }
             alt=""
-            className={cn(
-              "shrink-0 border border-border/60 bg-white object-contain",
-              iconClass
-            )}
+            className={cn("shrink-0 object-contain", iconClass)}
           />
         ) : (
           <div

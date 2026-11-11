@@ -258,3 +258,115 @@ def test_runtime_config_respects_proxy_enabled():
 
     config.proxy_enabled = False
     assert hosts_optimizer_service._runtime_config(config)["proxy"] is None
+
+
+async def test_sync_adguard_prunes_stale_managed_domains(monkeypatch):
+    """管理端删掉的域名不再保留 AdGuard 重写。"""
+    import importlib
+
+    module = importlib.import_module("app.services.system.hosts_optimizer_service")
+
+    calls: list[tuple[str, dict | None]] = []
+    existing = [
+        {"domain": "keep.example.com", "answer": "1.1.1.1"},
+        {"domain": "old.example.com", "answer": "2.2.2.2"},
+        {"domain": "old.example.com", "answer": "3.3.3.3"},
+    ]
+
+    class _Response:
+        def __init__(self, payload=None):
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, path: str):
+            assert path == "/control/rewrite/list"
+            return _Response(existing)
+
+        async def post(self, path: str, json: dict | None = None):
+            calls.append((path, json))
+            return _Response()
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", _Client)
+
+    errors = await module.hosts_optimizer_service._sync_adguard(
+        "http://adguard",
+        "admin",
+        "secret",
+        ["keep.example.com"],
+        {"keep.example.com": [("1.1.1.1", 0.0)]},
+        stale_domains=["old.example.com"],
+    )
+
+    assert errors == []
+    assert calls == [
+        (
+            "/control/rewrite/delete",
+            {"domain": "old.example.com", "answer": "2.2.2.2"},
+        ),
+        (
+            "/control/rewrite/delete",
+            {"domain": "old.example.com", "answer": "3.3.3.3"},
+        ),
+    ]
+
+
+async def test_optimize_skips_managed_ips_that_do_not_work(monkeypatch):
+    """加速地址探测不通时，不写入该域名的解析。"""
+    import importlib
+
+    module = importlib.import_module("app.services.system.hosts_optimizer_service")
+
+    probes: list[tuple[str, str]] = []
+    captured: dict = {}
+
+    async def _fake_probe(ip: str, domain: str, semaphore):
+        probes.append((ip, domain))
+        return 12.0 if ip == "1.1.1.1" else None
+
+    async def _fake_sync(url, username, password, domains, best, stale_domains=None):
+        captured["best"] = best
+        return []
+
+    monkeypatch.setattr(module.hosts_optimizer_service, "_probe", _fake_probe)
+    monkeypatch.setattr(module.hosts_optimizer_service, "_sync_adguard", _fake_sync)
+
+    result = await module.hosts_optimizer_service.optimize(
+        {
+            "adguard_url": "http://adguard",
+            "adguard_username": "admin",
+            "adguard_password": "secret",
+            "top_n": 2,
+            "proxy": None,
+            "managed_rules": [
+                {"domain": "broken.example.com", "answers": ["2.2.2.2"]},
+                {"domain": "ok.example.com", "answers": ["1.1.1.1"]},
+                {
+                    "domain": "*.wild.example.com",
+                    "answers": ["1.1.1.1", "2.2.2.2"],
+                },
+            ],
+        },
+        mode="manual",
+    )
+
+    assert captured["best"]["broken.example.com"] == []
+    assert captured["best"]["ok.example.com"] == [("1.1.1.1", 0.0)]
+    assert captured["best"]["*.wild.example.com"] == [("1.1.1.1", 0.0)]
+    assert ("2.2.2.2", "wild.example.com") in probes
+    assert result["domains"]["broken.example.com"]["status"] == "unreachable"
+    assert result["domains"]["ok.example.com"]["status"] == "managed"

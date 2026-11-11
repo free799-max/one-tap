@@ -70,7 +70,7 @@ interface AutomationDeployWizardProps {
 
 /**
  * 按方案条目计算组件级镜像，规则与后端 `_resolve_composition_image` 一致：
- * image 为空时用应用默认镜像；image 最后一段不带 : 时拼上 tag。
+ * image 为空时用应用默认镜像；tag 补齐无标签镜像并替换浮动的 latest。
  */
 function resolveCompositionImage(
   item?: AppCompositionItem
@@ -79,7 +79,12 @@ function resolveCompositionImage(
   if (!image) return undefined;
   const tag = (item?.tag || "").trim();
   const lastSegment = image.slice(image.lastIndexOf("/") + 1);
-  if (tag && !lastSegment.includes(":")) return `${image}:${tag}`;
+  if (!tag) return image;
+  if (!lastSegment.includes(":")) return `${image}:${tag}`;
+  const separator = image.lastIndexOf(":");
+  if (image.slice(separator + 1) === "latest") {
+    return `${image.slice(0, separator)}:${tag}`;
+  }
   return image;
 }
 
@@ -109,6 +114,7 @@ function AppConfigSection({
     <div className="rounded-xl border bg-card p-4 shadow-sm">
       <h4 className="text-sm font-semibold mb-3">{source.display_name}</h4>
       <SchemaForm
+        appName={appName}
         schema={source.config_schema as never}
         data={config}
         onChange={onChange}

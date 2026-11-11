@@ -93,6 +93,16 @@ def test_normalize_managed_rules_accepts_wrapped_payload():
     ]
 
 
+def test_normalize_managed_rules_accepts_wildcard_domain():
+    rules = normalize_managed_rules(
+        [
+            {"domain": "*.Archive.ORG", "answers": ["38.76.203.252"]},
+            {"domain": "*.*.archive.org", "answers": ["38.76.203.252"]},
+        ]
+    )
+    assert [rule["domain"] for rule in rules] == ["*.archive.org"]
+
+
 def test_effective_rules_prefers_managed_rules():
     from app.models.system_config import SystemConfig
 
@@ -543,12 +553,16 @@ async def test_list_apps_includes_orchestration_group(db_session):
 async def test_optimize_uses_managed_answers(monkeypatch):
     captured: dict = {}
 
-    async def _fake_sync(url, username, password, domains, best):
+    async def _fake_sync(url, username, password, domains, best, stale_domains=None):
         captured["domains"] = domains
         captured["best"] = best
         return []
 
+    async def _fake_probe(ip, domain, semaphore):
+        return 10.0
+
     monkeypatch.setattr(hosts_optimizer_service, "_sync_adguard", _fake_sync)
+    monkeypatch.setattr(hosts_optimizer_service, "_probe", _fake_probe)
 
     result = await hosts_optimizer_service.optimize(
         {

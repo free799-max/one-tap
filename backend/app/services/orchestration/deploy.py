@@ -33,16 +33,20 @@ def _resolve_composition_image(item: dict | None) -> str | None:
     """按组合条目计算组件级覆盖镜像。
 
     条目 image 为空时返回 None（不注入，由 app_service 回落到应用默认镜像）；
-    条目带 tag 且 image 最后一段（最后一个 / 之后）不含 : 时拼成 image:tag；
-    image 自带 :tag 时忽略 tag 字段。
+    条目带 tag 时补齐无标签镜像，并替换浮动的 :latest；
+    image 自带明确版本标签时保留 image，忽略 tag 字段。
     """
     item = item or {}
     image = item.get("image") or ""
     if not image:
         return None
     tag = item.get("tag") or ""
-    if tag and ":" not in image.rsplit("/", 1)[-1]:
-        return f"{image}:{tag}"
+    if tag:
+        if ":" not in image.rsplit("/", 1)[-1]:
+            return f"{image}:{tag}"
+        repository, current_tag = image.rsplit(":", 1)
+        if current_tag == "latest":
+            return f"{repository}:{tag}"
     return image
 
 

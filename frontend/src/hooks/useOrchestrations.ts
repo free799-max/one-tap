@@ -20,7 +20,6 @@ import type {
   AppAuthVerifyRequest,
   AppInspectReport,
   AppPluginsResponse,
-  AppAssetsStatus,
   OrchestrationUpdateEventsParams,
   OrchestrationUpdateEvent,
   OrchestrationSyncStatus,
@@ -58,7 +57,6 @@ export type {
   AppFixResponse,
   AppPlugin,
   AppPluginsResponse,
-  AppAssetsStatus,
   IntegrationRecord,
   AppIntegrations,
   OrchestrationUpdateEventScope,
@@ -765,65 +763,6 @@ export function useRunAppAutoSync() {
     },
     onError: (error: ApiError) => {
       toast.error(error.displayMessage || "启动自动同步失败");
-    },
-  });
-}
-
-/**
- * 查询应用离线资源（插件依赖/浏览器内核）的拷贝状态
- *
- * 状态来自容器内的完成标记，容器重建后会重新变成“未拷贝”。
- */
-export function useAppAssets(
-  instanceId: number | null,
-  appName: string | null
-) {
-  return useQuery<AppAssetsStatus>({
-    queryKey: ["orchestration-app-assets", instanceId, appName],
-    queryFn: () =>
-      orchestrationsApi.getOrchestrationAppAssets(instanceId!, appName!),
-    enabled: !!instanceId && !!appName,
-    retry: false,
-  });
-}
-
-/**
- * 把离线资源拷贝到应用容器（后台任务）
- *
- * 拷贝可能需要停止/启动容器，耗时较长，接入全局任务进度弹窗；
- * 完成后延迟刷新若干次状态，让“已拷贝”及时出现。
- */
-export function useCopyAppAssets() {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const { startTask } = useDeployTasks();
-  return useMutation({
-    mutationFn: ({
-      instanceId,
-      appName,
-    }: {
-      instanceId: number;
-      appName: string;
-    }) => orchestrationsApi.copyOrchestrationAppAssets(instanceId, appName),
-    onSuccess: (data, variables) => {
-      if (data.task_id) {
-        startTask(data.task_id);
-      }
-      toast.success("离线数据拷贝已开始，可在任务面板查看进度");
-      for (const delay of [6000, 20000, 45000, 90000, 150000, 210000]) {
-        setTimeout(() => {
-          qc.invalidateQueries({
-            queryKey: [
-              "orchestration-app-assets",
-              variables.instanceId,
-              variables.appName,
-            ],
-          });
-        }, delay);
-      }
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "拷贝离线数据失败");
     },
   });
 }

@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import APIException
 from app.models.orchestration import AppOrchestration
 from app.services.apps import AuthVerifyResult, get_client
-from app.services.orchestration.assets import AssetsMixin
 from app.services.orchestration.deploy import DeployMixin
 from app.services.orchestration.importer import ImportMixin
 from app.services.orchestration.inspection import InspectionMixin
@@ -34,7 +33,6 @@ class OrchestrationService(
     WiringMixin,
     InspectionMixin,
     InstanceMixin,
-    AssetsMixin,
 ):
     """应用编排服务。
 

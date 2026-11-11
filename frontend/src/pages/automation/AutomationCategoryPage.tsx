@@ -95,10 +95,11 @@ function AppNode({
       {app ? (
         <AppIcon
           app={app}
-          className="h-14 w-14 rounded-[22%] object-cover shadow-md"
+          frameless
+          className="h-14 w-14 rounded-[22%] object-contain"
         />
       ) : (
-        <div className="flex h-14 w-14 items-center justify-center rounded-[22%] bg-gradient-to-br from-primary/15 to-primary/5 text-2xl shadow-md">
+        <div className="flex h-14 w-14 items-center justify-center rounded-[22%] bg-gradient-to-br from-primary/15 to-primary/5 text-2xl">
           🚀
         </div>
       )}

@@ -115,6 +115,11 @@ MANAGE_RULES_TIMEOUT = 10.0
 """请求管理端加速规则的超时时间（秒）。"""
 
 
+def _probe_name(domain: str) -> str:
+    """探测通配规则时使用根域名，``*.example.com`` 不能作为 SNI。"""
+    return domain[2:] if domain.startswith("*.") else domain
+
+
 def normalize_domains(raw: list[str]) -> list[str]:
     """校验并规范化域名列表：去空白、转小写、去重。"""
     result: list[str] = []
@@ -215,7 +220,7 @@ def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
         normalized = str(domain or "").strip().lower().rstrip(".")
         if not normalized:
             continue
-        if not _DOMAIN_RE.match(normalized):
+        if not _DOMAIN_RE.match(normalized.removeprefix("*.")):
             logger.warning("忽略管理端下发的非法域名：%s", normalized)
             continue
         if normalized in seen:
@@ -468,6 +473,7 @@ class HostsOptimizerService:
         password: str,
         domains: list[str],
         best: dict[str, list[tuple[str, float]]],
+        stale_domains: list[str] | None = None,
     ) -> list[str]:
         """把优选结果写入 AdGuard DNS 重写，返回逐域名错误列表。"""
         errors: list[str] = []
@@ -512,6 +518,23 @@ class HostsOptimizerService:
                                 json={"domain": domain, "answer": answer},
                             )
                             res.raise_for_status()
+                except Exception as exc:
+                    errors.append(f"{domain}: {exc}")
+            stale = {
+                domain for domain in (stale_domains or []) if domain not in domains
+            }
+            for item in existing:
+                if not isinstance(item, dict):
+                    continue
+                domain = item.get("domain")
+                if domain not in stale:
+                    continue
+                try:
+                    res = await client.post(
+                        "/control/rewrite/delete",
+                        json={"domain": domain, "answer": item.get("answer")},
+                    )
+                    res.raise_for_status()
                 except Exception as exc:
                     errors.append(f"{domain}: {exc}")
         return errors
@@ -706,10 +729,21 @@ class HostsOptimizerService:
                 await proxied.aclose()
 
         probe_semaphore = asyncio.Semaphore(PROBE_CONCURRENCY)
+        probe_targets: list[tuple[str, str]] = [
+            (domain, ip) for domain, ips in resolved for ip in ips
+        ]
+        for domain in domains:
+            if domain in preset:
+                probe_targets.extend((domain, ip) for ip in preset[domain])
         probe_jobs = [
-            (domain, ip, asyncio.create_task(self._probe(ip, domain, probe_semaphore)))
-            for domain, ips in resolved
-            for ip in ips
+            (
+                domain,
+                ip,
+                asyncio.create_task(
+                    self._probe(ip, _probe_name(domain), probe_semaphore)
+                ),
+            )
+            for domain, ip in probe_targets
         ]
         if probe_jobs:
             await asyncio.gather(*(task for _, _, task in probe_jobs), return_exceptions=True)
@@ -726,8 +760,12 @@ class HostsOptimizerService:
         best: dict[str, list[tuple[str, float]]] = {}
         for domain in domains:
             if domain in preset:
-                # 管理端明确指定了解析结果，直接写入，不再按延迟筛选。
-                best[domain] = [(ip, 0.0) for ip in preset[domain]]
+                # 管理端指定的 IP 也要实测；加速地址访问不正常的节点不写入重写，
+                # 避免把域名的解析改坏。
+                reachable_ips = {ip for ip, _ in reachable.get(domain, [])}
+                best[domain] = [
+                    (ip, 0.0) for ip in preset[domain] if ip in reachable_ips
+                ]
             else:
                 best[domain] = sorted(
                     reachable.get(domain, []), key=lambda item: item[1]
@@ -739,6 +777,7 @@ class HostsOptimizerService:
             password,
             domains,
             best,
+            config.get("stale_managed_domains") or [],
         )
         finished_at = datetime.now(timezone.utc)
         return {
@@ -751,11 +790,11 @@ class HostsOptimizerService:
             "domains": {
                 domain: {
                     "status": (
-                        "managed"
+                        "unreachable"
+                        if not best[domain]
+                        else "managed"
                         if domain in preset
                         else "ok"
-                        if best[domain]
-                        else "unreachable"
                     ),
                     "source": "managed" if domain in preset else "local",
                     "ips": [
@@ -771,12 +810,27 @@ class HostsOptimizerService:
         self, db: AsyncSession, config: SystemConfig, mode: str = "manual"
     ) -> dict[str, Any]:
         """执行一次优选并把结果写回 system_config。"""
+        stale_managed_domains: list[str] = []
         if manage_base_urls():
+            previous = {
+                rule["domain"]
+                for rule in normalize_managed_rules(
+                    config.hosts_optimizer_managed_rules or []
+                )
+            }
             try:
                 await self.sync_managed_rules(db, config)
             except Exception as exc:
                 # 管理端临时不可用时继续使用上一次缓存，避免加速中断。
                 logger.warning("同步管理端加速规则失败，使用本地缓存：%s", exc)
+            else:
+                current = {
+                    rule["domain"]
+                    for rule in normalize_managed_rules(
+                        config.hosts_optimizer_managed_rules or []
+                    )
+                }
+                stale_managed_domains = sorted(previous - current)
 
         # 托管 AdGuard 时先刷新管理地址：优先使用容器 IP，宿主机 IP 变化不影响同步。
         if config.hosts_optimizer_adguard_managed:
@@ -790,6 +844,7 @@ class HostsOptimizerService:
                 logger.warning("刷新 AdGuard 管理地址失败：%s", exc)
 
         runtime = self._runtime_config(config)
+        runtime["stale_managed_domains"] = stale_managed_domains
         if not runtime["adguard_url"] or not runtime["adguard_password"]:
             raise APIException("请先配置 AdGuard 管理地址和管理员密码", 400)
         if self._running:
