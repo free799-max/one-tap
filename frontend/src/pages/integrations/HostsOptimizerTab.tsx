@@ -47,11 +47,9 @@ import {
   usePortSuggestions,
   type HostsOptimizerConfig,
 } from "@/hooks/useSettings";
-import { useLicenseStatus } from "@/hooks/useLicense";
 import {
   CheckCircle2,
   ChevronDown,
-  Crown,
   ExternalLink,
   Globe2,
   Loader2,
@@ -89,7 +87,7 @@ interface FormState {
 
 const EMPTY_FORM: FormState = {
   enabled: false,
-  interval_minutes: 360,
+  interval_minutes: 720,
   top_n: 2,
   domainsText: "",
   adguard_url: "",
@@ -151,11 +149,6 @@ function formatTime(value: string | null | undefined): string {
 }
 
 function DomainStatusBadge({ status }: { status: string }) {
-  if (status === "managed") {
-    return (
-      <Badge className="bg-sky-500/10 text-sky-700">管理端指定</Badge>
-    );
-  }
   if (status === "ok") {
     return (
       <Badge className="bg-emerald-500/10 text-emerald-700">可用</Badge>
@@ -180,7 +173,6 @@ export function HostsOptimizerTab() {
   const deployAdguard = useDeployHostsAdguard();
   const removeAdguard = useRemoveHostsAdguard();
   const syncRules = useSyncHostsManagedRules();
-  const { data: license } = useLicenseStatus();
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [initialized, setInitialized] = useState(false);
@@ -244,14 +236,6 @@ export function HostsOptimizerTab() {
     () => acceleration?.apps.filter((app) => !app.acceleration_enabled) ?? [],
     [acceleration]
   );
-  const subscriptionRuleCount = useMemo(
-    () =>
-      acceleration?.managed_rules.rules.filter(
-        (rule) => rule.tier === "subscription"
-      ).length ?? 0,
-    [acceleration]
-  );
-  const purchaseUrl = license?.purchase_url ?? null;
   const acceleratedCount = enabledApps.length;
   const canRun =
     !isDirty &&
@@ -375,17 +359,10 @@ export function HostsOptimizerTab() {
         <CardTitle className="flex items-center gap-2 text-base">
           <Globe2 className="h-4 w-4 text-muted-foreground" />
           网络优化
-          {subscriptionRuleCount > 0 ? (
-            <Badge className="bg-violet-500/10 text-violet-700">
-              专属加速 · {subscriptionRuleCount} 个域名
-            </Badge>
-          ) : acceleration?.managed_rules.configured ? (
-            <Badge variant="secondary">免费线路</Badge>
-          ) : null}
         </CardTitle>
         <CardDescription className="text-xs">
-          OneTap 可以自动部署专用 AdGuard Home，通过 DNS 重写把域名解析到指定 IP，
-          或优选到实测最快的 IP。加速只作用于选中的应用。
+          OneTap 可以自动部署专用 AdGuard Home，在本地优选实测最快的 IP 并写入
+          DNS 重写。加速只作用于选中的应用。
         </CardDescription>
       </CardHeader>
 
@@ -827,8 +804,8 @@ export function HostsOptimizerTab() {
         </CardTitle>
         <CardDescription className="text-xs">
           {acceleration?.managed_rules.configured
-            ? "域名和解析结果由配套管理端统一维护，同步后写入 AdGuard 的 DNS 重写。"
-            : "未配置 MANAGE_BASE_URL，当前使用下方本地优选域名；配置管理端后规则会改为统一下发。"}
+            ? "域名由配套管理端统一维护；客户端在本地优选解析 IP 后写入 AdGuard 的 DNS 重写。"
+            : "未配置 MANAGE_BASE_URL，当前使用下方本地优选域名；配置管理端后域名会改为统一下发。"}
         </CardDescription>
         <CardAction>
           {acceleration?.managed_rules.configured && (
@@ -873,61 +850,32 @@ export function HostsOptimizerTab() {
               </Button>
             </div>
             {acceleration.managed_rules.configured &&
-              (subscriptionRuleCount > 0 ? (
-                <div className="flex items-start gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2.5">
-                  <Crown className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+              acceleration.network_rule_count > 0 && (
+                <div className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2.5">
+                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                   <div className="flex-1 space-y-0.5">
-                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-violet-900">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
                       {acceleration.network_effective === true
-                        ? "专属加速已生效"
+                        ? "加速规则已生效"
                         : acceleration.network_effective === null
-                          ? "专属加速状态未知"
-                          : "专属加速未生效"}
-                      <Badge className="bg-violet-600 text-white">
-                        {subscriptionRuleCount} 个专属域名
+                          ? "加速规则状态未知"
+                          : "加速规则尚未生效"}
+                      <Badge variant="secondary">
+                        {acceleration.network_rule_count} 个域名
                       </Badge>
                     </div>
-                    <p className="text-xs text-violet-800/80">
+                    <p className="text-xs text-muted-foreground">
                       {acceleration.network_message}
                     </p>
                   </div>
                 </div>
-              ) : (
-                <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
-                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                  <div className="flex-1 space-y-0.5">
-                    <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-amber-900">
-                      免费线路
-                      <Badge className="bg-amber-500/15 text-amber-700">
-                        本机优选
-                      </Badge>
-                    </div>
-                  </div>
-                  {purchaseUrl && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="shrink-0 bg-violet-600 text-white hover:bg-violet-700"
-                      onClick={() =>
-                        window.open(
-                          purchaseUrl,
-                          "_blank",
-                          "noopener,noreferrer"
-                        )
-                      }
-                    >
-                      购买
-                    </Button>
-                  )}
-                </div>
-              ))}
+              )}
             {showRules && (
               <div className="max-h-72 overflow-auto rounded-lg border">
                 <Table>
                   <TableHeader>
                     <TableRow>
                       <TableHead>域名</TableHead>
-                      <TableHead>线路</TableHead>
                       <TableHead>说明</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -936,15 +884,6 @@ export function HostsOptimizerTab() {
                       <TableRow key={rule.domain}>
                         <TableCell className="font-mono text-xs">
                           {rule.domain}
-                        </TableCell>
-                        <TableCell>
-                          {rule.tier === "subscription" ? (
-                            <Badge className="bg-violet-500/10 text-violet-700">
-                              专属
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary">免费</Badge>
-                          )}
                         </TableCell>
                         <TableCell className="max-w-[260px] text-xs text-muted-foreground">
                           {rule.description ?? "-"}
@@ -1022,7 +961,7 @@ export function HostsOptimizerTab() {
                 setForm((prev) => ({
                   ...prev,
                   interval_minutes:
-                    Number.parseInt(e.target.value, 10) || 360,
+                    Number.parseInt(e.target.value, 10) || 720,
                 }))
               }
               className={`${INPUT_CLASS} w-24`}

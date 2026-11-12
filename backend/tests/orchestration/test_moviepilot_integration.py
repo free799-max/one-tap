@@ -213,6 +213,54 @@ async def test_setup_mediaserver_upserts_entry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_setup_mediaserver_supports_trimemedia(monkeypatch):
+    """飞牛影视按 trimemedia 类型写入账号密码与可选访问码。"""
+    store = {"MediaServers": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"success": True, "data": {"value": store.get(key)}}
+            )
+        store[key] = json.loads(request.content)
+        return httpx.Response(200, json={"success": True})
+
+    _mock_httpx(monkeypatch, handler)
+    client = MoviePilotClient()
+    ok, err = await client.setup_mediaserver(
+        "http://mp:3000",
+        "token123",
+        name="fnos-media",
+        type_="fnos-media",
+        host="http://192.168.1.20:5666",
+        api_key_ms="",
+        play_host="http://192.168.1.20:5666",
+        source_username="Cacty",
+        source_password="secret",
+        access_code="code-1",
+    )
+
+    assert ok is True
+    assert err is None
+    assert store["MediaServers"] == [
+        {
+            "name": "fnos-media",
+            "type": "trimemedia",
+            "enabled": True,
+            "config": {
+                "host": "http://192.168.1.20:5666",
+                "username": "Cacty",
+                "password": "secret",
+                "access_code": "code-1",
+                "play_host": "http://192.168.1.20:5666",
+            },
+            "sync_libraries": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_setup_downloader_returns_error_when_readback_missing(monkeypatch):
     """写入后回读不到条目时报验证失败。"""
 

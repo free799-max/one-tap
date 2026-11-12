@@ -276,3 +276,62 @@ def test_completed_layer_counts_its_full_size(monkeypatch):
 
     assert output[-1]["downloaded_size"] == 100
     assert output[-1]["total_size"] == 100
+
+
+@pytest.mark.asyncio
+async def test_pull_tries_next_mirror_without_pulling_source(monkeypatch):
+    pulled = []
+
+    async def docker(*args, **kwargs):
+        if args[:2] == ("image", "inspect"):
+            return 1, ""
+        return 0, ""
+
+    async def pull(image, **kwargs):
+        pulled.append(image)
+        if image.startswith("dedicated.example/"):
+            return 1, "403 Forbidden"
+        return 0, ""
+
+    monkeypatch.setattr(mirror_pull, "_docker", docker)
+    monkeypatch.setattr(mirror_pull, "_docker_pull", pull)
+
+    assert await mirror_pull.pull_with_mirror(
+        "metacubex/mihomo:v1.19.33",
+        {
+            "docker.io": [
+                "https://dedicated.example",
+                "https://free.example",
+            ]
+        },
+        allow_direct=False,
+    )
+    assert pulled == [
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+        "free.example/metacubex/mihomo:v1.19.33",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pull_never_falls_back_to_source_when_direct_is_disabled(monkeypatch):
+    pulled = []
+
+    async def inspect_image(*args, **kwargs):
+        return 1, ""
+
+    async def pull(image, **kwargs):
+        pulled.append(image)
+        return 1, "unavailable"
+
+    monkeypatch.setattr(mirror_pull, "_docker", inspect_image)
+    monkeypatch.setattr(mirror_pull, "_docker_pull", pull)
+
+    assert not await mirror_pull.pull_with_mirror(
+        "metacubex/mihomo:v1.19.33",
+        {"docker.io": ["https://dedicated.example", "https://free.example"]},
+        allow_direct=False,
+    )
+    assert pulled == [
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+        "free.example/metacubex/mihomo:v1.19.33",
+    ]

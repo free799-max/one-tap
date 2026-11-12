@@ -175,25 +175,38 @@ async def _docker_pull(
     return 0, ""
 
 
+def _mirror_targets(
+    image: str, acceleration: dict[str, list[str]] | None
+) -> list[tuple[str, tuple[str, str]]]:
+    targets: list[tuple[str, tuple[str, str]]] = []
+    for source, urls in (acceleration or {}).items():
+        for url in urls:
+            target, tag_target = _select_mirror(image, {source: [url]})
+            if (
+                target != image
+                and tag_target is not None
+                and target not in {item[0] for item in targets}
+            ):
+                targets.append((target, tag_target))
+    return targets
+
+
 async def pull_with_mirror(
     image: str,
     acceleration: dict[str, list[str]] | None,
     *,
     timeout: int = PULL_TIMEOUT,
     progress: PullProgress | None = None,
+    allow_direct: bool = True,
 ) -> bool:
-    """优先从加速域名拉取并改回原 tag；失败时回退直连。
-
-    返回是否成功。加速域名拉取失败不会抛出异常，交给直连或 compose
-    自己处理，避免单点故障阻断部署。
-    """
+    """依次从加速域名拉取并改回原 tag，可按调用方要求禁止回退直连。"""
     code, _ = await _docker("image", "inspect", image, timeout=30)
     if code == 0:
         # 本地已有该镜像时与 compose up 的行为保持一致，不主动刷新
         return True
 
-    target, tag_target = _select_mirror(image, acceleration)
-    if target != image and tag_target is not None:
+    targets = _mirror_targets(image, acceleration)
+    for target, tag_target in targets:
         code, error = await _docker_pull(
             target, timeout=timeout, progress=progress
         )
@@ -215,11 +228,15 @@ async def pull_with_mirror(
             )
         else:
             logger.info(
-                "通过加速域名 %s 拉取 %s 失败，回退直连：%s",
+                "通过加速域名 %s 拉取 %s 失败，尝试下一个地址：%s",
                 target,
                 image,
                 error[:200],
             )
+
+    if targets and not allow_direct:
+        logger.warning("%d 个加速地址均拉取失败，禁止回退源站：%s", len(targets), image)
+        return False
 
     code, error = await _docker_pull(image, timeout=timeout, progress=progress)
     if code != 0:

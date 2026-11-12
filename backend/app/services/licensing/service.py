@@ -29,6 +29,7 @@ from app.services.manage_client import (
     manage_base_urls,
     with_manage_fallback,
 )
+from app.services.system.config_service import system_config_service
 
 logger = logging.getLogger(__name__)
 
@@ -266,9 +267,12 @@ class LicensingService:
             raise APIException(f"授权管理端响应中的 {field} 无效", 502)
         return normalized
 
-    @staticmethod
-    def _apply_activation(
-        state: LicenseState, data: dict[str, Any], payload: dict[str, Any]
+    async def _apply_activation(
+        self,
+        db: AsyncSession,
+        state: LicenseState,
+        data: dict[str, Any],
+        payload: dict[str, Any],
     ) -> None:
         for field in ("certificate", "refresh_token"):
             if not isinstance(data.get(field), str) or not data[field]:
@@ -286,6 +290,24 @@ class LicensingService:
         state.activation_id = identifiers["activation_id"]
         state.last_refreshed_at = _utcnow()
         state.last_error = None
+        await self._apply_acceleration_url(db, data.get("acceleration_subscription_url"))
+
+    async def _apply_acceleration_url(self, db: AsyncSession, url: Any) -> None:
+        """保存管理端下发的加速订阅地址；未下发时保留本机已有值。"""
+        if not isinstance(url, str) or not url.strip():
+            return
+        value = url.strip()
+        if not value.lower().startswith(("http://", "https://")):
+            return
+        config = await system_config_service.get_or_create(db)
+        config.acceleration_subscription_url = value
+        await db.flush()
+
+    async def _clear_acceleration_url(self, db: AsyncSession) -> None:
+        config = await system_config_service.get_or_create(db)
+        if config.acceleration_subscription_url:
+            config.acceleration_subscription_url = ""
+            await db.flush()
 
     async def activate(
         self, db: AsyncSession, license_key: str, device_name: str | None = None
@@ -318,7 +340,7 @@ class LicensingService:
                 )
             except LicenseCertificateError as exc:
                 raise APIException("授权证书验证失败", 502) from exc
-            self._apply_activation(state, data, payload)
+            await self._apply_activation(db, state, data, payload)
             state.license_key = license_key.strip()
             await db.commit()
         except APIException as exc:
@@ -371,7 +393,7 @@ class LicensingService:
                 )
             except LicenseCertificateError as exc:
                 raise APIException("刷新后的授权证书验证失败", 502) from exc
-            self._apply_activation(state, data, payload)
+            await self._apply_activation(db, state, data, payload)
             await db.commit()
         except APIException as exc:
             # 刷新令牌失效（管理端重置、同机重新激活换了令牌等）时，
@@ -403,9 +425,11 @@ class LicensingService:
                     await db.commit()
                     raise
                 self._clear_authorization(state, exc.message)
+                await self._clear_acceleration_url(db)
                 await db.commit()
                 return await self.get_status(db)
         self._clear_authorization(state, None)
+        await self._clear_acceleration_url(db)
         await db.commit()
         return await self.get_status(db)
 

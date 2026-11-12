@@ -542,6 +542,37 @@ class LuckyClient:
         payload = data.get("data")
         return payload if isinstance(payload, dict) else {}
 
+    async def get_base_config(self) -> dict:
+        """读取基础配置；返回的 AdminPassword 是掩码字符串。"""
+        data = await self._request("GET", "/api/baseconfigure")
+        config = data.get("baseconfigure")
+        if not isinstance(config, dict):
+            raise LuckyError("Lucky 返回的基础配置格式异常", 502)
+        return config
+
+    async def update_admin(
+        self,
+        *,
+        account: str,
+        password: str,
+        old_password: str,
+        listen_port: int | None = None,
+        disable_tls: bool = False,
+    ) -> None:
+        """修改管理员账号密码，可选调整管理端口并关闭 HTTPS 监听。
+
+        Lucky 修改密码时必须提供原密码；改完账号密码后旧 token 即刻失效。
+        """
+        config = await self.get_base_config()
+        config["AdminAccount"] = account
+        config["AdminPassword"] = password
+        config["OldPassword"] = old_password
+        if listen_port is not None:
+            config["AdminWebListenPort"] = int(listen_port)
+        if disable_tls:
+            config["AdminWebListenTLS"] = False
+        await self._request("PUT", "/api/baseconfigure", json=config)
+
 
 def _sub_rule(
     instance_id: int,

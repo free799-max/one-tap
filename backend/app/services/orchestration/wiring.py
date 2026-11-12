@@ -19,6 +19,11 @@ from app.services.orchestration.deploy_task_service import deploy_task_manager
 
 logger = logging.getLogger(__name__)
 
+#: 可作为 MoviePilot 媒体服务器来源的应用（含飞牛影视这类外部服务）
+MEDIA_SERVER_APPLICATIONS = ("jellyfin", "emby", "fnos-media")
+#: 通过账号密码而非 API Key 接入的媒体服务器
+CREDENTIAL_MEDIA_SERVERS = {"fnos-media"}
+
 
 class WiringMixin:
     """把编排内来源应用自动装配进目标应用的能力。"""
@@ -105,26 +110,35 @@ class WiringMixin:
                 if bucket is None:
                     logger.warning("未知的集成类型 %s，跳过", type_)
                     continue
-                # from 为列表时取组内实际部署的那个来源应用
+                # from 为列表时取组内实际部署的那个来源应用；
+                # MoviePilot 可挂多个媒体服务器，组内另有已配置的播放器
+                # （如飞牛影视这类外部服务）也一并装配，避免只装第一个
                 sources = spec.get("from")
                 if isinstance(sources, str):
                     sources = [sources]
-                source_name = next(
-                    (s for s in sources or [] if s in app_configs), None
-                )
-                if source_name is None:
-                    continue
-                record = await self._wire_one(
-                    instance_name,
-                    target_name,
-                    target_cfg,
-                    target_error,
-                    type_,
-                    source_name,
-                    app_configs.get(source_name) or {},
-                    spec=spec,
-                )
-                results[bucket].append(record)
+                sources = list(sources or [])
+                if type_ == "mediaserver" and target_name == "moviepilot":
+                    for candidate in MEDIA_SERVER_APPLICATIONS:
+                        if candidate in app_configs and candidate not in sources:
+                            sources.append(candidate)
+                    selected = [s for s in sources if s in app_configs]
+                else:
+                    source_name = next(
+                        (s for s in sources if s in app_configs), None
+                    )
+                    selected = [source_name] if source_name else []
+                for source_name in selected:
+                    record = await self._wire_one(
+                        instance_name,
+                        target_name,
+                        target_cfg,
+                        target_error,
+                        type_,
+                        source_name,
+                        app_configs.get(source_name) or {},
+                        spec=spec,
+                    )
+                    results[bucket].append(record)
 
         if not target_results:
             return
@@ -154,7 +168,7 @@ class WiringMixin:
         """装配单个来源应用，返回记录（name/type/url/status/message）。"""
         record = {"name": source_name, "type": source_name, "url": None}
 
-        error = target_error or self._check_source(type_, source_cfg)
+        error = target_error or self._check_source(type_, source_name, source_cfg)
         if error:
             record.update(status="error", message=error)
             return record
@@ -189,10 +203,13 @@ class WiringMixin:
                     name=source_name,
                     type_=source_name,
                     host=url,
-                    api_key_ms=source_cfg["api_key"],
+                    api_key_ms=source_cfg.get("api_key") or "",
                     play_host=source_cfg["url"],
                     username=target_cfg.get("username"),
                     password=target_cfg.get("password"),
+                    source_username=source_cfg.get("username"),
+                    source_password=source_cfg.get("password"),
+                    access_code=source_cfg.get("access_code") or None,
                     **extras,
                 )
         except Exception as exc:
@@ -201,8 +218,13 @@ class WiringMixin:
 
         record["status"] = "ok" if ok else "error"
         record["message"] = message or ("装配成功" if ok else "装配失败")
-        if ok and type_ == "mediaserver" and target_name == "moviepilot":
-            # 媒体服务器侧需手动把 webhook 指回 MoviePilot（无稳定配置 API），
+        if (
+            ok
+            and type_ == "mediaserver"
+            and target_name == "moviepilot"
+            and source_name in ("jellyfin", "emby")
+        ):
+            # Jellyfin/Emby 需手动把 webhook 指回 MoviePilot（无稳定配置 API），
             # 记录建议的回调地址供前端展示给用户填写
             record["webhook_url"] = (
                 f"{target_cfg['url'].rstrip('/')}/api/v1/webhook"
@@ -237,7 +259,9 @@ class WiringMixin:
         return None
 
     @staticmethod
-    def _check_source(type_: str, source_cfg: dict) -> str | None:
+    def _check_source(
+        type_: str, source_name: str, source_cfg: dict
+    ) -> str | None:
         """来源应用前置条件检查，不满足返回原因。"""
         if not source_cfg.get("provisioned"):
             return "来源应用账号自动配置未完成"
@@ -247,8 +271,14 @@ class WiringMixin:
             source_cfg.get("username") and source_cfg.get("password")
         ):
             return "来源应用缺少账号密码"
-        if type_ == "mediaserver" and not source_cfg.get("api_key"):
-            return "来源应用缺少 API Key"
+        if type_ == "mediaserver":
+            if source_name in CREDENTIAL_MEDIA_SERVERS:
+                if not (
+                    source_cfg.get("username") and source_cfg.get("password")
+                ):
+                    return "来源应用缺少账号密码"
+            elif not source_cfg.get("api_key"):
+                return "来源应用缺少 API Key"
         return None
 
     async def _resolve_integration_url(
@@ -286,9 +316,11 @@ class WiringMixin:
                 self._get_project_container, source_project
             )
         except Exception:
+            # 外部服务（如飞牛影视）没有容器属正常情况，不打印堆栈
             logger.warning(
-                "定位 %s/%s 容器失败，直接使用内网地址", target_project, source_project,
-                exc_info=True,
+                "定位 %s/%s 容器失败，直接使用内网地址",
+                target_project,
+                source_project,
             )
             return source_url
 

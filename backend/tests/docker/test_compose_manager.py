@@ -508,7 +508,8 @@ async def test_prepull_forwards_download_progress(compose_manager):
     project = MagicMock()
     events = []
 
-    async def fake_pull(image, acceleration, *, progress=None):
+    async def fake_pull(image, acceleration, *, progress=None, allow_direct=True):
+        assert allow_direct is False
         assert progress is not None
         progress({
             "percentage": 50,
@@ -538,6 +539,7 @@ async def test_prepull_forwards_download_progress(compose_manager):
                 },
             ],
         })
+        return True
 
     with (
         patch(
@@ -575,6 +577,31 @@ async def test_prepull_forwards_download_progress(compose_manager):
             "bbbbbbbbbbbb ⠸ 等待中",
         ]),
     )
+
+
+@pytest.mark.asyncio
+async def test_prepull_failure_does_not_fall_back_to_compose(compose_manager):
+    with (
+        patch(
+            "app.services.compose.compose_service.manage_base_urls",
+            return_value=["https://manage.example.com"],
+        ),
+        patch.object(
+            compose_manager,
+            "_compose_images",
+            AsyncMock(return_value=["metacubex/mihomo:v1.19.33"]),
+        ),
+        patch(
+            "app.services.compose.compose_service.get_acceleration_map",
+            AsyncMock(return_value={"docker.io": ["https://mirror.example.com"]}),
+        ),
+        patch(
+            "app.services.compose.compose_service.pull_with_mirror",
+            AsyncMock(return_value=False),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="未继续回退源站"):
+            await compose_manager._prepull_images(MagicMock(), None)
 
 
 def test_parse_ps_preserves_restarting_status(compose_manager):

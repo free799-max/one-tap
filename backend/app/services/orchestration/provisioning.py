@@ -604,7 +604,16 @@ class ProvisionMixin:
             if not url or self._resolve_provision_client(app_name) is None:
                 continue
             stored_password = str(entry.get("password") or "")
-            password = unified_password or stored_password
+            # 外部服务（如飞牛影视）使用它自己的账号，用户填写的密码
+            # 优先于平台统一密码，否则会用统一密码覆盖而登录失败
+            external = bool(
+                (stored_configs.get(app_name) or {}).get("external")
+            )
+            password = (
+                stored_password or unified_password
+                if external
+                else unified_password or stored_password
+            )
             if not password:
                 # 旧实例可能只有访问地址（如后加入自动配置的应用），
                 # 补配置时按部署流程生成密码并落库

@@ -87,6 +87,10 @@ const AUTH_TYPE_LABELS: Record<AuthType, string> = {
 
 const INSPECTABLE_APPS = new Set(["jellyfin", "moviepilot", "qbittorrent"]);
 
+// 这些应用装配时依赖账号密码（如飞牛影视接入 MoviePilot 的飞牛模块），
+// 无认证/API Key 无法完成装配
+const CREDENTIAL_ONLY_APPS = new Set(["fnos-media"]);
+
 interface AppAuthConfig {
   url?: string;
   auth_type?: AuthType;
@@ -193,7 +197,12 @@ export function AppConfigPanel({
   }
 
   const handleOpen = () => {
-    setDraft({ ...authConfig });
+    const next = { ...authConfig };
+    if (app && CREDENTIAL_ONLY_APPS.has(app.app_name)) {
+      // 装配依赖账号密码，打开时直接切到该认证方式
+      next.auth_type = "basic";
+    }
+    setDraft(next);
     setDialogOpen(true);
   };
 
@@ -734,11 +743,13 @@ export function AppConfigPanel({
               <Label className="shrink-0">认证方式</Label>
               <div className="flex flex-1 flex-wrap gap-2">
                 {(
-                  [
-                    ["none", AUTH_TYPE_LABELS.none],
-                    ["basic", AUTH_TYPE_LABELS.basic],
-                    ["api_key", AUTH_TYPE_LABELS.api_key],
-                  ] as const
+                  CREDENTIAL_ONLY_APPS.has(app.app_name)
+                    ? [["basic", AUTH_TYPE_LABELS.basic] as const]
+                    : ([
+                        ["none", AUTH_TYPE_LABELS.none],
+                        ["basic", AUTH_TYPE_LABELS.basic],
+                        ["api_key", AUTH_TYPE_LABELS.api_key],
+                      ] as const)
                 ).map(([type, label]) => (
                   <Button
                     key={type}
@@ -758,6 +769,13 @@ export function AppConfigPanel({
                 ))}
               </div>
             </div>
+
+            {CREDENTIAL_ONLY_APPS.has(app.app_name) && (
+              <p className="-mt-2 text-xs text-muted-foreground">
+                飞牛影视需要登录账号密码，配置并检测通过后才能装配到
+                MoviePilot。
+              </p>
+            )}
 
             {draft.auth_type === "basic" && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

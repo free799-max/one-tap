@@ -2118,28 +2118,25 @@ class HostsAccelerationService:
         rules: list[dict[str, Any]],
         apps: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """核验专属规则已写入 AdGuard，并有运行中的应用使用加速 DNS。"""
-        subscription_rules = [
-            rule for rule in rules if rule.get("tier") == "subscription"
-        ]
+        """核验加速规则已写入 AdGuard，并有运行中的应用使用加速 DNS。"""
         running_apps = sum(
             bool(app.get("acceleration_enabled")) and app.get("status") == "running"
             for app in apps
         )
         result: dict[str, Any] = {
             "network_effective": False,
-            "network_rule_count": len(subscription_rules),
+            "network_rule_count": len(rules),
             "network_applied_rule_count": 0,
             "network_app_count": running_apps,
-            "network_message": "未获取到专属加速规则",
+            "network_message": "未获取到加速规则",
         }
-        if not subscription_rules:
+        if not rules:
             return result
         if not (
             config.hosts_optimizer_adguard_url
             and config.hosts_optimizer_adguard_password
         ):
-            result["network_message"] = "专属规则已同步，但 AdGuard 未配置"
+            result["network_message"] = "规则已同步，但 AdGuard 未配置"
             return result
 
         try:
@@ -2158,35 +2155,33 @@ class HostsAccelerationService:
             if not isinstance(rewrites, list):
                 raise ValueError("DNS 重写列表格式异常")
         except Exception as exc:
-            logger.warning("核验 AdGuard 专属加速规则失败：%s", exc)
+            logger.warning("核验 AdGuard 加速规则失败：%s", exc)
             result["network_effective"] = None
-            result["network_message"] = "无法连接 AdGuard 核验专属规则"
+            result["network_message"] = "无法连接 AdGuard 核验加速规则"
             return result
 
         applied = 0
-        for rule in subscription_rules:
-            desired = set(rule.get("answers") or [])
+        for rule in rules:
             actual = {
                 str(item.get("answer") or "")
                 for item in rewrites
                 if isinstance(item, dict) and item.get("domain") == rule["domain"]
             } - {""}
-            if desired and actual == desired:
+            if actual:
                 applied += 1
         result["network_applied_rule_count"] = applied
-        if applied < len(subscription_rules):
+        if applied < len(rules):
             result["network_message"] = (
-                f"专属规则仅 {applied}/{len(subscription_rules)} 条写入 AdGuard，"
-                "尚未完全生效"
+                f"加速规则仅 {applied}/{len(rules)} 条写入 AdGuard，尚未完全生效"
             )
         elif running_apps == 0:
             result["network_message"] = (
-                f"{applied} 条专属规则已写入 AdGuard，但还没有运行中的加速应用"
+                f"{applied} 条加速规则已写入 AdGuard，但还没有运行中的加速应用"
             )
         else:
             result["network_effective"] = True
             result["network_message"] = (
-                f"{applied} 条专属规则已写入 AdGuard，"
+                f"{applied} 条加速规则已写入 AdGuard，"
                 f"{running_apps} 个加速应用正在使用"
             )
         return result

@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import re
 import ssl
@@ -45,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 MAX_DOMAINS = 50
 PROBE_TIMEOUT = 4.0
-PROBE_CONCURRENCY = 24
-RESOLVE_CONCURRENCY = 8
+PROBE_CONCURRENCY = 4
+PROBE_ATTEMPTS = 1
+RESOLVE_CONCURRENCY = 4
 DOH_TIMEOUT = 8.0
 
 BROWSER_USER_AGENT = (
@@ -138,39 +138,11 @@ def normalize_domains(raw: list[str]) -> list[str]:
     return result
 
 
-def _normalize_answers(raw: Any) -> list[str]:
-    """把管理端返回的 IP 字段统一成去重后的字符串列表。"""
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        items = re.split(r"[\s,;]+", raw)
-    elif isinstance(raw, (list, tuple, set)):
-        items = list(raw)
-    else:
-        items = [raw]
-
-    answers: list[str] = []
-    for item in items:
-        value = str(item or "").strip()
-        if not value:
-            continue
-        try:
-            address = str(ipaddress.ip_address(value))
-        except ValueError:
-            logger.warning("忽略管理端下发的非法 IP：%s", value)
-            continue
-        if address not in answers:
-            answers.append(address)
-    return answers
-
-
 def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
-    """把管理端返回的加速规则整理成统一结构。
+    """把管理端返回的免费加速规则整理成统一结构。
 
-    兼容以下形态：
-    - ``["api.themoviedb.org", ...]``
-    - ``[{"domain": "...", "answers": ["1.2.3.4"]}, ...]``
-    - ``{"data": [...]}`` / ``{"dns_rules": [...]}`` / ``{"rules": [...]}``
+    兼容字符串和对象两种形态。旧版本下发过的 ``answers`` / ``tier`` 会被
+    忽略：解析地址统一由客户端本地优选，规则等级固定为 free。
     """
     items = payload
     if isinstance(payload, dict):
@@ -190,10 +162,8 @@ def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
     for item in items:
         if isinstance(item, str):
             domain = item
-            answers: list[str] = []
             priority = 100
             description = None
-            tier = "free"
         elif isinstance(item, dict):
             if item.get("enabled") is False:
                 continue
@@ -203,17 +173,9 @@ def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
                 or item.get("name")
                 or ""
             )
-            answers = _normalize_answers(
-                item.get("answers")
-                if item.get("answers") is not None
-                else item.get("ips")
-                if item.get("ips") is not None
-                else item.get("answer")
-            )
             priority = item.get("priority")
             priority = priority if isinstance(priority, int) else 100
             description = item.get("description") or item.get("note")
-            tier = "subscription" if item.get("tier") == "subscription" else "free"
         else:
             continue
 
@@ -229,10 +191,10 @@ def normalize_managed_rules(payload: Any) -> list[dict[str, Any]]:
         result.append(
             {
                 "domain": normalized,
-                "answers": answers,
+                "answers": [],
                 "priority": priority,
                 "description": str(description).strip() if description else None,
-                "tier": tier,
+                "tier": "free",
             }
         )
         if len(result) >= MAX_MANAGED_RULES:
@@ -637,7 +599,7 @@ class HostsOptimizerService:
     async def _probe(
         self, ip: str, domain: str, semaphore: asyncio.Semaphore
     ) -> float | None:
-        """对候选 IP 做 TLS + HTTP 探测，返回最小延迟（毫秒）。"""
+        """对候选 IP 做一次 TLS + HTTP 探测，返回延迟（毫秒）。"""
         path = CHECK_PATHS.get(domain, "/")
         request = (
             f"GET {path} HTTP/1.1\r\n"
@@ -647,7 +609,7 @@ class HostsOptimizerService:
             "Connection: close\r\n\r\n"
         ).encode()
         best: float | None = None
-        for _ in range(2):
+        for _ in range(PROBE_ATTEMPTS):
             async with semaphore:
                 started = time.monotonic()
                 writer = None
@@ -701,17 +663,11 @@ class HostsOptimizerService:
                 )
             ]
         domains = [rule["domain"] for rule in rules]
-        preset = {
-            rule["domain"]: list(rule.get("answers") or [])
-            for rule in rules
-            if rule.get("answers")
-        }
         top_n = max(1, min(5, int(config.get("top_n") or DEFAULT_HOSTS_OPTIMIZER_TOP_N)))
         proxy = config.get("proxy")
         started = time.monotonic()
         started_at = datetime.now(timezone.utc)
 
-        resolve_domains = [domain for domain in domains if domain not in preset]
         direct, proxied = self._make_doh_clients(proxy)
         try:
             resolve_semaphore = asyncio.Semaphore(RESOLVE_CONCURRENCY)
@@ -720,9 +676,7 @@ class HostsOptimizerService:
                 async with resolve_semaphore:
                     return domain, await self._resolve_domain(direct, proxied, domain)
 
-            resolved = await asyncio.gather(
-                *(resolve_one(d) for d in resolve_domains)
-            )
+            resolved = await asyncio.gather(*(resolve_one(d) for d in domains))
         finally:
             await direct.aclose()
             if proxied is not None:
@@ -732,9 +686,6 @@ class HostsOptimizerService:
         probe_targets: list[tuple[str, str]] = [
             (domain, ip) for domain, ips in resolved for ip in ips
         ]
-        for domain in domains:
-            if domain in preset:
-                probe_targets.extend((domain, ip) for ip in preset[domain])
         probe_jobs = [
             (
                 domain,
@@ -759,17 +710,9 @@ class HostsOptimizerService:
 
         best: dict[str, list[tuple[str, float]]] = {}
         for domain in domains:
-            if domain in preset:
-                # 管理端指定的 IP 也要实测；加速地址访问不正常的节点不写入重写，
-                # 避免把域名的解析改坏。
-                reachable_ips = {ip for ip, _ in reachable.get(domain, [])}
-                best[domain] = [
-                    (ip, 0.0) for ip in preset[domain] if ip in reachable_ips
-                ]
-            else:
-                best[domain] = sorted(
-                    reachable.get(domain, []), key=lambda item: item[1]
-                )[:top_n]
+            best[domain] = sorted(
+                reachable.get(domain, []), key=lambda item: item[1]
+            )[:top_n]
 
         adguard_errors = await self._sync_adguard(
             url,
@@ -789,14 +732,8 @@ class HostsOptimizerService:
             "errors": adguard_errors,
             "domains": {
                 domain: {
-                    "status": (
-                        "unreachable"
-                        if not best[domain]
-                        else "managed"
-                        if domain in preset
-                        else "ok"
-                    ),
-                    "source": "managed" if domain in preset else "local",
+                    "status": "unreachable" if not best[domain] else "ok",
+                    "source": "local",
                     "ips": [
                         {"ip": ip, "latency_ms": round(latency)}
                         for ip, latency in best[domain]

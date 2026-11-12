@@ -17,8 +17,8 @@ DEFAULT_HOSTS_OPTIMIZER_DOMAINS = [
 ]
 """默认参与优选的域名。"""
 
-DEFAULT_HOSTS_OPTIMIZER_INTERVAL_MINUTES = 360
-"""自动模式默认间隔（6 小时）。"""
+DEFAULT_HOSTS_OPTIMIZER_INTERVAL_MINUTES = 720
+"""自动模式默认间隔（12 小时）。"""
 
 DEFAULT_HOSTS_OPTIMIZER_TOP_N = 2
 """每个域名默认保留的 IP 数量。"""
@@ -109,15 +109,16 @@ class HostsOptimizerRunOut(BaseModel):
 
 
 class ManagedDnsRule(BaseModel):
-    """管理端下发的一条加速域名规则。"""
+    """管理端下发的一条免费加速域名规则。"""
 
     domain: str
     answers: list[str] = Field(
-        default_factory=list, description="管理端指定的 IP；为空时由客户端优选"
+        default_factory=list,
+        description="历史兼容字段；指定地址已下线，固为空并由客户端本地优选",
     )
     priority: int = 100
     description: str | None = None
-    tier: str = Field("free", description="free 免费线路 / subscription 专属加速")
+    tier: str = Field("free", description="历史兼容字段；专属等级已下线，固定为 free")
 
 
 class ManagedDnsRulesOut(BaseModel):

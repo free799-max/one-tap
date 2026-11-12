@@ -321,6 +321,69 @@ async def test_wire_mediaserver_picks_deployed_candidate(session_local, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_wire_mediaserver_includes_external_fnos_media(
+    session_local, monkeypatch
+):
+    """MoviePilot 同时装配本地播放器与飞牛影视外部服务。"""
+    group_id = await _seed_group(
+        session_local,
+        {
+            "moviepilot": _moviepilot_cfg(),
+            "jellyfin": {
+                "url": "http://192.168.1.10:8096",
+                "provisioned": True,
+                "api_key": "jf-key",
+            },
+            "fnos-media": {
+                "url": "http://192.168.1.20:5666",
+                "provisioned": True,
+                "username": "Cacty",
+                "password": "secret",
+                "access_code": "access-code",
+            },
+        },
+    )
+    mp_project = _slugify("media-moviepilot")
+    jellyfin_project = _slugify("media-jellyfin")
+    containers = {
+        mp_project: FakeContainer(mp_project, {"stack-net": {"Gateway": "172.18.0.1"}}),
+        jellyfin_project: FakeContainer(jellyfin_project, {"stack-net": {}}),
+    }
+    monkeypatch.setattr(
+        orchestration_service, "_get_project_container", lambda p: containers[p]
+    )
+    monkeypatch.setattr(
+        orchestration_service, "_get_container_port", lambda p, host_port: 8096
+    )
+    monkeypatch.setattr(
+        orchestration_service,
+        "_probe_from_container",
+        staticmethod(lambda container, url: True),
+    )
+    setup = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(MoviePilotClient, "setup_mediaserver", setup)
+
+    await orchestration_service._wire_group(group_id)
+
+    integrations = await _get_integrations(session_local, group_id)
+    names = [record["name"] for record in integrations["mediaservers"]]
+    assert names == ["jellyfin", "fnos-media"]
+    assert all(
+        record["status"] == "ok" for record in integrations["mediaservers"]
+    )
+
+    fnos_call = next(
+        call
+        for call in setup.await_args_list
+        if call.kwargs["name"] == "fnos-media"
+    )
+    assert fnos_call.kwargs["host"] == "http://192.168.1.20:5666"
+    assert fnos_call.kwargs["source_username"] == "Cacty"
+    assert fnos_call.kwargs["source_password"] == "secret"
+    assert fnos_call.kwargs["access_code"] == "access-code"
+
+
+@pytest.mark.asyncio
 async def test_wire_single_failure_does_not_block_others(session_local, monkeypatch):
     """单个来源装配失败不影响其他来源。"""
     group_id = await _seed_group(

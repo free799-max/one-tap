@@ -17,6 +17,8 @@ import {
   syncVaultwarden,
   getNetworkConfig,
   updateNetworkConfig,
+  deployNetworkLucky,
+  removeNetworkLucky,
   testNetwork,
   listNetworkHosts,
   listNetworkApps,
@@ -63,6 +65,9 @@ export type {
   NetworkProvider,
   NetworkConfig,
   NetworkUpdate,
+  NetworkLuckyDeployRequest,
+  NetworkLuckyDeployTask,
+  NetworkLuckyRemoveResult,
   NetworkHosts,
   NetworkApp,
   NetworkDdns,
@@ -128,6 +133,7 @@ export function useDeployVaultwarden() {
       email?: string | null;
       password?: string | null;
       web_port?: number | null;
+      config?: Record<string, unknown> | null;
     }) => deployVaultwarden(data),
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["integrations"] });
@@ -203,6 +209,43 @@ export function useNetworkConfig() {
   return useQuery<NetworkConfig>({
     queryKey: ["integrations", "network"],
     queryFn: getNetworkConfig,
+  });
+}
+
+export function useDeployNetworkLucky() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { startTask } = useDeployTasks();
+  return useMutation({
+    mutationFn: (data: {
+      username?: string | null;
+      password?: string | null;
+      web_port?: number | null;
+      config?: Record<string, unknown> | null;
+    }) => deployNetworkLucky(data),
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["integrations"] });
+      startTask(result.task_id);
+      toast.success("Lucky 部署任务已启动");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "Lucky 部署失败");
+    },
+  });
+}
+
+export function useRemoveNetworkLucky() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: removeNetworkLucky,
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["integrations"] });
+      toast.success(result.message);
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "删除 Lucky 失败");
+    },
   });
 }
 
@@ -289,6 +332,8 @@ export function useDeleteNetworkProxy() {
     mutationFn: (instanceId) => deleteNetworkProxy(instanceId),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["integrations", "network", "apps"] });
+      qc.invalidateQueries({ queryKey: ["integrations", "network", "ddns"] });
+      qc.invalidateQueries({ queryKey: ["integrations", "network"] });
       toast.success(data.message);
     },
     onError: onMutationError(toast),

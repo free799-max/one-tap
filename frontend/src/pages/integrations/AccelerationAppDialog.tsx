@@ -1,7 +1,7 @@
 /**
  * 添加应用加速弹窗
  *
- * 只展示当前未开启加速、且可以注入 DNS 的应用，按自动化方案分组，
+ * 可选展示支持应用的图标；可添加实例按自动化方案分组，
  * 支持一次选择多个应用。开启动作由外层逐个提交，避免并发重启应用。
  */
 
@@ -33,8 +33,15 @@ interface AccelerationAppDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   apps: AccelerationApp[];
+  supportedApps?: Array<{
+    name: string;
+    display_name: string;
+    icon: string | null;
+  }>;
   isPending?: boolean;
   onConfirm: (instanceIds: number[]) => void;
+  title?: string;
+  description?: string;
 }
 
 interface AppGroup {
@@ -87,18 +94,24 @@ export function AccelerationAppDialog({
   open,
   onOpenChange,
   apps,
+  supportedApps = [],
   isPending,
   onConfirm,
+  title = "添加应用加速",
+  description =
+    "只给选中的应用注入 DNS，并重启该应用使配置生效；不会修改宿主机或其他应用。",
 }: AccelerationAppDialogProps) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [collapsed, setCollapsed] = useState<string[]>([]);
+  const [supportedExpanded, setSupportedExpanded] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setQuery("");
     setSelected([]);
     setCollapsed([]);
+    setSupportedExpanded(false);
   }, [open]);
 
   const usable = useMemo(() => apps.filter((app) => app.can_enable), [apps]);
@@ -140,14 +153,61 @@ export function AccelerationAppDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Zap className="h-4 w-4 text-muted-foreground" />
-            添加应用加速
+            {title}
           </DialogTitle>
-          <DialogDescription>
-            只给选中的应用注入 DNS，并重启该应用使配置生效；不会修改宿主机或其他应用。
-          </DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
+          {supportedApps.length > 0 ? (
+            <section
+              aria-label="支持的应用"
+              className="rounded-xl border bg-muted/25 p-3"
+            >
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-medium">支持的应用</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant="secondary" className="px-1.5 text-[10px]">
+                    {supportedApps.length} 款
+                  </Badge>
+                  {supportedApps.length > 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setSupportedExpanded((value) => !value)}
+                      aria-expanded={supportedExpanded}
+                      className="flex items-center gap-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {supportedExpanded ? "收起" : "展开"}
+                      <ChevronDown
+                        className={`h-3 w-3 transition-transform ${
+                          supportedExpanded ? "rotate-180" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div
+                className={`grid grid-cols-2 gap-2 overflow-hidden sm:grid-cols-3 ${
+                  supportedExpanded ? "" : "max-h-10"
+                }`}
+              >
+                {supportedApps.map((app) => (
+                  <div
+                    key={app.name}
+                    className="flex min-w-0 items-center gap-2 rounded-lg bg-background px-2.5 py-2 shadow-sm ring-1 ring-border/60"
+                  >
+                    <AppIcon app={app} className="h-6 w-6 shrink-0" />
+                    <span className="truncate text-xs font-medium">
+                      {app.display_name}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <div className="flex items-center gap-2 rounded-lg border px-3 py-2">
             <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
             <input
@@ -247,39 +307,31 @@ export function AccelerationAppDialog({
                                 className="h-8 w-8 shrink-0 ring-1 ring-black/5"
                               />
                               <span className="min-w-0 flex-1">
-                                <span
-                                  className={`block truncate text-[13px] leading-tight ${
-                                    isSelected
-                                      ? "font-semibold text-primary"
-                                      : "font-medium text-foreground"
-                                  }`}
-                                >
-                                  {app.display_name}
-                                </span>
-                                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                                  {app.project_name ?? app.instance_name}
-                                </span>
-                                <span className="mt-1 flex flex-wrap items-center gap-1">
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    className={`truncate text-[13px] leading-tight ${
+                                      isSelected
+                                        ? "font-semibold text-primary"
+                                        : "font-medium text-foreground"
+                                    }`}
+                                  >
+                                    {app.display_name}
+                                  </span>
                                   {app.status === "running" ? (
-                                    <Badge className="bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700">
+                                    <Badge className="shrink-0 bg-emerald-500/10 px-1.5 py-0 text-[10px] text-emerald-700">
                                       运行中
                                     </Badge>
                                   ) : (
                                     <Badge
                                       variant="secondary"
-                                      className="px-1.5 py-0 text-[10px]"
+                                      className="shrink-0 px-1.5 py-0 text-[10px]"
                                     >
                                       {app.status}
                                     </Badge>
                                   )}
-                                  {app.services.length > 0 && (
-                                    <span className="truncate text-[10px] text-muted-foreground">
-                                      {app.services.slice(0, 2).join(", ")}
-                                      {app.services.length > 2
-                                        ? ` +${app.services.length - 2}`
-                                        : ""}
-                                    </span>
-                                  )}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                                  {app.project_name ?? app.instance_name}
                                 </span>
                               </span>
                               <span

@@ -155,6 +155,10 @@ class AppInstance(Base):
     acceleration_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text("false"), nullable=False
     )
+    # 是否通过应用级 HTTP 代理接入本机 Mihomo（网络加速）
+    proxy_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     # 实例级备份配置，可覆盖编排默认配置
     backup_config: Mapped[dict] = mapped_column(
         MutableDict.as_mutable(JSON), default=dict

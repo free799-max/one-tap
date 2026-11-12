@@ -1,7 +1,7 @@
 /**
  * 应用图标组件
  *
- * 当 `icon` 为 http(s) 外链或以 `/` 开头的本地路径（如后端上传图标接口
+ * 当 `icon` 为 http(s) 外链或以 `/` 开头的本地路径（如后端缓存接口
  * `/api/apps/<name>/icon`）时直接使用，否则回退到前端静态资源
  * `/icons/apps/<name>.svg`，加载失败时显示火箭占位。
  */
@@ -51,6 +51,8 @@ export function AppIcon({ app, className, frameless = false }: AppIconProps) {
         src={src}
         alt={app.name}
         className="h-full w-full object-contain"
+        loading="lazy"
+        decoding="async"
         onError={() => setFailed(true)}
       />
     </div>

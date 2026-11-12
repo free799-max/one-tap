@@ -762,12 +762,12 @@ class ImageService(common.BaseDockerService):
         result = self._client.images.prune(filters={"dangling": False})
         deleted_tags = [
             item["Untagged"]
-            for item in result.get("ImagesDeleted", [])
+            for item in result.get("ImagesDeleted") or []
             if "Untagged" in item
         ]
         return {
             "deleted": deleted_tags,
-            "space_reclaimed": result.get("SpaceReclaimed", 0),
+            "space_reclaimed": result.get("SpaceReclaimed") or 0,
         }
 
     def remove_image(self, image_id: str, force: bool = False):

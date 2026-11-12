@@ -75,7 +75,7 @@ async def test_hosts_optimizer_defaults(client):
     assert data["enabled"] is False
     assert data["mode"] == "manual"
     assert data["domains"] == DEFAULT_HOSTS_OPTIMIZER_DOMAINS
-    assert data["interval_minutes"] == 360
+    assert data["interval_minutes"] == 720
     assert data["top_n"] == 2
 
 
@@ -323,50 +323,3 @@ async def test_sync_adguard_prunes_stale_managed_domains(monkeypatch):
             {"domain": "old.example.com", "answer": "3.3.3.3"},
         ),
     ]
-
-
-async def test_optimize_skips_managed_ips_that_do_not_work(monkeypatch):
-    """加速地址探测不通时，不写入该域名的解析。"""
-    import importlib
-
-    module = importlib.import_module("app.services.system.hosts_optimizer_service")
-
-    probes: list[tuple[str, str]] = []
-    captured: dict = {}
-
-    async def _fake_probe(ip: str, domain: str, semaphore):
-        probes.append((ip, domain))
-        return 12.0 if ip == "1.1.1.1" else None
-
-    async def _fake_sync(url, username, password, domains, best, stale_domains=None):
-        captured["best"] = best
-        return []
-
-    monkeypatch.setattr(module.hosts_optimizer_service, "_probe", _fake_probe)
-    monkeypatch.setattr(module.hosts_optimizer_service, "_sync_adguard", _fake_sync)
-
-    result = await module.hosts_optimizer_service.optimize(
-        {
-            "adguard_url": "http://adguard",
-            "adguard_username": "admin",
-            "adguard_password": "secret",
-            "top_n": 2,
-            "proxy": None,
-            "managed_rules": [
-                {"domain": "broken.example.com", "answers": ["2.2.2.2"]},
-                {"domain": "ok.example.com", "answers": ["1.1.1.1"]},
-                {
-                    "domain": "*.wild.example.com",
-                    "answers": ["1.1.1.1", "2.2.2.2"],
-                },
-            ],
-        },
-        mode="manual",
-    )
-
-    assert captured["best"]["broken.example.com"] == []
-    assert captured["best"]["ok.example.com"] == [("1.1.1.1", 0.0)]
-    assert captured["best"]["*.wild.example.com"] == [("1.1.1.1", 0.0)]
-    assert ("2.2.2.2", "wild.example.com") in probes
-    assert result["domains"]["broken.example.com"]["status"] == "unreachable"
-    assert result["domains"]["ok.example.com"]["status"] == "managed"

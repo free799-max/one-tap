@@ -53,6 +53,8 @@ class VaultwardenDeployRequest(BaseModel):
     email: str | None = None
     password: str | None = None
     web_port: int | None = Field(default=None, ge=1, le=65535)
+    # 部署弹窗里的应用配置（存储、环境变量、特权模式）
+    config: dict | None = None
 
 
 class VaultwardenDeployTaskOut(BaseModel):
@@ -169,6 +171,34 @@ class LuckyConnectionOut(BaseModel):
     password_set: bool = False
     listen_port: int = 443
     enable_tls: bool = False
+    # OneTap 托管部署时才有意义：是否托管、容器是否运行、管理端口
+    managed: bool = False
+    running: bool = False
+    external: bool = False
+    external_name: str | None = None
+    web_port: int | None = None
+    web_url: str | None = None
+
+
+class NetworkLuckyDeployRequest(BaseModel):
+    """部署 OneTap 托管的 Lucky；空凭据沿用已保存配置。"""
+
+    username: str | None = None
+    password: str | None = None
+    web_port: int | None = Field(default=None, ge=1, le=65535)
+    # 部署弹窗里的应用配置（存储、环境变量、特权模式）
+    config: dict | None = None
+
+
+class NetworkLuckyDeployTaskOut(BaseModel):
+    task_id: str
+    instance_name: str
+    deploying: bool = True
+
+
+class NetworkLuckyRemoveOut(BaseModel):
+    removed: bool
+    message: str
 
 
 class NpmConnectionOut(BaseModel):

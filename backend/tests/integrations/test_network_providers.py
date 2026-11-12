@@ -731,6 +731,51 @@ async def test_network_apps_keep_proxy_of_closed_app(monkeypatch):
     assert saved.proxy_enabled is True
 
 
+@pytest.mark.asyncio
+async def test_list_network_apps_prunes_orphan_proxy_links():
+    """应用实例被删除后，遗留的代理规则与自动域名应被清理。"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with Session() as db:
+        db.add(
+            IntegrationConfig(
+                kind="network",
+                enabled=True,
+                config={
+                    "provider": "lucky",
+                    "ddns": {
+                        "enabled": True,
+                        "ipv4": {
+                            "enabled": True,
+                            "domains": ["orphan.example.com"],
+                            "manual_domains": [],
+                            "auto_domains": ["orphan.example.com"],
+                        },
+                    },
+                    "proxy_links": {
+                        "162": {
+                            "domains": ["orphan.example.com"],
+                            "network": "tcp4",
+                            "target_url": "http://192.168.1.17:9002",
+                            "listen_port": 80,
+                        }
+                    },
+                },
+            )
+        )
+        await db.commit()
+
+        apps = await integration_service.list_network_apps(db, "192.168.1.17")
+        state = await integration_service.network_ddns_state(db)
+
+    assert apps == []
+    assert state.ipv4.auto_domains == []
+    assert state.ipv4.domains == []
+
+
 def test_ddns_domain_filter_and_family_mapping():
     assert _is_ddns_domain("media.example.com") is True
     assert _is_ddns_domain("Media.Example.com") is True

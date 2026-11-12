@@ -77,6 +77,12 @@ class _FakeServer:
         ]
         self.ddns_tasks: list[dict] = []
         self.ddns_enabled = False
+        self.base_config: dict = {
+            "AdminAccount": "666",
+            "AdminPassword": "********",
+            "AdminWebListenPort": 16601,
+            "AdminWebListenTLS": True,
+        }
         # 置为 True 时模拟 Lucky v3：先取登录挑战，再提交 RSA 加密的登录请求
         self.encrypted_login = False
         self.login_payload: dict | None = None
@@ -192,6 +198,10 @@ class _FakeServer:
                 if path == "/api/ddns/configure":
                     return self._send(
                         {"ret": 0, "ddnsconfigure": {"Enable": outer.ddns_enabled}}
+                    )
+                if path == "/api/baseconfigure":
+                    return self._send(
+                        {"ret": 0, "baseconfigure": dict(outer.base_config)}
                     )
                 if path == "/api/ddnstasklist":
                     return self._send({"ret": 0, "data": outer.ddns_tasks})
@@ -353,6 +363,14 @@ class _FakeServer:
                     return self._send({"ret": 0})
                 if path == "/api/ddns/configure":
                     outer.ddns_enabled = bool(body.get("Enable"))
+                    return self._send({"ret": 0})
+                if path == "/api/baseconfigure":
+                    old = body.get("OldPassword")
+                    if body.get("AdminPassword") != "********" and not old:
+                        return self._send(
+                            {"ret": 1, "msg": "修改密码需要提供原密码"}
+                        )
+                    outer.base_config = {**body}
                     return self._send({"ret": 0})
                 if path == "/api/ddns":
                     key = (self._query().get("key") or [""])[0]
@@ -1287,3 +1305,23 @@ async def test_proxy_domains_auto_written_to_ddns(fake_server):
         assert ddns_domains("IPv6") == ["home6.example.com"]
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lucky_update_admin_requires_old_password_and_disables_tls(
+    fake_server,
+):
+    async with LuckyClient(fake_server.base_url, "666", "666") as client:
+        await client.update_admin(
+            account="onetap",
+            password="new-pass",
+            old_password="666",
+            listen_port=16601,
+            disable_tls=True,
+        )
+
+    assert fake_server.base_config["AdminAccount"] == "onetap"
+    assert fake_server.base_config["AdminPassword"] == "new-pass"
+    assert fake_server.base_config["OldPassword"] == "666"
+    assert fake_server.base_config["AdminWebListenPort"] == 16601
+    assert fake_server.base_config["AdminWebListenTLS"] is False

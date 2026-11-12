@@ -351,12 +351,17 @@ class ComposeService:
                     )
 
             try:
-                await pull_with_mirror(
-                    image, acceleration, progress=pull_progress
+                pulled = await pull_with_mirror(
+                    image,
+                    acceleration,
+                    progress=pull_progress,
+                    allow_direct=False,
                 )
-            except Exception:
-                logger.warning(
-                    "预拉取镜像失败，交给 compose 重试：%s", image, exc_info=True
+            except Exception as exc:
+                raise RuntimeError(f"镜像加速拉取失败，已停止部署：{image}") from exc
+            if not pulled:
+                raise RuntimeError(
+                    f"镜像加速拉取失败，已停止部署，未继续回退源站：{image}"
                 )
 
     @staticmethod

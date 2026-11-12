@@ -126,15 +126,43 @@ class MoviePilotIntegrationMixin:
         api_key_ms: str,
         play_host: str | None = None,
         webhook_host: str | None = None,
+        source_username: str | None = None,
+        source_password: str | None = None,
+        access_code: str | None = None,
         **_: Any,
     ) -> tuple[bool, str | None]:
         """按 name 向 MediaServers 设置项 upsert 一个媒体服务器并回读验证。
 
-        MediaServerConf 同样为嵌套结构：``config`` 子字典按
-        ``Jellyfin/Emby(**config)`` 实例化，键为 host/apikey/play_host。
+        Jellyfin/Emby 的 ``config`` 为 host/apikey/play_host；飞牛影视
+        （MoviePilot 侧类型 ``trimemedia``）使用账号密码登录，``config``
+        为 host/username/password/access_code/play_host。
         webhook 回调地址不写入 MoviePilot（MP 侧是被回调方），
         webhook_host 仅为 Jellyfin/Emby 侧后续配置预留，当前不使用。
         """
+        if type_ in ("fnos-media", "trimemedia"):
+            config: dict[str, Any] = {
+                "host": self._build_host_url(host, None),
+            }
+            if source_username:
+                config["username"] = source_username
+            if source_password:
+                config["password"] = source_password
+            if access_code:
+                config["access_code"] = access_code
+            if play_host:
+                config["play_host"] = self._build_host_url(play_host, None)
+            entry = {
+                "name": name,
+                # MoviePilot 的媒体服务器类型标识使用 trimemedia
+                "type": "trimemedia",
+                "enabled": True,
+                "config": config,
+                "sync_libraries": [],
+            }
+            return await self._upsert_setting_entry(
+                base_url, api_key, "MediaServers", entry
+            )
+
         config = {
             "host": self._build_host_url(host, None),
             "apikey": api_key_ms,

@@ -25,6 +25,7 @@ from app.api.catalog import router as catalog_router
 from app.api.dashboard import router as dashboard_router
 from app.api.settings import router as settings_router
 from app.api.integrations import router as integrations_router
+from app.api.acceleration import router as acceleration_router
 from app.api.license import router as license_router
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,11 @@ async def lifespan(app: FastAPI):
 
     hosts_optimizer_service.start_scheduler()
 
+    # 网络加速：按数据库配置自动更新本机 Mihomo 订阅。
+    from app.services.acceleration.sync_scheduler import accel_sync_service
+
+    accel_sync_service.start_scheduler()
+
     # 授权证书启动时刷新一次，之后按配置周期刷新。
     from app.services.licensing import licensing_service
 
@@ -205,6 +211,7 @@ async def lifespan(app: FastAPI):
     await music_auto_service.stop_scheduler()
     await reader_auto_service.stop_scheduler()
     await hosts_optimizer_service.stop_scheduler()
+    await accel_sync_service.stop_scheduler()
     await licensing_service.stop_scheduler()
     await installation_reporter.stop_scheduler()
 
@@ -273,6 +280,7 @@ app.include_router(dashboard_router)
 app.include_router(deploy_tasks_router, prefix="/api")
 app.include_router(settings_router)
 app.include_router(integrations_router)
+app.include_router(acceleration_router)
 app.include_router(license_router)
 
 # Docker 管理路由（依赖可选的 Docker 环境）

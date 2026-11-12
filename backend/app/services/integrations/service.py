@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import APIException
 from app.models.docker.compose import DockerComposeProject
 from app.models.integration import IntegrationConfig
+from app.models.orchestration import AppInstance
 from app.schemas.integration import (
     DdnsGoConnectionOut,
     IntegrationStatusOut,
@@ -82,6 +83,9 @@ from app.services.integrations.vaultwarden import (
 )
 from app.services.integrations.vaultwarden_deployment import (
     vaultwarden_deployment_service,
+)
+from app.services.integrations.lucky_deployment import (
+    lucky_deployment_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -1042,6 +1046,7 @@ class IntegrationService:
         lucky = config.get("lucky") or {}
         npm = config.get("npm") or {}
         ddnsgo = config.get("ddnsgo") or {}
+        lucky_runtime = await lucky_deployment_service.runtime_status(lucky)
         return NetworkConfigOut(
             enabled=record.enabled,
             provider=provider,
@@ -1053,6 +1058,12 @@ class IntegrationService:
                 password_set=_mask(lucky.get("password")),
                 listen_port=int(lucky.get("listen_port") or DEFAULT_LISTEN_PORT),
                 enable_tls=bool(lucky.get("enable_tls")),
+                managed=lucky_runtime["managed"],
+                running=lucky_runtime["running"],
+                external=lucky_runtime["external"],
+                external_name=lucky_runtime["external_name"],
+                web_port=lucky_runtime["web_port"],
+                web_url=lucky_runtime["web_url"],
             ),
             npm=NpmConnectionOut(
                 url=_text(npm.get("url")),
@@ -1218,6 +1229,14 @@ class IntegrationService:
         lucky = config.get("lucky") or {}
         npm = config.get("npm") or {}
         apps = await list_deployed_apps(db, host)
+        known_ids = {app.instance_id for app in apps}
+        if await self.prune_orphan_proxy_links(db, known_ids):
+            record = await self._get_record(db, NETWORK)
+            assert record is not None
+            config = self._network_config(record)
+            links = self._proxy_links(config)
+            lucky = config.get("lucky") or {}
+            npm = config.get("npm") or {}
         docker_keys = await _docker_app_keys()
         if docker_keys is not None:
             project_names, container_keys = docker_keys
@@ -1465,6 +1484,74 @@ class IntegrationService:
         record.config = config
         await db.commit()
         return NetworkProxyResult(ok=True, message=message)
+
+    async def prune_orphan_proxy_links(
+        self,
+        db: AsyncSession,
+        valid_instance_ids: set[int] | None = None,
+    ) -> bool:
+        """清理应用实例已不存在的反向代理规则，并同步自动 DDNS 域名。
+
+        应用被删除（如删除 Docker 编排项目）时不会级联到网络集成配置，
+        遗留的 ``proxy_links`` 会让域名一直出现在自动域名里且无法在界面上
+        删除。这里在读取时自愈；返回是否发生了清理。
+        """
+        if valid_instance_ids is None:
+            rows = await db.execute(select(AppInstance.id))
+            valid_instance_ids = {row[0] for row in rows.all()}
+
+        record = await self._get_record(db, NETWORK, create=False)
+        if record is None:
+            return False
+        config = self._network_config(record)
+        links = self._proxy_links(config)
+        if not links:
+            return False
+
+        orphan_ids = [
+            instance_id
+            for instance_id in links
+            if instance_id > 0 and instance_id not in valid_instance_ids
+        ]
+        if not orphan_ids:
+            return False
+
+        previous_links = links.copy()
+        for instance_id in orphan_ids:
+            links.pop(instance_id, None)
+        config["proxy_links"] = {str(k): v for k, v in links.items()}
+
+        provider = _provider(config)
+        try:
+            if self._network_configured(provider, config):
+                if provider == "npm":
+                    async with self._npm_client(config) as client:
+                        await client.login()
+                        for instance_id in orphan_ids:
+                            await client.delete_proxy_host(instance_id)
+                else:
+                    async with self._lucky_client(config) as client:
+                        await client.login()
+                        if links:
+                            lucky = config.get("lucky") or {}
+                            payloads = build_proxy_rules(
+                                links=links,
+                                default_port=(
+                                    _positive_int(lucky.get("listen_port"))
+                                    or DEFAULT_LISTEN_PORT
+                                ),
+                                default_tls=bool(lucky.get("enable_tls")),
+                            )
+                            await client.save_proxy_rules(payloads)
+                        else:
+                            await client.delete_proxy_rules()
+            await self._sync_proxy_ddns(config, previous_links)
+        except APIException as exc:
+            logger.warning("清理已删除应用的代理规则失败：%s", exc.message)
+
+        record.config = config
+        await db.commit()
+        return True
 
     async def list_npm_certificates(
         self, db: AsyncSession
@@ -1734,6 +1821,7 @@ class IntegrationService:
     async def network_ddns_state(
         self, db: AsyncSession
     ) -> NetworkDdnsStateOut:
+        await self.prune_orphan_proxy_links(db)
         record = await self._get_record(db, NETWORK)
         assert record is not None
         config = self._network_config(record)

@@ -15,6 +15,7 @@ from app.services.compose import compose_manager
 from app.services.integrations.vaultwarden import VaultwardenClient, VaultwardenSession
 from app.services.integrations.vaultwarden_deployment import (
     VAULTWARDEN_PROJECT,
+    _port_from_config,
     vaultwarden_deployment_service,
 )
 from app.services.system.storage_directory_service import storage_directory_service
@@ -66,6 +67,7 @@ async def test_deploy_endpoint_returns_task(client, monkeypatch):
         "email": "admin@example.com",
         "password": "master-pass",
         "web_port": None,
+        "app_config": None,
     }
     assert resp.json()["data"] == {
         "task_id": "vaultwarden-task-id",
@@ -94,8 +96,10 @@ async def test_deploy_uses_unified_system_credentials(db_session, monkeypatch):
     await db_session.flush()
     captured = {}
 
-    def _run_task(task_id, email, password, *, web_port):
-        captured.update(email=email, password=password, web_port=web_port)
+    def _run_task(task_id, email, password, *, web_port, app_config=None):
+        captured.update(
+            email=email, password=password, web_port=web_port, app_config=app_config
+        )
 
         async def _noop():
             return None
@@ -116,6 +120,7 @@ async def test_deploy_uses_unified_system_credentials(db_session, monkeypatch):
         "email": "admin@example.com",
         "password": "unified-pass",
         "web_port": None,
+        "app_config": None,
     }
 
 
@@ -216,6 +221,48 @@ async def test_first_deploy_registers_login_and_disables_signups(
     assert record.config["managed"] is True
     assert record.config["url"] == "http://192.168.1.20:18080"
     assert record.status["version"] == "1.34.3"
+
+
+async def test_deploy_applies_dialog_config(db_session, deploy_mocks, tmp_path):
+    data_host = tmp_path / "custom-data"
+    await vaultwarden_deployment_service.deploy_managed(
+        db_session,
+        email="admin@example.com",
+        password="master-pass",
+        app_config={
+            "volumes": [
+                {
+                    "host_path": str(data_host),
+                    "container_path": "/data",
+                    "mode": "rw",
+                }
+            ],
+            "vaultwarden_env": [
+                {"key": "TZ", "value": "UTC"},
+                {"key": "LOG_LEVEL", "value": "warn"},
+            ],
+            "privileged": True,
+        },
+    )
+    service = yaml.safe_load(deploy_mocks["create"][0]["content"])["services"][
+        "vaultwarden"
+    ]
+    assert service["volumes"] == [f"{data_host}:/data"]
+    assert service["environment"]["TZ"] == "UTC"
+    assert service["environment"]["LOG_LEVEL"] == "warn"
+    assert service["environment"]["SIGNUPS_ALLOWED"] == "true"
+    assert service["privileged"] is True
+
+
+def test_port_from_config_prefers_container_80():
+    config = {
+        "ports": [
+            {"container_port": 3012, "local_port": 3012},
+            {"container_port": 80, "local_port": 9090},
+        ]
+    }
+    assert _port_from_config(config) == 9090
+    assert _port_from_config(None) is None
 
 
 async def test_redeploy_preserves_data_and_only_logs_in(db_session, deploy_mocks):

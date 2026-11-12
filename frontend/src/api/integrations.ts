@@ -66,6 +66,7 @@ export interface VaultwardenDeployRequest {
   email?: string | null;
   password?: string | null;
   web_port?: number | null;
+  config?: Record<string, unknown> | null;
 }
 
 export interface VaultwardenDeployTask {
@@ -130,6 +131,30 @@ export interface LuckyConnection {
   password_set: boolean;
   listen_port: number;
   enable_tls: boolean;
+  managed: boolean;
+  running: boolean;
+  external: boolean;
+  external_name: string | null;
+  web_port: number | null;
+  web_url: string | null;
+}
+
+export interface NetworkLuckyDeployRequest {
+  username?: string | null;
+  password?: string | null;
+  web_port?: number | null;
+  config?: Record<string, unknown> | null;
+}
+
+export interface NetworkLuckyDeployTask {
+  task_id: string;
+  instance_name: string;
+  deploying: boolean;
+}
+
+export interface NetworkLuckyRemoveResult {
+  removed: boolean;
+  message: string;
 }
 
 export interface NpmConnection {
@@ -346,6 +371,20 @@ export function updateNetworkConfig(data: NetworkUpdate): Promise<NetworkConfig>
   return api
     .put("/integrations/network", data)
     .then((r) => r.data as NetworkConfig);
+}
+
+export function deployNetworkLucky(
+  data: NetworkLuckyDeployRequest
+): Promise<NetworkLuckyDeployTask> {
+  return api
+    .post("/integrations/network/lucky/deploy", data)
+    .then((r) => r.data as NetworkLuckyDeployTask);
+}
+
+export function removeNetworkLucky(): Promise<NetworkLuckyRemoveResult> {
+  return api
+    .delete("/integrations/network/lucky/instance", { timeout: 120000 })
+    .then((r) => r.data as NetworkLuckyRemoveResult);
 }
 
 export function testNetwork(data: {

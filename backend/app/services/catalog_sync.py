@@ -10,6 +10,7 @@ upsert 到本地 ``apps`` / ``app_orchestrations`` 表作为只读缓存：管�
 供前端展示模板更新历史与实例组升级提示。
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -25,6 +26,7 @@ from app.models.orchestration import (
     AppOrchestrationInstance,
     OrchestrationUpdateEvent,
 )
+from app.services.app_store import icon_cache
 from app.services.app_store.app_validator import validate_app_definition
 from app.services.manage_client import manage_base_urls, with_manage_fallback
 
@@ -79,6 +81,86 @@ def _resolve_icon(icon: str | None, base_url: str) -> str | None:
     if icon.startswith("/"):
         return f"{base_url}{icon}"
     return icon
+
+
+# 同步时并发下载图标的上限，避免管理端被瞬时打满
+_ICON_FETCH_CONCURRENCY = 6
+
+
+async def _cache_app_icons(
+    client: httpx.AsyncClient, items: list[dict], base_url: str
+) -> dict[str, str]:
+    """下载管理端图标到本地缓存，返回 {应用标识: 带指纹的本地 URL}。
+
+    只处理 http(s) 图标地址；裸文件名或本地相对路径保持原样，由前端
+    回退到静态资源。单个图标失败只告警，不影响应用数据同步。
+    """
+    targets: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        name = str(item.get("slug") or "").strip()
+        icon = _resolve_icon(item.get("icon"), base_url)
+        if not name or not icon or not icon.startswith(("http://", "https://")):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        targets.append((name, icon))
+    if not targets:
+        return {}
+
+    semaphore = asyncio.Semaphore(_ICON_FETCH_CONCURRENCY)
+
+    async def fetch(name: str, icon: str) -> tuple[str, str | None]:
+        async with semaphore:
+            try:
+                response = await client.get(icon)
+                response.raise_for_status()
+            except Exception as exc:
+                logger.warning("下载应用 '%s' 的图标失败：%s", name, exc)
+                return name, None
+
+            content = response.content or b""
+            ext = icon_cache.extension_for(
+                response.headers.get("content-type"), icon
+            )
+            if not content or ext is None:
+                logger.warning("应用 '%s' 的图标格式无法识别，跳过缓存", name)
+                return name, None
+            try:
+                digest = icon_cache.store(name, content, ext)
+            except OSError as exc:
+                logger.warning("缓存应用 '%s' 的图标失败：%s", name, exc)
+                return name, None
+            return name, icon_cache.url(name, digest)
+
+    results = await asyncio.gather(*(fetch(name, icon) for name, icon in targets))
+    return {name: value for name, value in results if value}
+
+
+def _app_icon_value(
+    name: str,
+    remote_icon: str | None,
+    base_url: str,
+    cached_icons: dict[str, str],
+    app: App | None,
+) -> str | None:
+    """决定应用最终使用的图标地址。
+
+    优先用本次同步刚缓存的本地地址；下载失败时保留已有本地缓存；两者都
+    没有才回退到管理端原始地址，保证图标始终可显示。
+    """
+    cached = cached_icons.get(name)
+    if cached:
+        return cached
+    if (
+        app is not None
+        and app.icon
+        and app.icon.startswith("/api/apps/")
+        and icon_cache.find(name) is not None
+    ):
+        return app.icon
+    return _resolve_icon(remote_icon, base_url)
 
 
 def _parse_naive_utc(value: str | None) -> datetime | None:
@@ -189,6 +271,9 @@ async def sync_apps() -> dict:
     远端返回空列表时不做清理，避免管理端异常导致缓存被清空。
     ``is_builtin`` 等本地字段保持不变。
 
+    管理端图标会下载到本地缓存，数据库保存带内容指纹的本地地址；
+    图标内容变化时指纹随之变化，浏览器缓存自然失效。
+
     MANAGE_BASE_URL 未配置时直接跳过。
     """
     if not manage_base_urls():
@@ -200,6 +285,7 @@ async def sync_apps() -> dict:
         )
         resp.raise_for_status()
         items = _extract_items(resp.json())
+        cached_icons = await _cache_app_icons(client, items, base_url)
 
     remote_names = {
         str(item.get("slug") or "").strip() for item in items if isinstance(item, dict)
@@ -245,7 +331,9 @@ async def sync_apps() -> dict:
                 "description": item.get("description"),
                 "category": item.get("category") or "other",
                 "tags": item.get("tags") or [],
-                "icon": _resolve_icon(item.get("icon"), base_url),
+                "icon": _app_icon_value(
+                    name, item.get("icon"), base_url, cached_icons, app
+                ),
                 "website": item.get("homepage"),
                 "source_url": item.get("repo_url"),
                 "architectures": item.get("architectures") or [],
@@ -287,6 +375,18 @@ async def sync_apps() -> dict:
         if remote_names:
             removed = await _delete_removed_apps(session, remote_names)
         await session.commit()
+
+        # 清理已下架/改名应用遗留的图标文件
+        try:
+            rows = await session.execute(select(App.name, App.icon))
+            keep = {
+                icon_cache.safe_name(name)
+                for name, icon in rows
+                if icon and icon.startswith("/api/apps/")
+            }
+            icon_cache.prune(keep)
+        except OSError as exc:
+            logger.warning("清理应用图标缓存失败：%s", exc)
 
     stats = {
         "created": created,

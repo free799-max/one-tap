@@ -364,6 +364,23 @@ def test_prune_unused_images_counts_tags_not_layers(mock_docker_module):
 
 
 @patch("app.services.docker.docker_common.docker")
+def test_prune_unused_images_accepts_null_results(mock_docker_module):
+    """没有可清理镜像时，Docker 可能返回 null 而不是空列表。"""
+
+    mock_client = MagicMock()
+    mock_client.images.prune.return_value = {
+        "ImagesDeleted": None,
+        "SpaceReclaimed": None,
+    }
+    mock_docker_module.from_env.return_value = mock_client
+
+    manager = DockerManager()
+    result = manager.prune_unused_images()
+
+    assert result == {"deleted": [], "space_reclaimed": 0}
+
+
+@patch("app.services.docker.docker_common.docker")
 @patch("app.services.docker.docker_common.time")
 def test_pull_progress_counts_100_percent_as_completed(mock_time, mock_docker_module):
     """层百分比达到 100 时，即使状态尚未变为 Pull complete，也应计入已完成层数。"""

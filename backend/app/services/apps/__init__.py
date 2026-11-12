@@ -16,6 +16,7 @@ from app.services.apps.registry import get_client, list_supported_clients, regis
 # 自动注册已实现的应用客户端
 from app.services.apps.comic_auto import ComicAutoClient
 from app.services.apps.ermao_library import ErmaoLibraryClient
+from app.services.apps.fnos_media import FnosMediaClient
 from app.services.apps.jellyfin import JellyfinClient
 from app.services.apps.kavita import KavitaClient
 from app.services.apps.komga import KomgaClient
@@ -40,6 +41,7 @@ __all__ = [
     "list_supported_clients",
     "ComicAutoClient",
     "ErmaoLibraryClient",
+    "FnosMediaClient",
     "JellyfinClient",
     "KavitaClient",
     "KomgaClient",

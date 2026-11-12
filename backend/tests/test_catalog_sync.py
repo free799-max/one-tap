@@ -1,5 +1,9 @@
 """应用与编排方案目录同步服务（catalog_sync）测试。"""
 
+import hashlib
+import os
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -83,22 +87,43 @@ def _make_item(name: str, **overrides) -> dict:
 class _FakeResponse:
     """模拟 httpx 响应。"""
 
-    def __init__(self, payload):
+    def __init__(
+        self,
+        payload=None,
+        *,
+        content: bytes = b"",
+        status_code: int = 200,
+        headers: dict | None = None,
+    ):
         self._payload = payload
+        self.content = content
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "http://manage.test")
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=request,
+                response=httpx.Response(self.status_code, request=request),
+            )
 
     def json(self):
         return self._payload
 
 
 class _FakeClient:
-    """模拟 httpx.AsyncClient，按配置返回响应或抛异常。"""
+    """模拟 httpx.AsyncClient，按配置返回响应或抛异常。
 
-    def __init__(self, *args, payload=None, exc=None, **kwargs):
+    ``icons`` 为 ``{图标 URL: 字节内容}``；遇到未配置的图标地址时模拟
+    网络失败，用于验证同步的回退逻辑。
+    """
+
+    def __init__(self, *args, payload=None, exc=None, icons=None, **kwargs):
         self._payload = payload
         self._exc = exc
+        self._icons = icons
 
     async def __aenter__(self):
         return self
@@ -109,16 +134,26 @@ class _FakeClient:
     async def get(self, url):
         if self._exc is not None:
             raise self._exc
+        if url.endswith("/icon") or url.rsplit("/", 1)[-1].endswith(".svg"):
+            content = (self._icons or {}).get(url)
+            if content is None:
+                raise httpx.ConnectError("图标下载失败", request=httpx.Request("GET", url))
+            return _FakeResponse(
+                content=content,
+                headers={"content-type": "image/svg+xml"},
+            )
         return _FakeResponse(self._payload)
 
 
-def _patch_http(monkeypatch, payload=None, exc=None):
+def _patch_http(monkeypatch, payload=None, exc=None, icons=None):
     """替换 catalog_sync 模块内的 httpx 为假实现。"""
     monkeypatch.setattr(
         catalog_sync,
         "httpx",
         SimpleNamespace(
-            AsyncClient=lambda *a, **kw: _FakeClient(*a, payload=payload, exc=exc, **kw)
+            AsyncClient=lambda *a, **kw: _FakeClient(
+                *a, payload=payload, exc=exc, icons=icons, **kw
+            )
         ),
     )
 
@@ -136,7 +171,7 @@ def _reset_sync_state():
 
 
 @pytest_asyncio.fixture
-async def sync_db(monkeypatch):
+async def sync_db(monkeypatch, tmp_path):
     """提供内存数据库会话工厂，并注入到 catalog_sync 与配置中。"""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with engine.begin() as conn:
@@ -147,6 +182,7 @@ async def sync_db(monkeypatch):
     )
     monkeypatch.setattr(catalog_sync, "async_session", SessionLocal)
     monkeypatch.setattr(settings, "MANAGE_BASE_URL", "http://manage.test")
+    monkeypatch.setattr(settings, "APP_ICON_DIR", str(tmp_path / "app-icons"))
     yield SessionLocal
     await engine.dispose()
 
@@ -1014,22 +1050,103 @@ async def test_sync_apps_skipped_when_manage_base_url_empty(sync_db, monkeypatch
     assert result == {"skipped": True}
 
 
-async def test_sync_apps_resolves_relative_icon_to_manage_url(
-    sync_db, monkeypatch
-):
-    """管理端上传的图标是相对路径时，补全为可访问的绝对 URL。"""
+async def test_sync_apps_caches_icon_locally(sync_db, monkeypatch):
+    """管理端图标下载到本地，数据库保存带内容指纹的本地地址。"""
+    icon_url = "http://manage.test/api/public/apps/1/icon"
+    content = b"<svg><title>jellyfin</title></svg>"
     _patch_http(
         monkeypatch,
         payload={
             "success": True,
             "data": [_make_app_item("jellyfin", icon="/api/public/apps/1/icon")],
         },
+        icons={icon_url: content},
     )
 
     await catalog_sync.sync_apps()
 
     app = await _get_app(sync_db, "jellyfin")
-    assert app.icon == "http://manage.test/api/public/apps/1/icon"
+    digest = hashlib.sha256(content).hexdigest()[:12]
+    assert app.icon == f"/api/apps/jellyfin/icon?v={digest}"
+    cached = Path(settings.APP_ICON_DIR) / "apps" / "jellyfin.svg"
+    assert cached.read_bytes() == content
+
+
+async def test_sync_apps_updates_icon_when_content_changes(sync_db, monkeypatch):
+    """图标内容变化时指纹和地址随之变化，旧文件被覆盖。"""
+    icon_url = "http://manage.test/api/public/apps/1/icon"
+    payload = {
+        "success": True,
+        "data": [_make_app_item("jellyfin", icon="/api/public/apps/1/icon")],
+    }
+    _patch_http(monkeypatch, payload=payload, icons={icon_url: b"<svg>one</svg>"})
+    await catalog_sync.sync_apps()
+    first = (await _get_app(sync_db, "jellyfin")).icon
+
+    _patch_http(monkeypatch, payload=payload, icons={icon_url: b"<svg>two</svg>"})
+    await catalog_sync.sync_apps()
+
+    app = await _get_app(sync_db, "jellyfin")
+    assert app.icon != first
+    cached = Path(settings.APP_ICON_DIR) / "apps" / "jellyfin.svg"
+    assert cached.read_bytes() == b"<svg>two</svg>"
+
+
+async def test_sync_apps_keeps_cached_icon_when_download_fails(
+    sync_db, monkeypatch
+):
+    """图标下载失败时保留上一次的本地缓存，不影响应用数据同步。"""
+    icon_url = "http://manage.test/api/public/apps/1/icon"
+    payload = {
+        "success": True,
+        "data": [_make_app_item("jellyfin", icon="/api/public/apps/1/icon")],
+    }
+    _patch_http(monkeypatch, payload=payload, icons={icon_url: b"<svg>icon</svg>"})
+    await catalog_sync.sync_apps()
+    first = (await _get_app(sync_db, "jellyfin")).icon
+
+    _patch_http(monkeypatch, payload=payload)
+
+    stats = await catalog_sync.sync_apps()
+
+    assert stats["created"] == 0
+    assert (await _get_app(sync_db, "jellyfin")).icon == first
+    cached = Path(settings.APP_ICON_DIR) / "apps" / "jellyfin.svg"
+    assert cached.read_bytes() == b"<svg>icon</svg>"
+
+
+async def test_sync_apps_prunes_icons_of_removed_apps(sync_db, monkeypatch):
+    """应用被管理端下架后，其本地图标文件一并清理。"""
+    icon_url_a = "http://manage.test/api/public/apps/1/icon"
+    _patch_http(
+        monkeypatch,
+        payload={
+            "success": True,
+            "data": [_make_app_item("app-a", icon="/api/public/apps/1/icon")],
+        },
+        icons={icon_url_a: b"<svg>a</svg>"},
+    )
+    await catalog_sync.sync_apps()
+    cached_a = Path(settings.APP_ICON_DIR) / "apps" / "app-a.svg"
+    assert cached_a.is_file()
+    # 超过保护期的文件才会被清理，避免并发同步误删刚写入的图标
+    old = time.time() - 3600
+    os.utime(cached_a, (old, old))
+
+    icon_url_b = "http://manage.test/api/public/apps/2/icon"
+    _patch_http(
+        monkeypatch,
+        payload={
+            "success": True,
+            "data": [_make_app_item("app-b", icon="/api/public/apps/2/icon")],
+        },
+        icons={icon_url_b: b"<svg>b</svg>"},
+    )
+    await catalog_sync.sync_apps()
+
+    assert await _get_app(sync_db, "app-a") is None
+    assert not cached_a.exists()
+    assert (Path(settings.APP_ICON_DIR) / "apps" / "app-b.svg").is_file()
 
 
 

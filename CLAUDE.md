@@ -259,8 +259,9 @@ DockerComposeProject 1--1 DockerComposeStack
 - 删除托管 AdGuard 会先关闭所有已开启加速的应用并恢复原网络配置，再把数据目录移入 `<应用数据目录>/_backups`，然后删除 Compose 项目与网络，最后清空 `hosts_optimizer_adguard_*` 中的地址/端口配置；账号密码保留，重新部署时从空数据全新初始化。
 - 旧版自建 Compose 的 `<应用数据目录>/adguard/{work,conf}` 在首次迁移时复制到应用市场目录后删除，避免用户删除 AdGuard 后重新部署又从旧目录复制回过期密码和配置。
 - 重新部署会复用已有的 `work/conf` 数据（DNS 重写、过滤规则不丢）。启动容器前先把系统配置里的 AdGuard 账号密码哈希写回 `AdGuardHome.yaml`（按安装弹窗的 conf 挂载路径确定，内置兜底用 `<应用数据目录>/adguard/conf`），避免旧数据密码与系统配置不一致导致 401/403。后端容器没有挂载宿主机目录时，通过 Docker 临时辅助容器（复用本地已有镜像）读写文件，不需要额外挂载；配置写回后已用 AdGuard `--check-config` 验证。系统配置里的密码为空时会生成新密码并写回数据。运行期间在「网络优化」里修改托管实例的账号密码并保存时，`PUT /api/settings/hosts-optimizer/config` 会按容器挂载反查配置文件、写入新凭据并重启容器（`hosts_acceleration_service.apply_managed_credentials`）。
-- 加速域名规则由配套管理端统一维护：OneTap 从 `GET {MANAGE_BASE_URL}/api/public/dns-rules` 拉取，缓存到 `system_config.hosts_optimizer_managed_rules`；每次优选前自动同步一次，管理端暂不可用时使用缓存。规则带 `answers` 时直接写入这些 IP，不带时由客户端探测最快 IP。
-- 管理端仓库 `nas-deck-manage` 提供「DNS 加速」页面与 `/api/dns-rules` CRUD，公共接口 `/api/public/dns-rules` 只返回启用中的规则。
+- 加速域名规则由配套管理端统一维护：OneTap 从 `GET {MANAGE_BASE_URL}/api/public/dns-rules` 拉取，缓存到 `system_config.hosts_optimizer_managed_rules`；每次优选前自动同步一次，管理端暂不可用时使用缓存。规则不再下发指定解析 IP，统一由客户端探测最快 IP（`tier`/`answers` 仅为旧版兼容字段）。
+- 管理端仓库 `nas-deck-manage` 提供「DNS 加速」页面与 `/api/dns-rules` CRUD，公共接口 `/api/public/dns-rules` 只返回启用中的免费规则；这些规则同时会编译进 Mihomo 订阅的分流规则。独立的 HAProxy DNS 加速节点已下线，两台 VPS 只作为 Mihomo（VLESS Reality）出口节点。
+- 节点侧 sing-box 使用同一份规则生成白名单路由（`sniff` 后按域名/IP 匹配，`final: block`），只转发管理端规则命中的目标；规则增删会自动重发所有已发布节点。
 - 自动部署需要先在「存储配置」中设置应用数据目录。走应用市场部署时数据位于 `<应用数据目录>/onetap-adguard/adguardhome/{work,conf}`；旧版自建 Compose 的 `<应用数据目录>/adguard/{work,conf}` 会在首次重新部署时自动复制过去。
 - 测试：`backend/tests/system/test_hosts_acceleration.py`。
 
@@ -295,13 +296,15 @@ DockerComposeProject 1--1 DockerComposeStack
 - 认证方式枚举统一为 `none` / `basic` / `api_key`（历史数据里的 `apikey` 客户端均兼容）。编排实例的 `app_configs` 里账号密码与 API Key 可以同时存在，`auth_type` 只标记当前生效的一套；切换认证方式或保存配置都不会清除另一套凭据，账号自动配置也只在 `auth_type` 为空或 `none` 时补成 `basic`，不覆盖用户显式选择的 `api_key`。
 - 统一检测入口为 `POST /api/orchestrations/auth/verify`，由 `orchestration_service.verify_app_auth()` 根据 `app_name` 调度对应客户端。
 - 新增应用时，只需新增客户端子包并注册，无需修改 API 路由或 Service 调度逻辑。
-- 当前已注册客户端：`moviepilot`、`qbittorrent`、`jellyfin`（`emby` 复用）、`comic-auto`、`komga`、`kavita`、`music-dl`、`music-tag-web`、`navidrome`、`reader`、`ermao-library`。
+- 当前已注册客户端：`moviepilot`、`qbittorrent`、`jellyfin`（`emby` 复用）、`fnos-media`、`comic-auto`、`komga`、`kavita`、`music-dl`、`music-tag-web`、`navidrome`、`reader`、`ermao-library`。
+- `fnos-media`（飞牛影视）是 fnOS 自带的外部服务：没有官方 API 文档，客户端使用 Web 端私有接口（`/v/api/v1`，请求需 `authx` 签名；新版登录在 `/api/v2/user/loginByPassword`，旧版回退 `/v/api/v1/login`）。它不会被平台部署，`provision` 只验证用户填写的账号密码可登录（不改密码），验证通过后标记 `provisioned`，供后续装配使用；外部服务补配置时优先使用用户保存的密码，不用系统统一密码覆盖。
 
 ### 应用检测/优化与自动装配
 
 - `AppClient.inspect(ctx)` / `apply_fix(ctx, item_ids)` 提供每应用检测项与一键修复（qBittorrent 优化项、Jellyfin 库/Webhook、MoviePilot 装配完整性）；调度入口为 `GET/POST /api/orchestrations/instances/{id}/apps/{app}/inspect[/fix]`。
-- 部署/修复后 `WiringMixin._wire_group` 按编排模板 `app_composition` 条目里的 `integrations` 声明自动装配跨应用集成（当前：把 qBittorrent、Jellyfin/Emby 写入 MoviePilot 的 `Downloaders`/`MediaServers` 系统设置），结果落库 `group.app_configs[app]['integrations']`；手动重跑：`POST /api/orchestrations/instances/{id}/wire`。
-- 手动重跑装配会先执行 `ProvisionMixin._reprovision_pending`：对 `app_configs` 里尚未 `provisioned` 的应用补做账号自动配置（复用统一密码和部署配置里的 `API_TOKEN`），覆盖后端重启导致后台配置协程中断的场景，然后再装配。手动重跑同样返回进度任务 ID（`POST .../wire` 的 `task_id`），前端会把它接入全局进度弹窗。
+- 部署/修复后 `WiringMixin._wire_group` 按编排模板 `app_composition` 条目里的 `integrations` 声明自动装配跨应用集成（当前：把 qBittorrent、Jellyfin/Emby、飞牛影视写入 MoviePilot 的 `Downloaders`/`MediaServers` 系统设置），结果落库 `group.app_configs[app]['integrations']`；手动重跑：`POST /api/orchestrations/instances/{id}/wire`。
+- MoviePilot 目标可挂多个媒体服务器：`from` 列表声明的候选只装组内实际存在的那个；此外组内已配置的 `MEDIA_SERVER_APPLICATIONS`（jellyfin/emby/fnos-media）会一并装配，避免本地播放器与飞牛影视这类外部服务二选一。飞牛影视写入 `MediaServers` 时 `type` 使用 MoviePilot 的 `trimemedia`，`config` 为 `host/username/password/access_code/play_host`（`access_code` 对应飞牛启用设备访问码时的可选配置）。
+- 手动重跑装配会先执行 `ProvisionMixin._reprovision_pending`：对 `app_configs` 里尚未 `provisioned` 的应用补做账号自动配置（复用统一密码和部署配置里的 `API_TOKEN`；外部服务改用用户保存的账号密码），覆盖后端重启导致后台配置协程中断的场景，然后再装配。手动重跑同样返回进度任务 ID（`POST .../wire` 的 `task_id`），前端会把它接入全局进度弹窗。
 - 自动配置的等待策略（`ProvisionMixin`）：部署凭据在开始配置前先写入 `app_configs`（已有密码保持不变，仅在成功后更新为目标密码；失败时保留旧密码，保证「重新装配」能用当前有效密码登录后改密）；配置期间每 15 秒刷新一次进度并附带容器日志尾行（`PROVISION_HEARTBEAT_SECONDS`），避免 MoviePilot 首次启动下载浏览器内核等长耗时场景被误判超时；首次失败后若容器仍在运行，按 `PROVISION_RETRY_DELAYS`（60/180/300 秒）自动重试。
 - 需要容器内执行命令的应用（如 Music Tag Web 免费版改密）通过 `AppClient.provision(command_runner=...)` 使用调度方注入的回调，客户端本身不依赖 Docker SDK；回调实现为 `ProvisionMixin._make_command_runner`（`container.exec_run`）。
 - 客户端首次启动超时：MoviePilot 首次启动会下载 200MB+ 浏览器内核，`PROVISION_TIMEOUT` 为 3600 秒；Jellyfin 首次初始化数据库较慢，为 1800 秒。服务暂时返回 5xx（如 Jellyfin `503`）时继续轮询而不是抛出；Jellyfin 的 `/Startup/User` 在服务未初始化完成时可能返回 404，此时不能视为向导已完成，必须重试。

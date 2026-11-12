@@ -31,6 +31,7 @@ from app.services.system.port_allocator import (
     release_ports,
     reserve_ports,
 )
+from app.services.system.storage import StoragePathResolver
 from app.services.system.storage_directory_service import storage_directory_service
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,62 @@ Progress = Callable[[str, int, str, str | None], None]
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _deploy_options(
+    host_base: str, mount_base: str, app_config: dict[str, Any] | None
+) -> tuple[Path, dict[str, str], bool]:
+    """从部署弹窗的配置里解析数据目录、环境变量与特权模式。"""
+    data_host = Path(host_base) / VAULTWARDEN_PROJECT / "vaultwarden" / "data"
+    env: dict[str, str] = {}
+    privileged = False
+    if not isinstance(app_config, dict):
+        return data_host, env, privileged
+
+    resolver = StoragePathResolver(app_data=(host_base, mount_base))
+    volumes = app_config.get("volumes")
+    if isinstance(volumes, list):
+        for item in volumes:
+            if not isinstance(item, dict):
+                continue
+            if _text(item.get("container_path")) != "/data":
+                continue
+            raw = _text(item.get("host_path"))
+            if not raw:
+                break
+            if not raw.startswith("/"):
+                raw = f"{VAULTWARDEN_PROJECT}/{raw.strip('/')}"
+            data_host = Path(resolver.to_host_path(raw))
+            break
+
+    env_rows = app_config.get("vaultwarden_env")
+    if isinstance(env_rows, list):
+        for row in env_rows:
+            if isinstance(row, dict) and _text(row.get("key")):
+                env[_text(row.get("key"))] = _text(row.get("value"))
+
+    privileged = bool(app_config.get("privileged"))
+    return data_host, env, privileged
+
+
+def _port_from_config(app_config: dict[str, Any] | None) -> int | None:
+    """取部署弹窗里映射到容器 80 端口的本地端口。"""
+    if not isinstance(app_config, dict):
+        return None
+    ports = app_config.get("ports")
+    if not isinstance(ports, list):
+        return None
+    for item in ports:
+        if not isinstance(item, dict):
+            continue
+        try:
+            container_port = int(item.get("container_port"))
+            local_port = int(item.get("local_port"))
+        except (TypeError, ValueError):
+            continue
+        if container_port == 80:
+            return local_port
+    return None
 
 
 class VaultwardenDeploymentService:
@@ -109,6 +166,7 @@ class VaultwardenDeploymentService:
         email: str | None = None,
         password: str | None = None,
         web_port: int | None = None,
+        app_config: dict[str, Any] | None = None,
     ) -> str:
         from app.core.background import create_background_task
         from app.services.orchestration.deploy_task_service import deploy_task_manager
@@ -152,7 +210,7 @@ class VaultwardenDeploymentService:
         )
         create_background_task(
             self._run_deploy_managed_task(
-                task_id, mail, secret, web_port=web_port
+                task_id, mail, secret, web_port=web_port, app_config=app_config
             )
         )
         return task_id
@@ -164,6 +222,7 @@ class VaultwardenDeploymentService:
         password: str,
         *,
         web_port: int | None,
+        app_config: dict[str, Any] | None = None,
     ) -> None:
         from app.database import async_session
         from app.services.orchestration.deploy_task_service import deploy_task_manager
@@ -182,6 +241,7 @@ class VaultwardenDeploymentService:
                     email=email,
                     password=password,
                     web_port=web_port,
+                    app_config=app_config,
                     progress=progress,
                 )
                 deploy_task_manager.complete_task(
@@ -199,6 +259,7 @@ class VaultwardenDeploymentService:
         email: str,
         password: str,
         web_port: int | None = None,
+        app_config: dict[str, Any] | None = None,
         progress: Progress | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
@@ -207,6 +268,7 @@ class VaultwardenDeploymentService:
                 email=email,
                 password=password,
                 web_port=web_port,
+                app_config=app_config,
                 progress=progress,
             )
 
@@ -218,6 +280,7 @@ class VaultwardenDeploymentService:
         password: str,
         web_port: int | None,
         progress: Progress | None,
+        app_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         def report(
             stage: str, percentage: int, message: str, detail: str | None = None
@@ -233,10 +296,16 @@ class VaultwardenDeploymentService:
                 400,
             )
         host_base = pair[0].rstrip("/")
+        mount_base = pair[1].rstrip("/")
         record = await self._record(db)
         config = dict(record.config or {})
         was_managed = bool(config.get("managed"))
-        selected_port = await self._choose_web_port(db, config, web_port)
+        data_path, extra_env, privileged = _deploy_options(
+            host_base, mount_base, app_config
+        )
+        selected_port = await self._choose_web_port(
+            db, config, _port_from_config(app_config) or web_port
+        )
         host = await self._host() or "127.0.0.1"
         web_url = f"http://{host}:{selected_port}"
 
@@ -264,10 +333,12 @@ class VaultwardenDeploymentService:
                 db,
                 project_name=VAULTWARDEN_PROJECT,
                 content=self._compose_content(
-                    host_base=host_base,
+                    data_path=data_path,
                     web_url=web_url,
                     web_port=selected_port,
                     signups_allowed=not was_managed,
+                    extra_env=extra_env,
+                    privileged=privileged,
                 ),
                 description="OneTap 认证集成专用 Vaultwarden",
                 allocate_ports=False,
@@ -299,10 +370,12 @@ class VaultwardenDeploymentService:
                 db,
                 project,
                 content=self._compose_content(
-                    host_base=host_base,
+                    data_path=data_path,
                     web_url=web_url,
                     web_port=selected_port,
                     signups_allowed=False,
+                    extra_env=extra_env,
+                    privileged=privileged,
                 ),
                 comment="完成账号初始化并关闭公开注册",
                 progress_callback=progress,
@@ -358,28 +431,28 @@ class VaultwardenDeploymentService:
     @staticmethod
     def _compose_content(
         *,
-        host_base: str,
+        data_path: Path,
         web_url: str,
         web_port: int,
         signups_allowed: bool,
+        extra_env: dict[str, str] | None = None,
+        privileged: bool = False,
     ) -> str:
-        data_path = Path(host_base) / VAULTWARDEN_PROJECT / "vaultwarden" / "data"
-        content = {
-            "services": {
-                VAULTWARDEN_SERVICE: {
-                    "image": VAULTWARDEN_IMAGE,
-                    "container_name": VAULTWARDEN_CONTAINER,
-                    "restart": "unless-stopped",
-                    "environment": {
-                        "DOMAIN": web_url,
-                        "SIGNUPS_ALLOWED": "true" if signups_allowed else "false",
-                        "TZ": "Asia/Shanghai",
-                    },
-                    "ports": [f"{web_port}:80"],
-                    "volumes": [f"{data_path}:/data"],
-                }
-            }
+        environment = {"TZ": "Asia/Shanghai"}
+        environment.update(extra_env or {})
+        environment["DOMAIN"] = web_url
+        environment["SIGNUPS_ALLOWED"] = "true" if signups_allowed else "false"
+        service: dict[str, Any] = {
+            "image": VAULTWARDEN_IMAGE,
+            "container_name": VAULTWARDEN_CONTAINER,
+            "restart": "unless-stopped",
+            "environment": environment,
+            "ports": [f"{web_port}:80"],
+            "volumes": [f"{data_path}:/data"],
         }
+        if privileged:
+            service["privileged"] = True
+        content = {"services": {VAULTWARDEN_SERVICE: service}}
         return yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
 
     async def _wait_until_ready(self, base_url: str, timeout: float = 90.0) -> None:

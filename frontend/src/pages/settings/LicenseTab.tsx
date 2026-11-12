@@ -36,10 +36,7 @@ import {
   useLicenseStatus,
   useRefreshLicense,
 } from "@/hooks/useLicense";
-import {
-  useDockerMirrorStatus,
-  useHostsAccelerationOverview,
-} from "@/hooks/useSettings";
+import { useDockerMirrorStatus } from "@/hooks/useSettings";
 import type { LicenseStatus } from "@/api/license";
 
 const INPUT_CLASS =
@@ -169,7 +166,6 @@ export function LicenseTab() {
   } = useLicenseStatus();
   const hasValidLicense = Boolean(license?.valid);
   const mirrorQuery = useDockerMirrorStatus(hasValidLicense);
-  const networkQuery = useHostsAccelerationOverview(hasValidLicense);
   const activate = useActivateLicense();
   const refresh = useRefreshLicense();
   const deactivate = useDeactivateLicense();
@@ -232,7 +228,6 @@ export function LicenseTab() {
     remainingDays <= 7;
   const purchaseUrl = license.purchase_url;
   const mirrorEnabled = mirrorQuery.data?.effective ?? null;
-  const networkEnabled = networkQuery.data?.network_effective ?? null;
 
   return (
     <Card className="rounded-xl">
@@ -244,26 +239,15 @@ export function LicenseTab() {
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             {license.valid && (
-              <>
-                <FeatureStatusBadge
-                  label="镜像加速"
-                  enabled={mirrorEnabled}
-                  loading={mirrorQuery.isPending}
-                  title={
-                    mirrorQuery.data?.message ||
-                    "镜像加速状态获取失败，请稍后重试"
-                  }
-                />
-                <FeatureStatusBadge
-                  label="网络加速"
-                  enabled={networkEnabled}
-                  loading={networkQuery.isPending}
-                  title={
-                    networkQuery.data?.network_message ||
-                    "网络加速状态获取失败，请稍后重试"
-                  }
-                />
-              </>
+              <FeatureStatusBadge
+                label="镜像加速"
+                enabled={mirrorEnabled}
+                loading={mirrorQuery.isPending}
+                title={
+                  mirrorQuery.data?.message ||
+                  "镜像加速状态获取失败，请稍后重试"
+                }
+              />
             )}
             <AccelerationStatusBadge status={license} />
             {!license.valid && purchaseUrl && (
@@ -286,8 +270,8 @@ export function LicenseTab() {
         </div>
         <CardDescription>
           {license.valid
-            ? "专属加速已开通：镜像下载走专属加速源，指定域名由专属节点解析；其余功能始终免费开放。"
-            : "OneTap 全部功能免费开放。专属加速为可选增值服务，包含镜像下载加速与域名访问加速。作用于 OneTap 拉取的镜像和已开启域名加速的应用容器，不改宿主机配置。"}
+            ? "专属加速已开启，镜像下载走专属加速源，其余功能始终免费开放。"
+            : "OneTap 全部功能免费开放。专属加速为可选增值服务，包含镜像下载加速。作用于 OneTap 拉取镜像，不改宿主机配置。"}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

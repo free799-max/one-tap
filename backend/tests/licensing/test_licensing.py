@@ -21,6 +21,7 @@ from app.services.licensing.service import (
     LicenseCertificateError,
     validate_certificate,
 )
+from app.services.system.config_service import system_config_service
 
 
 PRIVATE_KEY = Ed25519PrivateKey.generate()
@@ -684,10 +685,11 @@ async def test_activate_accepts_manage_wrapper_and_integer_ids(client, monkeypat
         break
 
 
-def test_activation_rejects_certificate_response_id_mismatch():
+async def test_activation_rejects_certificate_response_id_mismatch():
     state = LicenseState(installation_id=INSTALLATION_ID)
     with pytest.raises(APIException, match="license_id 不一致"):
-        licensing_service._apply_activation(
+        await licensing_service._apply_activation(
+            None,
             state,
             {
                 "certificate": "certificate",
@@ -738,3 +740,34 @@ async def test_refresh_tick_and_scheduler_shutdown(monkeypatch):
     await licensing_service.stop_scheduler()
     assert task.cancelled()
     assert licensing_service._scheduler_task is None
+
+
+async def test_activation_response_stores_hidden_acceleration_url(client):
+    url = (
+        "https://m.one-tab.vip/api/public/acceleration/subscription/"
+        "subscription-token"
+    )
+    payload = {"license_id": 101, "activation_id": 202}
+    async for db in _test_db(client):
+        state = await licensing_service.get_state(db)
+        data = {
+            "certificate": "certificate",
+            "refresh_token": "refresh",
+            "license_id": 101,
+            "activation_id": 202,
+            "acceleration_subscription_url": url,
+        }
+        await licensing_service._apply_activation(db, state, data, payload)
+        config = await system_config_service.get_or_create(db)
+        assert config.acceleration_subscription_url == url
+
+        data.pop("acceleration_subscription_url")
+        await licensing_service._apply_activation(db, state, data, payload)
+        await db.refresh(config)
+        assert config.acceleration_subscription_url == url
+
+        await licensing_service._clear_acceleration_url(db)
+        await db.refresh(config)
+        assert config.acceleration_subscription_url == ""
+        await db.commit()
+        break

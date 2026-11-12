@@ -35,16 +35,20 @@ import {
 import {
   useDeleteNetworkDdns,
   useDeleteNetworkProxy,
+  useDeployNetworkLucky,
   useNetworkApps,
   useNetworkConfig,
   useNetworkDdns,
   useNetworkDdnsInterfaces,
   useNetworkHosts,
   useNpmCertificates,
+  useRemoveNetworkLucky,
   useSaveNetworkDdns,
   useTestNetwork,
   useUpdateNetwork,
 } from "@/hooks/useIntegrations";
+import { useApps } from "@/hooks/useApps";
+import { AppDeployDialog } from "@/pages/apps/AppDeployDialog";
 import type {
   NetworkApp,
   NetworkConfig,
@@ -65,6 +69,7 @@ import {
   RefreshCw,
   Route,
   Server,
+  Trash2,
   XCircle,
 } from "lucide-react";
 
@@ -537,9 +542,13 @@ export function NetworkIntegrationTab() {
   const toast = useToast();
   const { data: config, isLoading, error } = useNetworkConfig();
   const { data: apps = [], isLoading: appsLoading } = useNetworkApps();
+  const { data: marketApps, isLoading: marketAppsLoading } = useApps();
+  const luckyApp = marketApps?.find((app) => app.name === "lucky") ?? null;
   const ddnsStateQuery = useNetworkDdns(!!config?.configured);
   const { data: ddnsState } = ddnsStateQuery;
   const updateConfig = useUpdateNetwork();
+  const deployLucky = useDeployNetworkLucky();
+  const removeLucky = useRemoveNetworkLucky();
   const testLucky = useTestNetwork();
   const testNpm = useTestNetwork();
   const testDdnsGo = useTestNetwork();
@@ -557,6 +566,8 @@ export function NetworkIntegrationTab() {
   const [ddnsForm, setDdnsForm] = useState<DdnsFormState>(EMPTY_DDNS_FORM);
   const [ddnsInitialized, setDdnsInitialized] = useState(false);
   const [deleteDdnsDialogOpen, setDeleteDdnsDialogOpen] = useState(false);
+  const [luckyDeployDialogOpen, setLuckyDeployDialogOpen] = useState(false);
+  const [confirmRemoveLucky, setConfirmRemoveLucky] = useState(false);
   const isNpm = form.provider === "npm";
   const hostsQuery = useNetworkHosts();
   const ddnsInterfacesQuery = useNetworkDdnsInterfaces(
@@ -572,6 +583,16 @@ export function NetworkIntegrationTab() {
       setInitialized(true);
     }
   }, [config, initialized]);
+
+  useEffect(() => {
+    if (!config?.lucky.managed || !config.lucky.url) return;
+    setForm((prev) => ({
+      ...prev,
+      enabled: config.enabled,
+      luckyUrl: config.lucky.url,
+      luckyUsername: prev.luckyUsername || config.lucky.username,
+    }));
+  }, [config]);
 
   useEffect(() => {
     if (ddnsState && !ddnsInitialized) {
@@ -626,6 +647,22 @@ export function NetworkIntegrationTab() {
       url: form.luckyUrl.trim() || null,
       username: form.luckyUsername.trim() || null,
       password: form.luckyPassword || null,
+    });
+  };
+
+  const luckyManaged = !!config?.lucky.managed;
+  const luckyRunning = !!config?.lucky.running;
+  const luckyExternal = !!config?.lucky.external;
+  const canDeleteLucky = luckyManaged || luckyExternal;
+
+  const handleDeployLucky = () => {
+    if (luckyApp) {
+      setLuckyDeployDialogOpen(true);
+      return;
+    }
+    deployLucky.mutate({
+      username: form.luckyUsername.trim() || undefined,
+      password: form.luckyPassword || undefined,
     });
   };
 
@@ -1068,22 +1105,86 @@ export function NetworkIntegrationTab() {
           ) : (
             <div className="space-y-3 border-t border-border pt-3">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-xs font-medium">
-                  <Network className="h-3.5 w-3.5 text-muted-foreground" />
-                  Lucky
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-xs font-medium">
+                    <Network className="h-3.5 w-3.5 text-muted-foreground" />
+                    Lucky
+                  </div>
+                  {luckyManaged ? (
+                    <Badge
+                      className={
+                        luckyRunning
+                          ? "bg-emerald-500/10 text-emerald-700"
+                          : "bg-amber-500/10 text-amber-700"
+                      }
+                    >
+                      {luckyRunning ? "运行中" : "未运行"}
+                    </Badge>
+                  ) : (
+                    luckyExternal && (
+                      <Badge variant="secondary">外部实例</Badge>
+                    )
+                  )}
                 </div>
-                {/^https?:\/\//i.test(form.luckyUrl.trim()) && (
-                  <a
-                    href={form.luckyUrl.trim()}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                <div className="flex items-center gap-2">
+                  {/^https?:\/\//i.test(form.luckyUrl.trim()) && (
+                    <a
+                      href={form.luckyUrl.trim()}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                    >
+                      打开 Lucky
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                  {canDeleteLucky && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-destructive hover:text-destructive"
+                      onClick={() => setConfirmRemoveLucky(true)}
+                      disabled={removeLucky.isPending || deployLucky.isPending}
+                    >
+                      {removeLucky.isPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      删除
+                    </Button>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    onClick={handleDeployLucky}
+                    disabled={
+                      deployLucky.isPending ||
+                      removeLucky.isPending ||
+                      marketAppsLoading
+                    }
                   >
-                    打开 Lucky
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
+                    {deployLucky.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : luckyManaged ? (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    ) : (
+                      <Server className="h-3.5 w-3.5" />
+                    )}
+                    {luckyManaged ? "部署" : "部署 Lucky"}
+                  </Button>
+                </div>
               </div>
+              <p className="text-[11px] text-muted-foreground">
+                {luckyManaged
+                  ? "由 OneTap 托管，自动初始化管理账号并维护服务地址。"
+                  : luckyExternal
+                    ? "检测到外部 Lucky，点击部署会迁移它的配置并替换为 OneTap 托管实例。"
+                    : "点「部署 Lucky」确认存储配置后再一键部署，已有实例会自动迁移配置。"}
+              </p>
 
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1.1fr)]">
                 <div className="space-y-1">
@@ -1096,6 +1197,7 @@ export function NetworkIntegrationTab() {
                     onChange={(e) =>
                       setForm((prev) => ({ ...prev, luckyUrl: e.target.value }))
                     }
+                    disabled={luckyManaged}
                     placeholder="http://192.168.1.23:16601"
                     className={INPUT_CLASS}
                   />
@@ -1698,6 +1800,62 @@ export function NetworkIntegrationTab() {
           )}
         </CardContent>
       </Card>
+
+      <AppDeployDialog
+        app={luckyApp}
+        open={luckyDeployDialogOpen}
+        onOpenChange={setLuckyDeployDialogOpen}
+        onDeploy={(data) => {
+          deployLucky.mutate(
+            {
+              username: form.luckyUsername.trim() || undefined,
+              password: form.luckyPassword || undefined,
+              config: data.config,
+            },
+            { onSuccess: () => setLuckyDeployDialogOpen(false) }
+          );
+        }}
+        isDeploying={deployLucky.isPending}
+        initialInstanceName="onetap-lucky"
+        initialConfig={{
+          volumes: [
+            { host_path: "conf", container_path: "/app/conf", mode: "rw" },
+          ],
+          lucky_env: [{ key: "TZ", value: "Asia/Shanghai" }],
+          privileged: false,
+        }}
+        lockInstanceName
+      />
+
+      <ConfirmDialog
+        open={confirmRemoveLucky}
+        onOpenChange={setConfirmRemoveLucky}
+        title="删除 Lucky"
+        description={
+          luckyManaged
+            ? "将停止并移除 OneTap 托管的 Lucky，反向代理和 DDNS 会停用。配置数据会备份到应用数据目录的 _backups 下。"
+            : `将停止并删除检测到的 Lucky 容器（${
+                config?.lucky.external_name || "lucky"
+              }），反向代理和 DDNS 会停用。容器内配置会备份到应用数据目录的 _backups 下。`
+        }
+        confirmText="删除"
+        destructive
+        isPending={removeLucky.isPending}
+        onConfirm={() => {
+          removeLucky.mutate(undefined, {
+            onSuccess: () => {
+              setConfirmRemoveLucky(false);
+              setForm((prev) => ({
+                ...prev,
+                enabled: false,
+                luckyUrl: "",
+                luckyUsername: "",
+                luckyPassword: "",
+              }));
+            },
+          });
+        }}
+      />
 
       <ConfirmDialog
         open={deleteDdnsDialogOpen}

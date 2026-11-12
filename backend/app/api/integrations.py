@@ -28,6 +28,9 @@ from app.schemas.integration import (
     NetworkDdnsUpdate,
     NetworkDdnsInterfacesOut,
     NetworkHostsOut,
+    NetworkLuckyDeployRequest,
+    NetworkLuckyDeployTaskOut,
+    NetworkLuckyRemoveOut,
     NetworkProxyRequest,
     NetworkProxyResult,
     NetworkSecretRequest,
@@ -50,6 +53,10 @@ from app.services.integrations.secret_reveal import authorize_secret_reveal
 from app.services.integrations.vaultwarden_deployment import (
     VAULTWARDEN_PROJECT,
     vaultwarden_deployment_service,
+)
+from app.services.integrations.lucky_deployment import (
+    LUCKY_PROJECT,
+    lucky_deployment_service,
 )
 
 router = APIRouter(
@@ -110,6 +117,7 @@ async def deploy_vaultwarden(
         email=data.email,
         password=data.password,
         web_port=data.web_port,
+        app_config=data.config,
     )
     return VaultwardenDeployTaskOut(
         task_id=task_id, instance_name=VAULTWARDEN_PROJECT
@@ -207,6 +215,39 @@ async def update_network(
 ):
     """保存网络集成配置，切换方案时保留其他方案的连接信息。"""
     return await integration_service.save_network(db, data)
+
+
+@router.post("/network/lucky/deploy", response_model=NetworkLuckyDeployTaskOut)
+async def deploy_network_lucky(
+    data: NetworkLuckyDeployRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """后台部署 OneTap 托管的 Lucky，并自动初始化管理账号。"""
+    task_id = await lucky_deployment_service.start_deploy_managed(
+        db,
+        username=data.username,
+        password=data.password,
+        web_port=data.web_port,
+        config=data.config,
+    )
+    return NetworkLuckyDeployTaskOut(
+        task_id=task_id, instance_name=LUCKY_PROJECT
+    )
+
+
+@router.delete(
+    "/network/lucky/managed", response_model=NetworkLuckyRemoveOut
+)
+@router.delete(
+    "/network/lucky/instance", response_model=NetworkLuckyRemoveOut
+)
+async def remove_network_lucky(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """删除 OneTap 托管的 Lucky，或识别到的外部 Lucky 容器。"""
+    return await lucky_deployment_service.delete_instance(db)
 
 
 @router.post("/network/test", response_model=IntegrationTestResult)

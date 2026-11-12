@@ -71,11 +71,8 @@ def test_normalize_managed_rules_parses_variants():
         "api.themoviedb.org",
         "github.com",
     ]
-    assert rules[0]["answers"] == ["1.2.3.4"]
-    assert rules[0]["tier"] == "subscription"
-    assert rules[1]["answers"] == []
-    assert rules[1]["tier"] == "free"
-    assert rules[2]["answers"] == ["140.82.112.3", "140.82.113.3"]
+    assert all(rule["answers"] == [] for rule in rules)
+    assert all(rule["tier"] == "free" for rule in rules)
 
 
 def test_normalize_managed_rules_accepts_wrapped_payload():
@@ -85,7 +82,7 @@ def test_normalize_managed_rules_accepts_wrapped_payload():
     assert rules == [
         {
             "domain": "api.tmdb.org",
-            "answers": ["99.84.215.100"],
+            "answers": [],
             "priority": 100,
             "description": None,
             "tier": "free",
@@ -116,7 +113,7 @@ def test_effective_rules_prefers_managed_rules():
     assert hosts_optimizer_service.effective_rules(config) == [
         {
             "domain": "managed.example.com",
-            "answers": ["1.2.3.4"],
+            "answers": [],
             "priority": 100,
             "description": None,
             "tier": "free",
@@ -333,13 +330,7 @@ async def test_network_effectiveness_checks_rewrites_and_running_apps(monkeypatc
         hosts_optimizer_adguard_username="admin",
         hosts_optimizer_adguard_password="secret",
     )
-    rules = [
-        {
-            "domain": "cdn.example.com",
-            "answers": ["1.2.3.4"],
-            "tier": "subscription",
-        }
-    ]
+    rules = [{"domain": "cdn.example.com", "answers": [], "tier": "free"}]
     apps = [{"acceleration_enabled": True, "status": "running"}]
 
     result = await module.hosts_acceleration_service.network_effectiveness(
@@ -356,7 +347,7 @@ async def test_network_effectiveness_checks_rewrites_and_running_apps(monkeypatc
     assert result["network_effective"] is False
 
     apps[0]["status"] = "running"
-    rewrites[:] = [{"domain": "cdn.example.com", "answer": "5.6.7.8"}]
+    rewrites[:] = [{"domain": "other.example.com", "answer": "5.6.7.8"}]
     result = await module.hosts_acceleration_service.network_effectiveness(
         config, rules, apps
     )
@@ -390,7 +381,8 @@ async def test_sync_managed_rules_endpoint(client, monkeypatch):
     data = resp.json()["data"]
     assert data["configured"] is True
     assert data["rules"][0]["domain"] == "api.themoviedb.org"
-    assert data["rules"][0]["answers"] == ["18.244.214.89"]
+    assert data["rules"][0]["answers"] == []
+    assert data["rules"][0]["tier"] == "free"
 
     config = await client.get(
         "/api/settings/hosts-optimizer/config", headers=_auth(token)
@@ -550,7 +542,7 @@ async def test_list_apps_includes_orchestration_group(db_session):
     assert items[0]["orchestration_name"] == "影视方案"
 
 
-async def test_optimize_uses_managed_answers(monkeypatch):
+async def test_optimize_ignores_managed_answers(monkeypatch):
     captured: dict = {}
 
     async def _fake_sync(url, username, password, domains, best, stale_domains=None):
@@ -558,10 +550,14 @@ async def test_optimize_uses_managed_answers(monkeypatch):
         captured["best"] = best
         return []
 
+    async def _fake_resolve(direct, proxied, domain):
+        return ["9.9.9.9"]
+
     async def _fake_probe(ip, domain, semaphore):
         return 10.0
 
     monkeypatch.setattr(hosts_optimizer_service, "_sync_adguard", _fake_sync)
+    monkeypatch.setattr(hosts_optimizer_service, "_resolve_domain", _fake_resolve)
     monkeypatch.setattr(hosts_optimizer_service, "_probe", _fake_probe)
 
     result = await hosts_optimizer_service.optimize(
@@ -582,13 +578,10 @@ async def test_optimize_uses_managed_answers(monkeypatch):
     )
 
     assert result["adguard"] == "ok"
-    assert result["domains"]["api.themoviedb.org"]["status"] == "managed"
-    assert result["domains"]["api.themoviedb.org"]["source"] == "managed"
+    assert result["domains"]["api.themoviedb.org"]["status"] == "ok"
+    assert result["domains"]["api.themoviedb.org"]["source"] == "local"
     assert captured["domains"] == ["api.themoviedb.org"]
-    assert captured["best"]["api.themoviedb.org"] == [
-        ("18.244.214.89", 0.0),
-        ("18.244.214.88", 0.0),
-    ]
+    assert captured["best"]["api.themoviedb.org"] == [("9.9.9.9", 10.0)]
 
 
 def test_adguard_app_config_uses_app_store_and_skips_host_dns_port():

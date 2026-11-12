@@ -47,6 +47,11 @@ class SystemConfig(Base):
         hosts_optimizer_managed_rules: 管理端下发的加速域名与解析规则
         hosts_optimizer_managed_rules_synced_at: 管理端规则最近同步时间
         hosts_optimizer_status: 最近一次优选结果（只由服务端维护）
+        acceleration_subscription_url: 管理端下发的网络加速订阅地址
+        acceleration_managed_rules: 订阅中解析出的域名规则（只读展示）
+        acceleration_rules_synced_at: 订阅最近同步时间
+        acceleration_auto_sync_enabled: 是否自动同步网络加速订阅
+        acceleration_sync_interval_minutes: 自动同步间隔（分钟）
         created_at: 记录创建时间
         updated_at: 记录最后更新时间
     """
@@ -106,7 +111,7 @@ class SystemConfig(Base):
         String(20), default="manual", server_default="manual", nullable=False
     )
     hosts_optimizer_interval_minutes: Mapped[int] = mapped_column(
-        Integer, default=360, server_default="360", nullable=False
+        Integer, default=720, server_default="720", nullable=False
     )
     hosts_optimizer_top_n: Mapped[int] = mapped_column(
         Integer, default=2, server_default="2", nullable=False
@@ -158,6 +163,24 @@ class SystemConfig(Base):
         default=dict,
         server_default=text("'{}'"),
         nullable=False,
+    )
+    acceleration_subscription_url: Mapped[str] = mapped_column(
+        String(500), default="", server_default="", nullable=False
+    )
+    acceleration_managed_rules: Mapped[list[dict]] = mapped_column(
+        JSON,
+        default=list,
+        server_default=text("'[]'"),
+        nullable=False,
+    )
+    acceleration_rules_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    acceleration_auto_sync_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
+    acceleration_sync_interval_minutes: Mapped[int] = mapped_column(
+        Integer, default=30, server_default="30", nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), nullable=False

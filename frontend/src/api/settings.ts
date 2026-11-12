@@ -410,13 +410,14 @@ export function runHostsOptimizer(): Promise<HostsOptimizerRun> {
     .then((r) => r.data as HostsOptimizerRun);
 }
 
-/** 管理端下发的加速域名规则 */
+/** 管理端下发的免费加速域名规则 */
 export interface ManagedDnsRule {
   domain: string;
+  /** 历史兼容字段；指定地址已下线，固为空 */
   answers: string[];
   priority: number;
   description: string | null;
-  /** free 免费线路 / subscription 专属加速 */
+  /** 历史兼容字段；固定为 free */
   tier?: string;
 }
 

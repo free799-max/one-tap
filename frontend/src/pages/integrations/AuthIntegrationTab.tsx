@@ -22,13 +22,6 @@ import { Switch } from "@/components/ui/switch";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { RevealSecretDialog } from "@/components/RevealSecretDialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Table,
   TableBody,
   TableCell,
@@ -46,6 +39,8 @@ import {
   useVaultwardenConfig,
 } from "@/hooks/useIntegrations";
 import { useSystemConfig } from "@/hooks/useSettings";
+import { useApps } from "@/hooks/useApps";
+import { AppDeployDialog } from "@/pages/apps/AppDeployDialog";
 import {
   CheckCircle2,
   ExternalLink,
@@ -85,6 +80,9 @@ export function AuthIntegrationTab() {
   const remove = useRemoveVaultwarden();
   const testConnection = useTestVaultwarden();
   const sync = useSyncVaultwarden();
+  const { data: marketApps, isLoading: marketAppsLoading } = useApps();
+  const vaultwardenApp =
+    marketApps?.find((app) => app.name === "vaultwarden") ?? null;
 
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [initialized, setInitialized] = useState(false);
@@ -154,26 +152,13 @@ export function AuthIntegrationTab() {
   const canUseUnifiedCredentials = !!(
     unifiedEmail && unifiedPasswordConfigured
   );
-  const hasDeployCredentials =
-    (!!form.email.trim() &&
-      (!!form.password ||
-        !!config?.password_set ||
-        unifiedPasswordConfigured)) ||
-    canUseUnifiedCredentials;
 
   const handleDeploy = () => {
-    if (!hasDeployCredentials) {
-      setForm((prev) => ({ ...prev, email: prev.email || unifiedEmail }));
+    if (vaultwardenApp) {
       setDeployDialogOpen(true);
       return;
     }
-    deploy.mutate(
-      {
-        email: form.email.trim() || undefined,
-        password: form.password || undefined,
-      },
-      { onSuccess: () => setDeployDialogOpen(false) }
-    );
+    deploy.mutate({});
   };
 
   const handleTest = () => {
@@ -187,7 +172,8 @@ export function AuthIntegrationTab() {
   const syncableApps = apps.filter((app) => app.has_credentials);
   const canSync =
     !!config?.enabled && !!config?.configured && syncableApps.length > 0;
-  const canDeploy = !deploy.isPending && !remove.isPending;
+  const canDeploy =
+    !deploy.isPending && !remove.isPending && !marketAppsLoading;
 
   if (isLoading) {
     return <div className="text-sm text-muted-foreground">加载配置中...</div>;
@@ -207,7 +193,6 @@ export function AuthIntegrationTab() {
           <CardTitle className="flex items-center gap-2 text-base">
             <KeyRound className="h-4 w-4 text-muted-foreground" />
             认证集成
-            <Badge variant="secondary">免费</Badge>
           </CardTitle>
           <CardDescription className="text-xs">
             OneTap 可以自动部署专用 Vaultwarden，把已部署应用的账号密码加密写入密码库。
@@ -251,7 +236,7 @@ export function AuthIntegrationTab() {
                   ) : (
                     <Trash2 className="h-4 w-4" />
                   )}
-                  关闭并删除
+                  删除
                 </Button>
               )}
               <Button
@@ -268,7 +253,7 @@ export function AuthIntegrationTab() {
                 ) : (
                   <Server className="h-4 w-4" />
                 )}
-                {config?.managed ? "重新部署" : "部署 Vaultwarden"}
+                {config?.managed ? "部署" : "部署 Vaultwarden"}
               </Button>
             </div>
           </CardAction>
@@ -568,67 +553,20 @@ export function AuthIntegrationTab() {
         </CardContent>
       </Card>
 
-      <Dialog open={deployDialogOpen} onOpenChange={setDeployDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>部署 Vaultwarden</DialogTitle>
-            <DialogDescription>
-              系统统一账号的邮箱后缀或密码尚未配置完整，请补充本次部署使用的登录信息。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="deploy_vaultwarden_email" className="text-xs">
-                登录邮箱
-              </Label>
-              <Input
-                id="deploy_vaultwarden_email"
-                type="email"
-                value={form.email}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, email: e.target.value }))
-                }
-                placeholder="admin@example.com"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="deploy_vaultwarden_password" className="text-xs">
-                主密码
-              </Label>
-              <PasswordInput
-                id="deploy_vaultwarden_password"
-                value={form.password}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, password: e.target.value }))
-                }
-                placeholder="用于首次创建的 Vaultwarden 账号"
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setDeployDialogOpen(false)}
-                disabled={deploy.isPending}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={handleDeploy}
-                disabled={!hasDeployCredentials || deploy.isPending}
-              >
-                {deploy.isPending && (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                )}
-                开始部署
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <AppDeployDialog
+        app={vaultwardenApp}
+        open={deployDialogOpen}
+        onOpenChange={setDeployDialogOpen}
+        onDeploy={(data) => {
+          deploy.mutate(
+            { config: data.config },
+            { onSuccess: () => setDeployDialogOpen(false) }
+          );
+        }}
+        isDeploying={deploy.isPending}
+        initialInstanceName="onetap-vaultwarden"
+        lockInstanceName
+      />
 
       <ConfirmDialog
         open={confirmRemove}
