@@ -20,6 +20,10 @@ from app.services.docker.image_service import (
     _select_mirror,
 )
 from app.services.docker.manager import docker_manager
+from app.services.system.registry_mirror_service import (
+    begin_acceleration_pull,
+    end_acceleration_pull,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +247,32 @@ async def pull_with_mirror(
     progress: PullProgress | None = None,
     allow_direct: bool = True,
 ) -> bool:
-    """依次从加速域名拉取并改回原 tag，可按调用方要求禁止回退直连。"""
+    """依次从加速域名拉取并改回原 tag，可按调用方要求禁止回退直连。
+
+    下载期间会保留当前加速域名：授权刷新触发的缓存失效会延后到
+    本次下载结束，避免中途切换域名把正在进行的下载打断。
+    """
+    begin_acceleration_pull()
+    try:
+        return await _pull_with_mirror(
+            image,
+            acceleration,
+            timeout=timeout,
+            progress=progress,
+            allow_direct=allow_direct,
+        )
+    finally:
+        end_acceleration_pull()
+
+
+async def _pull_with_mirror(
+    image: str,
+    acceleration: dict[str, list[str]] | None,
+    *,
+    timeout: int,
+    progress: PullProgress | None,
+    allow_direct: bool,
+) -> bool:
     code, _ = await _docker("image", "inspect", image, timeout=30)
     if code == 0:
         # 本地已有该镜像时与 compose up 的行为保持一致，不主动刷新

@@ -5,7 +5,6 @@ import json
 import logging
 import queue
 import threading
-import time
 
 import docker
 from fastapi import APIRouter, Depends, status
@@ -117,27 +116,9 @@ async def search_images(
         raise APIException(f"镜像搜索失败: {e}", 500) from e
 
 
-_MANAGED_MIRRORS_TTL = 60
-"""管理端推荐镜像源的内存缓存时长（秒）。"""
-
-_managed_mirrors_cache: tuple[float, dict[str, list[str]]] | None = None
-"""最近一次从管理端获取的「源站 → 加速地址」映射。"""
-
-
 async def _acceleration_map(db: AsyncSession) -> dict[str, list[str]]:
     """获取按源站分组的加速地址，失败时返回空映射。"""
-    global _managed_mirrors_cache
-    now = time.monotonic()
-    if (
-        _managed_mirrors_cache
-        and now - _managed_mirrors_cache[0] < _MANAGED_MIRRORS_TTL
-    ):
-        return _managed_mirrors_cache[1]
-
-    mapping = await registry_mirror_service.acceleration_map(db)
-    if mapping:
-        _managed_mirrors_cache = (now, mapping)
-    return mapping
+    return await registry_mirror_service.acceleration_map_cached(db)
 
 
 async def _tag_mirrors(db: AsyncSession) -> list[str]:

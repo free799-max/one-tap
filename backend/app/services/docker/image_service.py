@@ -942,22 +942,32 @@ class ImageService(common.BaseDockerService):
         """拉取指定镜像；选中加速域名时先下载再改回原始 tag。"""
         if not self._client:
             raise RuntimeError("Docker not available")
-        target, tag_target = _select_mirror(image, acceleration)
+        # 延迟导入：镜像服务位于 docker 包内，顶层导入 system 包会形成循环依赖
+        from app.services.system.registry_mirror_service import (
+            begin_acceleration_pull,
+            end_acceleration_pull,
+        )
+
+        begin_acceleration_pull()
         try:
-            self._client.images.pull(target)
-        except Exception:
-            if target == image:
-                raise
-            common.logger.info(
-                "通过加速域名 %s 拉取 %s 失败，回退直连", target, image,
-                exc_info=True,
-            )
-            self._client.images.pull(image)
-            return
-        if tag_target is not None and not _tag_back(
-            self._client, target, *tag_target
-        ):
-            raise RuntimeError("镜像已下载但改 tag 失败")
+            target, tag_target = _select_mirror(image, acceleration)
+            try:
+                self._client.images.pull(target)
+            except Exception:
+                if target == image:
+                    raise
+                common.logger.info(
+                    "通过加速域名 %s 拉取 %s 失败，回退直连", target, image,
+                    exc_info=True,
+                )
+                self._client.images.pull(image)
+                return
+            if tag_target is not None and not _tag_back(
+                self._client, target, *tag_target
+            ):
+                raise RuntimeError("镜像已下载但改 tag 失败")
+        finally:
+            end_acceleration_pull()
 
     async def get_image_tags(
         self,
@@ -1075,6 +1085,12 @@ class ImageService(common.BaseDockerService):
             task_manager.fail_task(task_id, "Docker not available")
             raise RuntimeError("Docker not available")
 
+        # 延迟导入：镜像服务位于 docker 包内，顶层导入 system 包会形成循环依赖
+        from app.services.system.registry_mirror_service import (
+            begin_acceleration_pull,
+            end_acceleration_pull,
+        )
+
         target, tag_target = _select_mirror(image, acceleration)
 
         def _pull(ref: str) -> None:
@@ -1083,6 +1099,7 @@ class ImageService(common.BaseDockerService):
                 stream, lambda progress: task_manager.update_progress(task_id, progress)
             )
 
+        begin_acceleration_pull()
         try:
             if target != image:
                 try:
@@ -1110,3 +1127,5 @@ class ImageService(common.BaseDockerService):
             task_manager.fail_task(task_id, f"拉取镜像失败: {e}")
         except Exception as e:
             task_manager.fail_task(task_id, f"拉取镜像失败: {e}")
+        finally:
+            end_acceleration_pull()

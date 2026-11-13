@@ -771,3 +771,38 @@ async def test_activation_response_stores_hidden_acceleration_url(client):
         assert config.acceleration_subscription_url == ""
         await db.commit()
         break
+
+
+async def test_activation_clears_acceleration_cache(client):
+    """激活或刷新授权后清空镜像加速缓存，下次拉取立即用上新专属域名。"""
+    import importlib
+    import time
+
+    module = importlib.import_module("app.services.system.registry_mirror_service")
+    module._leased_cache = (
+        time.monotonic(),
+        "old-token",
+        {"licensed": True, "mirrors": []},
+    )
+    module._acceleration_map_cache = (
+        time.monotonic(),
+        {"docker.io": ["https://old.example.com"]},
+    )
+
+    async for db in _test_db(client):
+        state = await licensing_service.get_state(db)
+        await licensing_service._apply_activation(
+            db,
+            state,
+            {
+                "certificate": "certificate",
+                "refresh_token": "new-token",
+                "license_id": 101,
+                "activation_id": 202,
+            },
+            {"license_id": 101, "activation_id": 202},
+        )
+        break
+
+    assert module._leased_cache is None
+    assert module._acceleration_map_cache is None

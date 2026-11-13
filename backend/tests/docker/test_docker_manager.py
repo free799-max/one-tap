@@ -291,6 +291,32 @@ def test_pull_progress_completes_at_100(mock_time, mock_docker_module):
 
 
 @patch("app.services.docker.docker_common.docker")
+def test_pull_image_async_releases_mirror_pull_marker(mock_docker_module):
+    """拉取失败也必须结束下载标记，否则加速域名缓存会一直无法失效。"""
+    import importlib
+
+    mock_client = MagicMock()
+    mock_client.api.pull.side_effect = RuntimeError("boom")
+    mock_docker_module.from_env.return_value = mock_client
+    mock_docker_module.errors.ImageNotFound = type("ImageNotFound", (Exception,), {})
+    mock_docker_module.errors.APIError = type("APIError", (Exception,), {})
+
+    module = importlib.import_module("app.services.system.registry_mirror_service")
+    manager = DockerManager()
+    task_manager = ImagePullTaskManager()
+    task_id = task_manager.create_task("test:latest")
+
+    manager.pull_image_async(
+        "test:latest",
+        task_id,
+        task_manager,
+        acceleration={"docker.io": ["https://mirror.example.com"]},
+    )
+
+    assert module._active_pulls == 0
+
+
+@patch("app.services.docker.docker_common.docker")
 @patch("app.services.docker.docker_common.time")
 def test_pull_progress_all_completed_with_zero_byte_data(mock_time, mock_docker_module):
     """所有层已完成但无字节信息时，流内不给百分比，任务完成再置 100%。"""

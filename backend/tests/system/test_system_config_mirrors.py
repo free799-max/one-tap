@@ -1,6 +1,8 @@
 """系统配置中的 Docker 镜像加速地址列表测试。"""
 
+import asyncio
 import importlib
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -12,6 +14,19 @@ from app.config import settings
 registry_mirror_module = importlib.import_module(
     "app.services.system.registry_mirror_service"
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_mirror_caches():
+    """每个用例前后都从干净的缓存和下载计数开始。"""
+    module = registry_mirror_module
+    module._active_pulls = 0
+    module._deferred_invalidation = False
+    module.invalidate_acceleration_cache()
+    yield
+    module._active_pulls = 0
+    module._deferred_invalidation = False
+    module.invalidate_acceleration_cache()
 
 
 class _FakeResponse:
@@ -329,3 +344,190 @@ async def test_test_docker_mirrors_rejects_invalid_url(client):
     )
     assert resp.status_code == 400, resp.text
     assert "http://" in resp.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_acceleration_map_cache_invalidated_after_license_change(monkeypatch):
+    """映射表命中缓存，失效后重新获取，避免授权变化后继续用旧域名。"""
+    service = registry_mirror_module.registry_mirror_service
+    registry_mirror_module.invalidate_acceleration_cache()
+    calls: list[object] = []
+
+    async def _fake_map(db):
+        calls.append(db)
+        return {"ghcr.io": [f"https://leased-{len(calls)}.example.com"]}
+
+    monkeypatch.setattr(service, "acceleration_map", _fake_map)
+
+    first = await service.acceleration_map_cached(object())
+    again = await service.acceleration_map_cached(object())
+    assert first == again == {"ghcr.io": ["https://leased-1.example.com"]}
+    assert len(calls) == 1
+
+    registry_mirror_module.invalidate_acceleration_cache()
+    refreshed = await service.acceleration_map_cached(object())
+    assert refreshed == {"ghcr.io": ["https://leased-2.example.com"]}
+    assert len(calls) == 2
+    registry_mirror_module.invalidate_acceleration_cache()
+
+
+@pytest.mark.asyncio
+async def test_leased_domains_refetched_after_invalidation(monkeypatch):
+    """专属域名缓存失效后，下一次取用重新请求管理端。"""
+    module = registry_mirror_module
+    service = module.registry_mirror_service
+    module.invalidate_acceleration_cache()
+    monkeypatch.setattr(settings, "MANAGE_BASE_URL", "http://manage.test")
+    state = SimpleNamespace(refresh_token="token-1", installation_id="install-1")
+
+    async def _state(db):
+        return state
+
+    async def _fingerprint(installation_id):
+        return {"hardware_fingerprint": "fp"}
+
+    async def _fallback(fetch):
+        return await fetch("http://manage.test"), "http://manage.test"
+
+    requests: list[str] = []
+    domains = ["https://a.example.com", "https://b.example.com"]
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            requests.append(url)
+            return SimpleNamespace(
+                status_code=200,
+                is_error=False,
+                json=lambda: {
+                    "data": {
+                        "mirrors": [
+                            {
+                                "url": domains[len(requests) - 1],
+                                "source": "ghcr.io",
+                            }
+                        ]
+                    }
+                },
+            )
+
+    monkeypatch.setattr(module.licensing_service, "get_state", _state)
+    monkeypatch.setattr(module, "get_device_fingerprint", _fingerprint)
+    monkeypatch.setattr(module, "with_manage_fallback", _fallback)
+    monkeypatch.setattr(
+        module,
+        "httpx",
+        SimpleNamespace(
+            AsyncClient=lambda *a, **kw: _Client(), HTTPError=httpx.HTTPError
+        ),
+    )
+
+    first = await service.fetch_leased(object())
+    cached = await service.fetch_leased(object())
+    assert first == cached
+    assert [m["url"] for m in cached["mirrors"]] == ["https://a.example.com"]
+    assert len(requests) == 1
+
+    module.invalidate_acceleration_cache()
+    refreshed = await service.fetch_leased(object())
+    assert [m["url"] for m in refreshed["mirrors"]] == ["https://b.example.com"]
+    assert len(requests) == 2
+    module.invalidate_acceleration_cache()
+
+
+def test_cache_invalidation_deferred_while_pull_active():
+    """下载进行中不清空域名，等最后一个下载结束再切换。"""
+    module = registry_mirror_module
+    module._leased_cache = (
+        time.monotonic(),
+        "token",
+        {"licensed": True, "mirrors": []},
+    )
+    module._acceleration_map_cache = (
+        time.monotonic(),
+        {"docker.io": ["https://m.example.com"]},
+    )
+
+    module.begin_acceleration_pull()
+    try:
+        module.invalidate_acceleration_cache()
+        assert module._leased_cache is not None
+        assert module._acceleration_map_cache is not None
+        assert module._deferred_invalidation is True
+    finally:
+        module.end_acceleration_pull()
+
+    assert module._leased_cache is None
+    assert module._acceleration_map_cache is None
+    assert module._deferred_invalidation is False
+
+
+def test_cache_invalidation_waits_for_nested_pulls():
+    """多个下载重叠时，最后一个结束才清空域名。"""
+    module = registry_mirror_module
+    module._leased_cache = (
+        time.monotonic(),
+        "token",
+        {"licensed": True, "mirrors": []},
+    )
+
+    module.begin_acceleration_pull()
+    module.begin_acceleration_pull()
+    module.invalidate_acceleration_cache()
+    module.end_acceleration_pull()
+    assert module._leased_cache is not None
+    assert module._deferred_invalidation is True
+
+    module.end_acceleration_pull()
+    assert module._leased_cache is None
+    assert module._deferred_invalidation is False
+
+
+@pytest.mark.asyncio
+async def test_pull_keeps_domains_until_download_finishes(monkeypatch):
+    """下载过程中收到授权变化，域名保持不变，下载完成后才失效。"""
+    module = registry_mirror_module
+    mirror_pull = importlib.import_module("app.services.docker.mirror_pull")
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _fake_docker(*args, timeout=0):
+        if args[:2] == ("image", "inspect"):
+            return 1, ""
+        if args[0] == "pull":
+            entered.set()
+            await release.wait()
+        return 0, ""
+
+    monkeypatch.setattr(mirror_pull, "_docker", _fake_docker)
+    module._leased_cache = (
+        time.monotonic(),
+        "token",
+        {"licensed": True, "mirrors": []},
+    )
+    module._acceleration_map_cache = (
+        time.monotonic(),
+        {"docker.io": ["https://m.example.com"]},
+    )
+
+    task = asyncio.create_task(
+        mirror_pull.pull_with_mirror(
+            "app:latest", {"docker.io": ["https://m.example.com"]}
+        )
+    )
+    await entered.wait()
+    module.invalidate_acceleration_cache()
+    assert module._leased_cache is not None
+    assert module._acceleration_map_cache is not None
+
+    release.set()
+    assert await task is True
+    assert module._leased_cache is None
+    assert module._acceleration_map_cache is None
+    assert module._active_pulls == 0

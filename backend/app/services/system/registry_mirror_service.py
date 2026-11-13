@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any
 
@@ -36,7 +37,53 @@ MIRROR_CHECK_TIMEOUT = 8.0
 LEASED_CACHE_SECONDS = 60.0
 """授权专属域名的进程内缓存时间；授权状态变化时会按刷新令牌失效。"""
 
+ACCELERATION_MAP_CACHE_SECONDS = 60.0
+"""整张「源站 → 加速地址」映射的进程内缓存时间，供频繁调用的接口使用。"""
+
 _leased_cache: tuple[float, str, dict[str, Any]] | None = None
+_acceleration_map_cache: tuple[float, dict[str, list[str]]] | None = None
+
+_pull_state_lock = threading.Lock()
+_active_pulls = 0
+"""正在下载镜像的数量；下载期间沿用当前域名，不切换。"""
+_deferred_invalidation = False
+"""下载进行中收到的缓存失效请求，等最后一个下载结束后再执行。"""
+
+
+def begin_acceleration_pull() -> None:
+    """标记一次镜像下载开始，期间保留当前加速域名直到下载结束。"""
+    global _active_pulls
+    with _pull_state_lock:
+        _active_pulls += 1
+
+
+def end_acceleration_pull() -> None:
+    """标记一次镜像下载结束；没有下载时补做延后的缓存失效。"""
+    global _active_pulls, _deferred_invalidation
+    with _pull_state_lock:
+        if _active_pulls > 0:
+            _active_pulls -= 1
+        should_clear = _active_pulls == 0 and _deferred_invalidation
+        if should_clear:
+            _deferred_invalidation = False
+    if should_clear:
+        _clear_acceleration_cache()
+
+
+def invalidate_acceleration_cache() -> None:
+    """清空加速域名缓存；正在下载时延后到下载结束，避免切换中断下载。"""
+    global _deferred_invalidation
+    with _pull_state_lock:
+        if _active_pulls > 0:
+            _deferred_invalidation = True
+            return
+    _clear_acceleration_cache()
+
+
+def _clear_acceleration_cache() -> None:
+    global _leased_cache, _acceleration_map_cache
+    _leased_cache = None
+    _acceleration_map_cache = None
 
 
 def _leased_items(payload: Any) -> list[dict[str, Any]] | None:
@@ -256,6 +303,20 @@ class RegistryMirrorService:
             urls = mapping.setdefault(source, [])
             if url not in urls:
                 urls.append(url)
+        return mapping
+
+    async def acceleration_map_cached(self, db) -> dict[str, list[str]]:
+        """带进程内缓存的映射表；授权变化时由授权流程调用失效函数清空。"""
+        global _acceleration_map_cache
+        now = time.monotonic()
+        if (
+            _acceleration_map_cache is not None
+            and now - _acceleration_map_cache[0] < ACCELERATION_MAP_CACHE_SECONDS
+        ):
+            return _acceleration_map_cache[1]
+        mapping = await self.acceleration_map(db)
+        if mapping:
+            _acceleration_map_cache = (now, mapping)
         return mapping
 
     async def test(self, urls: list[str]) -> dict[str, Any]:

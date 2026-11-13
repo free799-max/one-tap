@@ -47,6 +47,15 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _reset_acceleration_cache() -> None:
+    """授权变化后清空镜像加速域名缓存，让下一次拉取立即用上新配置。"""
+    from app.services.system.registry_mirror_service import (
+        invalidate_acceleration_cache,
+    )
+
+    invalidate_acceleration_cache()
+
+
 def _timestamp(value: Any, claim: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise LicenseCertificateError(f"invalid_{claim}")
@@ -291,6 +300,7 @@ class LicensingService:
         state.last_refreshed_at = _utcnow()
         state.last_error = None
         await self._apply_acceleration_url(db, data.get("acceleration_subscription_url"))
+        _reset_acceleration_cache()
 
     async def _apply_acceleration_url(self, db: AsyncSession, url: Any) -> None:
         """保存管理端下发的加速订阅地址；未下发时保留本机已有值。"""
@@ -426,10 +436,12 @@ class LicensingService:
                     raise
                 self._clear_authorization(state, exc.message)
                 await self._clear_acceleration_url(db)
+                _reset_acceleration_cache()
                 await db.commit()
                 return await self.get_status(db)
         self._clear_authorization(state, None)
         await self._clear_acceleration_url(db)
+        _reset_acceleration_cache()
         await db.commit()
         return await self.get_status(db)
 
