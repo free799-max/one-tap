@@ -232,7 +232,11 @@ function DeployTaskCard({
   const meta = state.meta || {};
   const appName = meta.app_name as string | undefined;
   const appIcon = meta.icon as string | undefined;
-  const canStop = state.status === "deploying" && meta.operation === "provision";
+  const isProvisioning = meta.operation === "provision";
+  const isUpgrade = meta.operation === "upgrade";
+  const canStop =
+    state.status === "deploying" &&
+    (isProvisioning || (isUpgrade && !meta.orchestration_group_id));
   const stageLabel =
     state.stage === "completed"
       ? finishedLabel(meta, false)
@@ -279,7 +283,7 @@ function DeployTaskCard({
               ) : (
                 <Square className="h-3 w-3" aria-hidden="true" />
               )}
-              {isStopping ? "停止中" : "停止装配"}
+              {isStopping ? "停止中" : isUpgrade ? "停止升级" : "停止装配"}
             </Button>
           )}
           <Badge variant={statusConfig.variant} className="text-[10px] h-5 px-1.5 gap-1">
@@ -314,7 +318,9 @@ function DeployTaskCard({
           <div className="min-w-0">
             <p className="text-xs font-medium">{state.progress.message}</p>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              需要时可在应用详情中重新装配
+              {isUpgrade
+                ? "已下载的镜像层会保留，可稍后重新升级"
+                : "需要时可在应用详情中重新装配"}
             </p>
           </div>
         </div>
@@ -387,13 +393,18 @@ export function DeployProgressPanel({
   );
 
   const handleStop = async (taskId: string) => {
+    const isUpgrade = states[taskId]?.meta?.operation === "upgrade";
     setStoppingTaskId(taskId);
     try {
       await api.post(`/deploy-tasks/${taskId}/cancel`);
-      toast.success("已停止自动配置与装配，应用容器保持运行");
+      toast.success(
+        isUpgrade
+          ? "已停止升级，镜像下载已中断"
+          : "已停止自动配置与装配，应用容器保持运行"
+      );
     } catch (error) {
       const message = (error as { displayMessage?: string }).displayMessage;
-      toast.error(message || "停止装配失败，请重试");
+      toast.error(message || "停止任务失败，请重试");
     } finally {
       setStoppingTaskId(null);
     }

@@ -222,6 +222,10 @@ class ComposeService:
             proc.kill()
             await proc.wait()
             raise RuntimeError("docker compose 命令执行超时")
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            raise
 
         return {
             "returncode": proc.returncode,
@@ -279,6 +283,12 @@ class ComposeService:
             proc.kill()
             await proc.wait()
             raise RuntimeError("docker compose 命令执行超时")
+        except asyncio.CancelledError:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            proc.kill()
+            await proc.wait()
+            raise
         finally:
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 

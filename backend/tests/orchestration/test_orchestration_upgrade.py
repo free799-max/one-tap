@@ -689,3 +689,64 @@ async def test_upgrade_preview_images(db, legacy_group):
         resolve_target_image({"app_name": "moviepilot"}, db_app, {"image_tag": "v1.5"})
         == "moviepilot:v1.5"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_single_upgrade_restores_instance_and_rolls_back(
+    db, session_factory, apps, scheduled_tasks, monkeypatch
+):
+    project = DockerComposeProject(
+        project_name="test-stack-moviepilot",
+        config_files='["/tmp/compose.yaml"]',
+        working_dir="/tmp",
+    )
+    db.add(project)
+    await db.flush()
+    current_version = DockerComposeVersion(
+        project_id=project.id,
+        version_number=1,
+        content=_old_compose_yaml("moviepilot", OLD_CONFIGS["moviepilot"]),
+        is_current=True,
+    )
+    db.add(current_version)
+    instance = AppInstance(
+        app_id=apps[0].id,
+        instance_name="standalone-moviepilot",
+        config=OLD_CONFIGS["moviepilot"],
+        status="running",
+        project_id=project.id,
+    )
+    db.add(instance)
+    await db.commit()
+    await db.refresh(instance)
+
+    pulling = asyncio.Event()
+    rolled_back = asyncio.Event()
+
+    async def fake_edit(*args, **kwargs):
+        pulling.set()
+        await asyncio.Event().wait()
+
+    async def fake_rollback(db_, project_, version):
+        assert version.id == current_version.id
+        rolled_back.set()
+
+    monkeypatch.setattr(compose_manager, "edit_and_deploy_async", fake_edit)
+    monkeypatch.setattr(compose_manager, "rollback_version", fake_rollback)
+
+    _, task_id = await orchestration_service.upgrade_single_instance(
+        db,
+        instance.id,
+        target_image="moviepilot:v2",
+        user_id=1,
+    )
+    await asyncio.wait_for(pulling.wait(), timeout=1)
+    await orchestration_service.cancel_upgrade(task_id)
+
+    state = upgrade_module.deploy_task_manager.get_task(task_id)
+    assert state["status"] == "cancelled"
+    assert state["progress"]["message"] == "已停止升级，镜像下载已中断"
+    assert rolled_back.is_set()
+    async with session_factory() as check_db:
+        restored = await check_db.get(AppInstance, instance.id)
+        assert restored.status == "running"

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
@@ -621,3 +623,40 @@ def test_parse_ps_preserves_restarting_status(compose_manager):
     )
     assert mixed["status"] == "partial"
     assert mixed["running_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_streaming_command_kills_and_reaps_process(compose_manager):
+    compose_manager._docker_available = True
+    started = asyncio.Event()
+    killed = asyncio.Event()
+    proc = MagicMock()
+    proc.stdout.readline = AsyncMock(return_value=b"")
+    proc.stderr.readline = AsyncMock(return_value=b"")
+    proc.kill.side_effect = killed.set
+
+    async def wait():
+        started.set()
+        await killed.wait()
+        return -9
+
+    proc.wait = wait
+    project = MagicMock()
+    project.project_name = "cancel-test"
+    project.config_files = '["/tmp/compose.yaml"]'
+    project.working_dir = "/tmp"
+
+    with patch(
+        "app.services.compose.compose_service.asyncio.create_subprocess_exec",
+        AsyncMock(return_value=proc),
+    ):
+        task = asyncio.create_task(
+            compose_manager._run_streaming(project, "up", "-d")
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    proc.kill.assert_called_once_with()
+    assert killed.is_set()

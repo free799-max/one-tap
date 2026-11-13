@@ -13,6 +13,7 @@ from app.models.orchestration import (
     OrchestrationUpgradeBackup,
 )
 from app.services.app_store import app_service
+from app.services.orchestration import orchestration_service
 from app.services.orchestration import upgrade as upgrade_module
 
 
@@ -301,3 +302,28 @@ async def test_update_events_requires_auth(client):
     """未认证时无法查询更新记录。"""
     resp = await client.get("/api/orchestrations/update-events")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cancel_single_upgrade_api(client_with_seed, monkeypatch):
+    token = await _register_and_login(client_with_seed, "cancel-upgrader")
+    task_id = upgrade_module.deploy_task_manager.create_task(
+        "app_upgrade",
+        meta={"operation": "upgrade", "app_name": "moviepilot"},
+    )
+
+    async def fake_cancel(progress_task_id):
+        assert progress_task_id == task_id
+        upgrade_module.deploy_task_manager.cancel_task(
+            task_id, "已停止升级，镜像下载已中断"
+        )
+
+    monkeypatch.setattr(orchestration_service, "cancel_upgrade", fake_cancel)
+    resp = await client_with_seed.post(
+        f"/api/deploy-tasks/{task_id}/cancel",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "cancelled"
+    assert resp.json()["data"]["progress"]["message"] == "已停止升级，镜像下载已中断"

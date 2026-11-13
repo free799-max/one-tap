@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable
+
+from docker import auth, utils
 
 from app.services.docker.image_service import (
     _consume_pull_stream,
@@ -116,7 +119,30 @@ async def _docker(*args: str, timeout: int = PULL_TIMEOUT) -> tuple[int, str]:
         proc.kill()
         await proc.wait()
         return 124, f"docker {args[0]} 执行超时"
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
     return proc.returncode or 0, stderr.decode("utf-8", errors="replace").strip()
+
+
+def _open_pull_stream(client, image: str):
+    api = client.api
+    repository, image_tag = utils.parse_repository_tag(image)
+    registry, _ = auth.resolve_repository_name(repository)
+    headers = {}
+    header = auth.get_config_header(api, registry)
+    if header:
+        headers["X-Registry-Auth"] = header
+    response = api._post(
+        api._url("/images/create"),
+        params={"tag": image_tag or "latest", "fromImage": repository},
+        headers=headers,
+        stream=True,
+        timeout=None,
+    )
+    api._raise_for_status(response)
+    return response, api._stream_helper(response, decode=True)
 
 
 async def _docker_pull(
@@ -132,6 +158,8 @@ async def _docker_pull(
         return 127, "Docker 不可用"
     last_progress = None
     last_text = None
+    response = None
+    cancelled = threading.Event()
 
     def emit(data: dict) -> None:
         nonlocal last_text
@@ -145,8 +173,11 @@ async def _docker_pull(
             logger.exception("镜像下载进度回调异常")
 
     def consume() -> None:
-        nonlocal last_progress
-        stream = client.api.pull(image, stream=True, decode=True)
+        nonlocal last_progress, response
+        response, stream = _open_pull_stream(client, image)
+        if cancelled.is_set():
+            response.close()
+            return
 
         def forward(data: dict) -> None:
             nonlocal last_progress
@@ -155,10 +186,23 @@ async def _docker_pull(
 
         _consume_pull_stream(stream, forward)
 
+    worker = asyncio.create_task(asyncio.to_thread(consume))
     try:
-        await asyncio.to_thread(consume)
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancelled.set()
+        if response is not None:
+            response.close()
+        try:
+            await worker
+        except Exception:
+            pass
+        raise
     except Exception as exc:
         return 1, str(exc)
+    finally:
+        if response is not None:
+            response.close()
 
     if last_progress is None:
         emit({"percentage": 100, "size_text": "--", "speed": 0, "determinate": True})

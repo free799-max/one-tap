@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -97,10 +99,15 @@ async def test_pull_with_mirror_consumes_docker_progress_events(monkeypatch):
         },
     ]
     client = MagicMock()
-    client.api.pull.return_value = iter(events)
+    response = MagicMock()
     manager = MagicMock()
     manager._client = client
     monkeypatch.setattr(mirror_pull, "docker_manager", manager)
+    monkeypatch.setattr(
+        mirror_pull,
+        "_open_pull_stream",
+        lambda current_client, image: (response, iter(events)),
+    )
     times = iter([100.0, 100.5, 102.0])
     monkeypatch.setattr(image_service.common.time, "time", lambda: next(times))
 
@@ -123,9 +130,59 @@ async def test_pull_with_mirror_consumes_docker_progress_events(monkeypatch):
         "镜像下载 50% · 50.0 MB / 100.0 MB · 16.7 MB/s",
         "镜像下载 100% · 100.0 MB / 100.0 MB",
     ]
-    client.api.pull.assert_called_once_with(
-        "example.com/app:latest", stream=True, decode=True
+    response.close.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cancel_pull_closes_response_without_trying_next_mirror(monkeypatch):
+    started = threading.Event()
+    closed = threading.Event()
+    finished = threading.Event()
+    response = MagicMock()
+    response.close.side_effect = closed.set
+    pulls = []
+
+    def stream():
+        try:
+            started.set()
+            while not closed.wait(0.05):
+                pass
+            raise RuntimeError("response closed")
+            yield {}
+        finally:
+            finished.set()
+
+    def open_stream(client, image):
+        pulls.append(image)
+        return response, stream()
+
+    async def inspect_image(*args, **kwargs):
+        return 1, ""
+
+    monkeypatch.setattr(mirror_pull, "_docker", inspect_image)
+    monkeypatch.setattr(mirror_pull, "_open_pull_stream", open_stream)
+    task = asyncio.create_task(
+        mirror_pull.pull_with_mirror(
+            "metacubex/mihomo:v1.19.33",
+            {
+                "docker.io": [
+                    "https://dedicated.example",
+                    "https://free.example",
+                ]
+            },
+            progress=lambda data: None,
+        )
     )
+    await asyncio.to_thread(started.wait, 1)
+    assert started.is_set()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed.is_set()
+    assert finished.is_set()
+    assert pulls == ["dedicated.example/metacubex/mihomo:v1.19.33"]
 
 
 def test_overall_percentage_uses_real_downloaded_bytes(monkeypatch):

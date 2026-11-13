@@ -13,6 +13,7 @@
   Compose 版本。
 """
 
+import asyncio
 import copy
 import logging
 from typing import Callable
@@ -169,6 +170,40 @@ async def resolve_single_target_image(
 
 class UpgradeMixin:
     """按最新模板升级已有编排实例组。"""
+
+    def _track_upgrade_task(self, task_id: str, coro) -> asyncio.Task:
+        task = create_background_task(coro)
+        tasks = getattr(self, "_upgrade_tasks", None)
+        if tasks is None:
+            tasks = {}
+            self._upgrade_tasks = tasks
+        tasks[task_id] = task
+
+        def cleanup(done_task: asyncio.Task) -> None:
+            if tasks.get(task_id) is done_task:
+                tasks.pop(task_id, None)
+
+        task.add_done_callback(cleanup)
+        return task
+
+    async def cancel_upgrade(self, task_id: str) -> None:
+        state = deploy_task_manager.get_task(task_id)
+        if state is None:
+            raise APIException("任务不存在", 404)
+        if state.get("type") != "app_upgrade":
+            raise APIException("仅单应用升级任务支持停止", 400)
+        if state.get("status") != "deploying":
+            raise APIException("任务已结束", 409)
+
+        task = getattr(self, "_upgrade_tasks", {}).get(task_id)
+        if task is None or task.done():
+            raise APIException("任务已结束或当前无法停止", 409)
+        deploy_task_manager.cancel_task(task_id, "已停止升级，镜像下载已中断")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def upgrade_instance(
         self,
@@ -625,14 +660,14 @@ class UpgradeMixin:
                 comment=comment,
                 progress_callback=progress,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             try:
                 await compose_manager.rollback_version(
                     db, project, current_version
                 )
             except Exception:
                 logger.exception(
-                    "应用 %s 升级失败后回滚 Compose 版本失败", db_app.name
+                    "应用 %s 升级中断后回滚 Compose 版本失败", db_app.name
                 )
             raise
         return current_image
@@ -689,7 +724,8 @@ class UpgradeMixin:
         instance.status = "deploying"
         await db.commit()
 
-        create_background_task(
+        self._track_upgrade_task(
+            task_id,
             self._run_single_upgrade(
                 instance_id=instance.id,
                 db_app_name=db_app.name,
@@ -697,7 +733,7 @@ class UpgradeMixin:
                 task_id=task_id,
                 mode=mode,
                 user_id=user_id,
-            )
+            ),
         )
         return instance, task_id
 
@@ -772,6 +808,16 @@ class UpgradeMixin:
 
             report("completed", 100, "升级完成")
             deploy_task_manager.complete_task(task_id, "升级完成")
+        except asyncio.CancelledError:
+            try:
+                async with async_session() as db:
+                    instance = await app_service.get_instance(db, instance_id)
+                    instance.status = "running"
+                    await db.commit()
+            except Exception:
+                logger.exception("应用实例 %s 取消升级后恢复状态失败", instance_id)
+            deploy_task_manager.cancel_task(task_id, "已停止升级，镜像下载已中断")
+            raise
         except Exception as exc:
             logger.exception("应用实例 %s 升级失败", instance_id)
             await self._record_single_failure(

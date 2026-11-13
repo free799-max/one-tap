@@ -86,10 +86,14 @@ async def cancel_deploy_task(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """停止自动配置与装配，不影响已启动的应用容器。"""
+    """停止支持取消的部署任务。"""
     from app.services.orchestration import orchestration_service
 
-    await orchestration_service.cancel_provisioning(task_id)
+    task = deploy_task_manager.get_task(task_id)
+    if task and task.get("type") == "app_upgrade":
+        await orchestration_service.cancel_upgrade(task_id)
+    else:
+        await orchestration_service.cancel_provisioning(task_id)
     return deploy_task_manager.get_task(task_id)
 
 
