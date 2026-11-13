@@ -34,6 +34,7 @@ const MAX_DOCKER_REGISTRY_MIRRORS = 20;
 
 const SOURCE_LABELS: Record<string, string> = {
   "docker.io": "Docker Hub",
+  "gcr.io": "Google GCR",
   "ghcr.io": "GitHub",
   "lscr.io": "LinuxServer",
   "docker.n8n.io": "n8n",

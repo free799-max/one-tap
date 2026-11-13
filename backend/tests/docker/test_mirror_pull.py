@@ -392,3 +392,42 @@ async def test_pull_never_falls_back_to_source_when_direct_is_disabled(monkeypat
         "dedicated.example/metacubex/mihomo:v1.19.33",
         "free.example/metacubex/mihomo:v1.19.33",
     ]
+
+
+@pytest.mark.parametrize(
+    ("image", "expected_target", "expected_tag_target"),
+    [
+        (
+            "nginx:1.27",
+            "docker.mirror/library/nginx:1.27",
+            ("library/nginx", "1.27"),
+        ),
+        (
+            "docker.io/bitnami/redis:8",
+            "docker.mirror/bitnami/redis:8",
+            ("bitnami/redis", "8"),
+        ),
+        (
+            "gcr.io/google-containers/pause:3.9",
+            "gcr.mirror/google-containers/pause:3.9",
+            ("gcr.io/google-containers/pause", "3.9"),
+        ),
+        (
+            "ghcr.io/suwayomi/suwayomi-server:v2.4.2490",
+            "ghcr.mirror/suwayomi/suwayomi-server:v2.4.2490",
+            ("ghcr.io/suwayomi/suwayomi-server", "v2.4.2490"),
+        ),
+    ],
+)
+def test_mirror_targets_match_original_registry(
+    image, expected_target, expected_tag_target
+):
+    acceleration = {
+        "docker.io": ["https://docker.mirror"],
+        "gcr.io": ["https://gcr.mirror"],
+        "ghcr.io": ["https://ghcr.mirror"],
+    }
+
+    assert mirror_pull._mirror_targets(image, acceleration) == [
+        (expected_target, expected_tag_target)
+    ]
