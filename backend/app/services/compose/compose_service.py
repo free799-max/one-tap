@@ -28,7 +28,7 @@ from app.services.compose.log_utils import (
     summarize_compose_error,
 )
 from app.services.compose.permissions import extract_bind_sources, parse_puid_pgid
-from app.services.docker.mirror_pull import _format_pull_block, pull_with_mirror
+from app.services.docker.mirror_pull import _docker, _format_pull_block, pull_with_mirror
 from app.services.manage_client import manage_base_urls
 from app.services.system.registry_mirror_service import get_acceleration_map
 from app.services.compose.yaml_utils import (
@@ -374,6 +374,56 @@ class ComposeService:
                     f"镜像加速拉取失败，已停止部署，未继续回退源站：{image}"
                 )
 
+    async def _ensure_images_present(
+        self,
+        project: DockerComposeProject,
+        progress: Callable[..., Any] | None,
+    ) -> None:
+        """启动前补齐缺失镜像。
+
+        ``up --pull never`` 不会下载镜像。上次拉取被中断（例如程序重启）
+        时镜像可能尚未落盘，直接启动会报 ``No such image``；这里先把缺失
+        的镜像补下来，再交给 compose 启动。
+        """
+        images = await self._compose_images(project)
+        missing = []
+        for image in images:
+            code, _ = await _docker("image", "inspect", image, timeout=30)
+            if code != 0:
+                missing.append(image)
+        if not missing:
+            return
+
+        acceleration = await get_acceleration_map() if manage_base_urls() else {}
+        for index, image in enumerate(missing, 1):
+            message = f"补拉缺失镜像 {index}/{len(missing)}"
+
+            def pull_progress(
+                state: dict,
+                _image: str = image,
+                _message: str = message,
+            ) -> None:
+                if progress:
+                    progress(
+                        "pulling_images",
+                        89,
+                        _message,
+                        _format_pull_block(_image, state),
+                    )
+
+            if progress:
+                progress("pulling_images", 89, message, image)
+            pulled = await pull_with_mirror(
+                image,
+                acceleration,
+                progress=pull_progress if progress else None,
+                allow_direct=True,
+            )
+            if not pulled:
+                raise RuntimeError(
+                    f"镜像 {image} 不存在且拉取失败，无法启动服务"
+                )
+
     @staticmethod
     def _has_ip_conflict(result: dict) -> bool:
         """判断 compose 输出是否为容器网络地址冲突。"""
@@ -527,7 +577,8 @@ class ComposeService:
         若未提供 progress_callback，则退化为非流式执行。
         固定容器 IP 被占用时清理本项目残留容器并重试一次，避免
         Docker 的 ``Address already in use`` 直接导致部署失败。
-        ``pull=False`` 用于已有项目的启动，只使用本机已有镜像。
+        ``pull=False`` 用于已有项目的启动，不主动刷新镜像，
+        但会先补齐本地缺失的镜像，避免 ``up --pull never`` 报 ``No such image``。
         """
         def _progress(stage: str, percentage: int, message: str, detail: str | None = None):
             if progress_callback:
@@ -539,6 +590,8 @@ class ComposeService:
             _progress("pulling_images", 90, "拉取镜像并启动服务")
             current_stage = "pulling_images"
         else:
+            _progress("starting_services", 88, "检查本地镜像")
+            await self._ensure_images_present(project, progress_callback)
             _progress("starting_services", 90, "启动服务中")
             current_stage = "starting_services"
         last_progress_at = 0.0

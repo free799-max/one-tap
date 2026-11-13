@@ -506,6 +506,92 @@ async def test_action_up_uses_local_images_without_pulling(compose_manager):
 
 
 @pytest.mark.asyncio
+async def test_action_up_pulls_missing_image_before_start(compose_manager):
+    """上次拉取中断导致镜像缺失时，启动前先补拉再执行 up。"""
+    project = MagicMock()
+    project.id = 1
+    project.project_name = "movie-moviepilot"
+    db = AsyncMock()
+    stack = MagicMock(service_count=1, running_count=1)
+    pulled = []
+
+    async def fake_pull(image, acceleration, *, progress=None, allow_direct=True):
+        assert allow_direct is True
+        pulled.append(image)
+        return True
+
+    with (
+        patch.object(
+            compose_manager,
+            "_compose_images",
+            AsyncMock(return_value=["jxxghp/moviepilot:3.2.6"]),
+        ),
+        patch(
+            "app.services.compose.compose_service._docker",
+            AsyncMock(return_value=(1, "Error: No such image")),
+        ),
+        patch(
+            "app.services.compose.compose_service.manage_base_urls",
+            return_value=[],
+        ),
+        patch(
+            "app.services.compose.compose_service.pull_with_mirror",
+            side_effect=fake_pull,
+        ),
+        patch.object(
+            compose_manager,
+            "_run",
+            AsyncMock(return_value={"returncode": 0, "stdout": "", "stderr": ""}),
+        ) as run,
+        patch.object(
+            compose_manager, "sync_stack_status", AsyncMock(return_value=stack)
+        ),
+    ):
+        await compose_manager.action_async(db, project, "up")
+
+    assert pulled == ["jxxghp/moviepilot:3.2.6"]
+    up_calls = [call for call in run.await_args_list if call.args[1] == "up"]
+    assert up_calls[0].args[1:] == ("up", "-d", "--pull", "never")
+
+
+@pytest.mark.asyncio
+async def test_action_up_skips_pull_when_image_exists(compose_manager):
+    """镜像已在本地时启动不触发补拉。"""
+    project = MagicMock()
+    project.id = 1
+    project.project_name = "movie-moviepilot"
+    db = AsyncMock()
+    stack = MagicMock(service_count=1, running_count=1)
+
+    with (
+        patch.object(
+            compose_manager,
+            "_compose_images",
+            AsyncMock(return_value=["jxxghp/moviepilot:3.2.6"]),
+        ),
+        patch(
+            "app.services.compose.compose_service._docker",
+            AsyncMock(return_value=(0, "")),
+        ),
+        patch(
+            "app.services.compose.compose_service.pull_with_mirror",
+            AsyncMock(return_value=True),
+        ) as pull,
+        patch.object(
+            compose_manager,
+            "_run",
+            AsyncMock(return_value={"returncode": 0, "stdout": "", "stderr": ""}),
+        ),
+        patch.object(
+            compose_manager, "sync_stack_status", AsyncMock(return_value=stack)
+        ),
+    ):
+        await compose_manager.action_async(db, project, "up")
+
+    pull.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_prepull_forwards_download_progress(compose_manager):
     project = MagicMock()
     events = []
