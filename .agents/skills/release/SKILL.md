@@ -19,6 +19,8 @@ argument-hint: "[major|minor|patch] [--dry-run]"
 
 标签是唯一版本来源（`v主.次.修订`），CHANGELOG 由脚本从提交信息生成，不要手改版本号。
 
+用户说「小版本 / 小小版本」时指**只递增修订号**（patch），保持当前次版本不变：v0.15.0 → v0.15.1。此时用 `scripts/release.sh patch ...` 强制递增，不再按上表推断。
+
 ## 流程
 
 1. 看现状，确认要发布的改动：
@@ -70,7 +72,8 @@ git ls-remote origin refs/heads/main
 `ccr.ccs.tencentyun.com/one-tap/one-tap` 与 Docker Hub `docker.io/free5104/one-tap`
 同样只推 `<tag>` 与 `latest`。Docker Hub 推送需要 GitLab CI/CD 变量
 `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD`（可用 Access Token），或 Runner 宿主机已有
-Docker Hub 登录状态。
+Docker Hub 登录状态；它是可选镜像源，网络不可达或未登录时流水线只告警跳过，
+Harbor / 腾讯云 CCR 的 `<tag>` 与 `latest` 不受影响。
 部署侧按标签升级：
 
 ```bash

@@ -907,3 +907,90 @@ class TestTemplateImageOverride:
         )
 
         assert "image: adguard/adguardhome:v0.107.79" in rendered
+
+
+class TestReaderFreeImagePorts:
+    """编排覆盖成社区版 Reader 时纠正模板里的 reader-pro 端口。"""
+
+    @pytest.fixture
+    def app_service(self):
+        from app.services.app_store.app_service import AppService
+
+        return AppService()
+
+    @staticmethod
+    def _app():
+        return type(
+            "App",
+            (),
+            {
+                "name": "reader",
+                "image": "hectorqin/reader-pro",
+                "config_schema": {},
+                "yaml_template": (
+                    "services:\n"
+                    "  reader:\n"
+                    "    image: {{ image }}\n"
+                    "    ports:\n"
+                    "{%- for port in ports %}\n"
+                    "      - \"{{ port.local_port }}:{{ port.container_port }}/{{ port.protocol }}\"\n"
+                    "{%- endfor %}\n"
+                    "    volumes:\n"
+                    "{%- for vol in volumes %}\n"
+                    "      - {{ vol.host_path }}:{{ vol.container_path }}:{{ vol.mode }}\n"
+                    "{%- endfor %}\n"
+                    "    environment:\n"
+                    "{%- for item in reader_env %}\n"
+                    "      - {{ item.key }}={{ item.value }}\n"
+                    "{%- endfor %}"
+                ),
+            },
+        )()
+
+    @staticmethod
+    def _config(image: str) -> dict:
+        return {
+            "image": image,
+            "ports": [
+                {"protocol": "tcp", "local_port": 9007, "container_port": 5888}
+            ],
+            "volumes": [
+                {
+                    "mode": "rw",
+                    "host_path": "reader/data",
+                    "container_path": "/data",
+                }
+            ],
+            "reader_env": [
+                {"key": "PORT", "value": "5888"},
+                {"key": "TZ", "value": "Asia/Shanghai"},
+            ],
+        }
+
+    def test_free_image_listens_on_8080(self, app_service):
+        """社区版 Reader 不认 PORT，固定监听 8080，数据在 /storage。"""
+        rendered = app_service._render_app(
+            self._app(),
+            self._config("hectorqin/reader:3.2.14"),
+            "book-reader",
+            None,
+        )
+
+        assert "9007:8080/tcp" in rendered
+        assert "PORT=8080" in rendered
+        assert "9007:5888" not in rendered
+        assert ":/storage:rw" in rendered
+        assert ":/data:rw" not in rendered
+
+    def test_pro_image_keeps_5888(self, app_service):
+        """reader-pro 镜像继续使用 5888 与 /data。"""
+        rendered = app_service._render_app(
+            self._app(),
+            self._config("hectorqin/reader-pro:0.1.0"),
+            "book-reader",
+            None,
+        )
+
+        assert "9007:5888/tcp" in rendered
+        assert "PORT=5888" in rendered
+        assert ":/data:rw" in rendered

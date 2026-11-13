@@ -163,6 +163,47 @@ def _normalize_qbittorrent_env(config: dict, image: str) -> None:
     config["qbittorrent_env"] = normalized
 
 
+# 社区版 Reader（hectorqin/reader、自建 free5104/reader）固定监听 8080、
+# 数据根目录为 /storage；环境变量 PORT、DATA_DIR 对它不生效。
+# reader-pro 模板的 5888 与 /data 只适用于 pro 镜像。
+_READER_FREE_IMAGE_REPOS = {"hectorqin/reader", "free5104/reader"}
+_READER_PRO_CONTAINER_PORT = 5888
+_READER_FREE_CONTAINER_PORT = 8080
+_READER_PRO_DATA_DIR = "/data"
+_READER_FREE_DATA_DIR = "/storage"
+
+
+def _normalize_reader_ports(config: dict, image: str) -> None:
+    """编排覆盖成社区版 Reader 镜像时纠正端口与数据目录（原地修改）。"""
+    if _image_repository(image) not in _READER_FREE_IMAGE_REPOS:
+        return
+    port_list = config.get("ports")
+    if isinstance(port_list, list):
+        for item in port_list:
+            if (
+                isinstance(item, dict)
+                and str(item.get("container_port")) == str(_READER_PRO_CONTAINER_PORT)
+            ):
+                item["container_port"] = _READER_FREE_CONTAINER_PORT
+    env_list = config.get("reader_env")
+    if isinstance(env_list, list):
+        for item in env_list:
+            if not isinstance(item, dict) or item.get("key") != "PORT":
+                continue
+            if str(item.get("value")) == str(_READER_PRO_CONTAINER_PORT):
+                item["value"] = str(_READER_FREE_CONTAINER_PORT)
+    # 社区版把书源、书架与账号都放在 /storage，/data 挂载会变成空目录，
+    # 重建容器后账号与书架随之丢失。
+    volume_list = config.get("volumes")
+    if isinstance(volume_list, list):
+        for item in volume_list:
+            if (
+                isinstance(item, dict)
+                and str(item.get("container_path")) == _READER_PRO_DATA_DIR
+            ):
+                item["container_path"] = _READER_FREE_DATA_DIR
+
+
 def _apply_template_image(template: str, default_image: str, image: str) -> str:
     """让编排级镜像覆盖对未使用 ``{{ image }}`` 的旧模板也生效。
 
@@ -781,6 +822,7 @@ class AppService:
                 merged_config["image_tag"] = tag
 
         _normalize_qbittorrent_env(merged_config, image)
+        _normalize_reader_ports(merged_config, image)
         template = _apply_template_image(
             db_app.yaml_template, db_app.image, image
         )

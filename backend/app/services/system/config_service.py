@@ -25,6 +25,9 @@ _AUTO_UPDATE_TARGET = re.compile(r"^(group|app):[1-9]\d*$")
 EMAIL_USERNAME_APPS: tuple[str, ...] = ("komga", "ermao-library", "vaultwarden")
 """必须使用邮箱作为登录账号的应用。"""
 
+FIXED_USERNAME_APPS: dict[str, str] = {"music-tag-web": "admin"}
+"""登录名固定且无法修改的应用：免费版只有内置账号。"""
+
 _EMAIL_DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 """邮箱后缀中单个域名段的合法格式。"""
 
@@ -56,8 +59,8 @@ def resolve_username_for_app(
 ) -> str:
     """按应用要求组装登录用户名。
 
-    需要邮箱登录的应用在用户名不含 ``@`` 时追加配置的后缀；
-    其他应用或未配置后缀时原样返回。
+    登录名固定的应用直接返回内置账号；需要邮箱登录的应用在用户名
+    不含 ``@`` 时追加配置的后缀；其他应用或未配置后缀时原样返回。
 
     Args:
         app_name: 应用标识
@@ -67,6 +70,9 @@ def resolve_username_for_app(
     Returns:
         str: 实际使用的登录用户名
     """
+    fixed = FIXED_USERNAME_APPS.get(app_name)
+    if fixed:
+        return fixed
     raw = (username or "").strip() or "admin"
     domain = (email_domain or "").strip()
     if app_name not in EMAIL_USERNAME_APPS or "@" in raw or not domain:

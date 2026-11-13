@@ -171,6 +171,14 @@ def test_resolve_username_without_domain():
     assert resolve_username_for_app("komga", "admin", "") == "admin"
 
 
+def test_resolve_username_for_fixed_account_apps():
+    """登录名固定的应用始终使用内置账号。"""
+    assert (
+        resolve_username_for_app("music-tag-web", "free9527", "example.com")
+        == "admin"
+    )
+
+
 def test_normalize_email_domain_accepts_subdomains():
     assert normalize_email_domain("@Mail.Example.COM") == "mail.example.com"
     assert normalize_email_domain("") == ""

@@ -159,3 +159,57 @@ async def test_music_tag_web_provision_without_container_runner():
         assert "缺少容器执行能力" in (result.message or "")
     finally:
         patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_music_tag_web_provision_resets_unknown_password():
+    """数据卷密码已不可知时直接在容器内重置内置 admin。"""
+    patcher, instance = _mock_http()
+    runner = AsyncMock(return_value=(0, "password-updated"))
+    try:
+        instance.post = AsyncMock(
+            side_effect=[
+                _resp(200, json_data=_token(False)),  # 目标密码失败
+                _resp(200, json_data=_token(False)),  # 默认 admin/admin 失败
+                _resp(200, json_data=_token(True)),  # 重置后复验成功
+            ]
+        )
+
+        result = await MusicTagWebClient().provision(
+            url="http://192.168.1.17:10001",
+            username="free9527",
+            password="Unified#Pass1",
+            command_runner=runner,
+        )
+
+        assert result.ok is True
+        assert result.username == "admin"
+        runner.assert_awaited_once()
+        args, _ = runner.await_args
+        assert args[1]["MTW_TARGET_USERNAME"] == "admin"
+        assert args[1]["MTW_TARGET_PASSWORD"] == "Unified#Pass1"
+    finally:
+        patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_music_tag_web_verify_auth_uses_admin_account():
+    """校验账号时忽略历史用户名，始终使用内置 admin。"""
+    patcher, instance = _mock_http()
+    try:
+        instance.post = AsyncMock(return_value=_resp(200, json_data=_token(True)))
+
+        result = await MusicTagWebClient().verify_auth(
+            {
+                "url": "http://192.168.1.17:10001",
+                "auth_type": "basic",
+                "username": "free9527",
+                "password": "Unified#Pass1",
+            }
+        )
+
+        assert result.valid is True
+        _, login_kwargs = instance.post.call_args
+        assert login_kwargs["json"]["username"] == "admin"
+    finally:
+        patcher.stop()

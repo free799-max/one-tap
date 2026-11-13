@@ -1,9 +1,10 @@
 """Music Tag Web 应用客户端实现。
 
-Music Tag Web 是 Django + Vue 应用，内置默认管理员 ``admin/admin``。
-免费版（V1）的用户管理接口返回 403，无法通过 API 改密，因此自动配置
-在登录成功后通过容器内的 Django 管理命令写入统一密码；目录由编排共享
-卷直接挂载到 ``/app/media``，无需额外设置。
+Music Tag Web 是 Django + Vue 应用，免费版只有内置管理员 ``admin``，
+用户名不可修改。用户管理接口返回 403，无法通过 API 改密，因此自动
+配置在容器内执行 Django 管理命令重置内置账号密码；即使数据卷里的
+旧密码已不可知（例如统一密码后来被改过），也能直接恢复登录。
+目录由编排共享卷直接挂载到 ``/app/media``，无需额外设置。
 """
 
 import asyncio
@@ -352,14 +353,23 @@ class MusicTagWebSession:
             },
         )
 
-# 容器内改密脚本：通过环境变量传递账号密码，避免命令注入
+# 容器内改密脚本：账号固定为内置 admin；不存在时创建，存在时直接重置
 _CHANGE_PASSWORD_SCRIPT = (
     "import os\n"
     "from django.contrib.auth import get_user_model\n"
     "User = get_user_model()\n"
-    "user = User.objects.get(username=os.environ['MTW_TARGET_USERNAME'])\n"
-    "user.set_password(os.environ['MTW_TARGET_PASSWORD'])\n"
-    "user.save()\n"
+    "name = os.environ['MTW_TARGET_USERNAME']\n"
+    "password = os.environ['MTW_TARGET_PASSWORD']\n"
+    "user = User.objects.filter(username=name).first()\n"
+    "if user is None:\n"
+    "    user = User.objects.create_superuser(\n"
+    "        username=name, email='', password=password\n"
+    "    )\n"
+    "else:\n"
+    "    user.set_password(password)\n"
+    "    user.is_superuser = True\n"
+    "    user.is_staff = True\n"
+    "    user.save()\n"
     "print('password-updated')\n"
 )
 
@@ -384,11 +394,13 @@ class MusicTagWebClient(AppClient):
         download_dir: str | None = None,
         command_runner: CommandRunner | None = None,
     ) -> ProvisionResult:
-        """登录（或使用默认管理员）并把密码改为统一密码。"""
+        """登录（或直接重置内置账号）并把密码改为统一密码。"""
         base = str(url or "").strip().rstrip("/")
         if not base:
             return ProvisionResult(ok=False, message="访问地址不能为空")
 
+        # 免费版只有内置 admin 账号，用户名不跟随系统统一用户名
+        username = _DEFAULT_USERNAME
         deadline = time.monotonic() + self.PROVISION_TIMEOUT
         last_error = "服务未就绪"
 
@@ -407,9 +419,11 @@ class MusicTagWebClient(AppClient):
                         )
 
                     # 配置卷复用：统一密码变化时用旧密码登录后改密
-                    if previous_password and previous_password != password:
+                    for candidate in (previous_password, _DEFAULT_PASSWORD):
+                        if not candidate or candidate == password:
+                            continue
                         if await self._login(
-                            client, base, username, previous_password
+                            client, base, username, candidate
                         ) is not None:
                             return await self._change_password(
                                 client,
@@ -419,21 +433,16 @@ class MusicTagWebClient(AppClient):
                                 command_runner,
                             )
 
-                    # 首次部署的默认管理员
-                    if username == _DEFAULT_USERNAME:
-                        if await self._login(
+                    # 数据卷里的密码既不是目标密码也不是已知旧密码时，
+                    # 直接在容器内重置内置 admin，避免实例永久无法登录
+                    if command_runner is not None:
+                        return await self._change_password(
                             client,
                             base,
-                            _DEFAULT_USERNAME,
-                            _DEFAULT_PASSWORD,
-                        ) is not None:
-                            return await self._change_password(
-                                client,
-                                base,
-                                username,
-                                password,
-                                command_runner,
-                            )
+                            username,
+                            password,
+                            command_runner,
+                        )
 
                     last_error = "用户名或密码错误（默认账号 admin/admin 亦不可用）"
                     return ProvisionResult(
@@ -461,12 +470,11 @@ class MusicTagWebClient(AppClient):
                 valid=False, message="Music Tag Web 需要账号密码认证"
             )
 
-        username = str(config.get("username") or "")
+        # 免费版只有内置 admin 账号，忽略配置里遗留的历史用户名
+        username = _DEFAULT_USERNAME
         password = str(config.get("password") or "")
-        if not username or not password:
-            return AuthVerifyResult(
-                valid=False, message="用户名和密码不能为空"
-            )
+        if not password:
+            return AuthVerifyResult(valid=False, message="密码不能为空")
 
         try:
             async with httpx.AsyncClient(
@@ -500,6 +508,8 @@ class MusicTagWebClient(AppClient):
         base = str(url or "").strip().rstrip("/")
         if not base:
             raise AppClientError("Music Tag Web 访问地址不能为空")
+        # 免费版只有内置 admin 账号
+        username = _DEFAULT_USERNAME
         try:
             async with httpx.AsyncClient(
                 timeout=self.TIMEOUT,
@@ -543,13 +553,13 @@ class MusicTagWebClient(AppClient):
         password: str,
         command_runner: CommandRunner | None,
     ) -> ProvisionResult:
-        """通过容器内 Django 管理命令改密，并复验登录。"""
+        """在容器内重置内置账号密码，并复验登录。"""
         if command_runner is None:
             return ProvisionResult(
                 ok=False,
                 message=(
-                    "已用默认管理员登录，但缺少容器执行能力，"
-                    "无法把密码改为统一密码"
+                    "无法登录且缺少容器执行能力，"
+                    "无法把密码重置为统一密码"
                 ),
             )
 
