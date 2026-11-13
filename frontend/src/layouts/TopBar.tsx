@@ -1,12 +1,12 @@
 /**
  * 顶部栏组件 - 极简风格
  *
- * 包含帮助、通知、用户菜单
+ * 包含帮助、用户菜单
  */
 
 import { useState, useRef, useEffect } from "react";
 import {
-  Bell,
+  BookOpen,
   RefreshCw,
   User,
   LogOut,
@@ -91,10 +91,25 @@ export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
             </TooltipContent>
           </Tooltip>
         )}
-        <button className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors relative">
-          <Bell className="h-4 w-4" />
-          <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500 ring-2 ring-white" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger
+            delay={150}
+            render={
+              <a
+                href="https://doc.one-tab.vip/"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="帮助文档"
+                className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              >
+                <BookOpen className="h-4 w-4" />
+              </a>
+            }
+          />
+          <TooltipContent side="bottom" align="center">
+            帮助文档
+          </TooltipContent>
+        </Tooltip>
 
         {activeTaskIds.length > 0 && (
           <button

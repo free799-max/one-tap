@@ -6,6 +6,7 @@ import {
   Circle,
   Clock3,
   Crown,
+  ExternalLink,
   Eye,
   KeyRound,
   Loader2,
@@ -250,6 +251,17 @@ export function LicenseTab() {
               />
             )}
             <AccelerationStatusBadge status={license} />
+            {!license.valid && (
+              <a
+                href="https://doc.one-tab.vip/pricing"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                开通加速
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+            )}
             {!license.valid && purchaseUrl && (
               <Button
                 type="button"
@@ -399,7 +411,7 @@ export function LicenseTab() {
                     {activate.isPending && (
                       <Loader2 className="animate-spin" aria-hidden="true" />
                     )}
-                    {activate.isPending ? "开通中..." : "开通专属加速"}
+                    {activate.isPending ? "激活中..." : "激活专属加速"}
                   </Button>
                 </form>
               </>

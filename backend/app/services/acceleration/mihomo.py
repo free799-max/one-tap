@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import socket
+import struct
 import time
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +63,19 @@ def host_lan_ip() -> str:
             return sock.getsockname()[0]
     except OSError:
         return "127.0.0.1"
+
+
+def default_gateway() -> str:
+    """当前环境的默认网关；OneTap 以容器运行时它指向宿主机。"""
+    try:
+        with open("/proc/net/route", encoding="utf-8") as handle:
+            for line in handle.readlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 3 and fields[1] == "00000000":
+                    return socket.inet_ntoa(struct.pack("<L", int(fields[2], 16)))
+    except (OSError, ValueError):
+        pass
+    return ""
 
 
 def _client():
@@ -145,9 +159,42 @@ async def host_ports(db: AsyncSession) -> dict[int, int]:
     return ports
 
 
+def inside_container() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _tcp_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def proxy_host(port: int) -> str:
+    """其他应用容器能访问到 Mihomo 的宿主机地址。
+
+    OneTap 以容器运行时本机探测到的地址是容器内部 IP，应用容器访问不到，
+    优先改用默认网关（宿主机）并按端口连通性挑选。
+    """
+    candidates: list[str] = []
+    if inside_container():
+        gateway = default_gateway()
+        if gateway and not gateway.startswith("127."):
+            candidates.append(gateway)
+    lan = host_lan_ip()
+    if not lan.startswith("127.") and lan not in candidates:
+        candidates.append(lan)
+    for host in candidates:
+        if _tcp_open(host, port):
+            return host
+    return candidates[0] if candidates else "127.0.0.1"
+
+
 async def proxy_url(db: AsyncSession) -> str:
     ports = await host_ports(db)
-    return f"http://{host_lan_ip()}:{ports[MIXED_PORT]}"
+    host = await asyncio.to_thread(proxy_host, ports[MIXED_PORT])
+    return f"http://{host}:{ports[MIXED_PORT]}"
 
 
 async def read_state(db: AsyncSession) -> dict:
@@ -172,9 +219,57 @@ async def _write_state(db: AsyncSession, **values) -> dict:
     return state
 
 
-def _controller_version(port: int) -> str:
+def _container_ip(container) -> str:
     try:
-        response = httpx.get(f"http://127.0.0.1:{port}/version", timeout=2.0)
+        networks = (container.attrs.get("NetworkSettings") or {}).get("Networks") or {}
+    except Exception:  # noqa: BLE001 - 容器元数据缺失时退回其他地址
+        return ""
+    for network in networks.values():
+        address = str((network or {}).get("IPAddress") or "")
+        if address:
+            return address
+    return ""
+
+
+def _controller_candidates(controller_port: int) -> list[str]:
+    """按可达性排序的控制端地址。
+
+    OneTap 以容器运行时，Mihomo 的端口映射只发布在宿主机上，容器内的
+    127.0.0.1 指向 OneTap 自己，必须改用宿主机地址（默认网关）。
+    """
+    bases: list[str] = []
+
+    def add(host: str, port: int) -> None:
+        if not host:
+            return
+        base = f"http://{host}:{port}"
+        if base not in bases:
+            bases.append(base)
+
+    add("127.0.0.1", controller_port)
+    gateway = default_gateway()
+    if gateway and not gateway.startswith("127."):
+        add(gateway, controller_port)
+    try:
+        for info in socket.getaddrinfo("host.docker.internal", None, socket.AF_INET):
+            add(info[4][0], controller_port)
+    except OSError:
+        pass
+    lan = host_lan_ip()
+    if not lan.startswith("127."):
+        add(lan, controller_port)
+    try:
+        container = _find_container(_client())
+    except docker.errors.DockerException:
+        container = None
+    if container is not None:
+        add(_container_ip(container), CONTROLLER_PORT)
+    return bases
+
+
+def _controller_version(base: str) -> str:
+    try:
+        response = httpx.get(f"{base}/version", timeout=1.5)
         if response.status_code == 200:
             return str(response.json().get("version") or "")
     except (httpx.HTTPError, ValueError):
@@ -182,13 +277,38 @@ def _controller_version(port: int) -> str:
     return ""
 
 
-def _wait_ready(port: int, timeout: float = 20.0) -> bool:
+def _probe_controller(controller_port: int) -> tuple[str, str]:
+    """返回可用的控制端地址与版本，全部不可达时返回空串。"""
+    for base in _controller_candidates(controller_port):
+        version = _controller_version(base)
+        if version:
+            return base, version
+    return "", ""
+
+
+def _wait_ready(controller_port: int, timeout: float = 20.0) -> str:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _controller_version(port):
-            return True
+        base, version = _probe_controller(controller_port)
+        if version:
+            return base
         time.sleep(0.5)
-    return False
+    return ""
+
+
+def _last_log_line() -> str:
+    try:
+        container = _find_container(_client())
+        if container is None:
+            return ""
+        raw = container.logs(tail=5).decode("utf-8", "replace")
+    except (docker.errors.DockerException, AttributeError):
+        return ""
+    for line in reversed(raw.splitlines()):
+        text = line.strip()
+        if text:
+            return text[:200]
+    return ""
 
 
 def _container_status(controller_port: int) -> dict:
@@ -204,7 +324,8 @@ def _container_status(controller_port: int) -> dict:
     result["installed"] = True
     result["running"] = container.status == "running"
     if result["running"]:
-        result["version"] = _controller_version(controller_port)
+        _, version = _probe_controller(controller_port)
+        result["version"] = version
         if not result["version"]:
             try:
                 tag = (container.image.tags or [""])[0]
@@ -306,7 +427,11 @@ def _apply_subscription(content: str, directory: Path, controller_port: int) -> 
                 _find_container(_client()).restart(timeout=10)
             except (docker.errors.DockerException, AttributeError):
                 logger.warning("回滚 Mihomo 配置后重启失败")
-        raise RuntimeError("Mihomo 重启后控制端口无响应，已回滚上一份配置")
+        hint = _last_log_line()
+        message = "Mihomo 重启后控制端口无响应，已回滚上一份配置"
+        if hint:
+            message += f"（{hint}）"
+        raise RuntimeError(message)
 
 
 async def apply_subscription_async(

@@ -1,5 +1,6 @@
 """网络加速：订阅地址、订阅同步与规则解析测试。"""
 
+import httpx
 import pytest
 
 from app.config import settings
@@ -250,3 +251,55 @@ async def test_deploy_mihomo_returns_unified_task(client, monkeypatch):
         "task_id": "task-123",
         "instance_name": "onetap-mihomo",
     }
+
+
+def test_controller_candidates_prefer_local_and_include_host(monkeypatch):
+    monkeypatch.setattr(mihomo, "default_gateway", lambda: "172.18.0.1")
+    monkeypatch.setattr(mihomo, "host_lan_ip", lambda: "192.168.1.17")
+    monkeypatch.setattr(mihomo, "_find_container", lambda client: None)
+
+    bases = mihomo._controller_candidates(9006)
+    assert bases[0] == "http://127.0.0.1:9006"
+    assert "http://172.18.0.1:9006" in bases
+    assert "http://192.168.1.17:9006" in bases
+
+
+def test_controller_probe_falls_back_to_host_gateway(monkeypatch):
+    monkeypatch.setattr(
+        mihomo,
+        "_controller_candidates",
+        lambda port: [
+            f"http://127.0.0.1:{port}",
+            f"http://172.18.0.1:{port}",
+        ],
+    )
+
+    def fake_get(url, timeout=None):
+        if url.startswith("http://172.18.0.1"):
+            return httpx.Response(200, json={"version": "v1.19.34"})
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(mihomo.httpx, "get", fake_get)
+
+    base, version = mihomo._probe_controller(8006)
+    assert base == "http://172.18.0.1:8006"
+    assert version == "v1.19.34"
+
+
+def test_proxy_host_uses_gateway_inside_container(monkeypatch):
+    monkeypatch.setattr(mihomo, "inside_container", lambda: True)
+    monkeypatch.setattr(mihomo, "default_gateway", lambda: "172.18.0.1")
+    monkeypatch.setattr(mihomo, "host_lan_ip", lambda: "172.18.0.5")
+    monkeypatch.setattr(
+        mihomo, "_tcp_open", lambda host, port, timeout=0.5: host == "172.18.0.1"
+    )
+
+    assert mihomo.proxy_host(8009) == "172.18.0.1"
+
+
+def test_proxy_host_uses_lan_ip_on_host(monkeypatch):
+    monkeypatch.setattr(mihomo, "inside_container", lambda: False)
+    monkeypatch.setattr(mihomo, "host_lan_ip", lambda: "192.168.1.17")
+    monkeypatch.setattr(mihomo, "_tcp_open", lambda host, port, timeout=0.5: True)
+
+    assert mihomo.proxy_host(9002) == "192.168.1.17"
