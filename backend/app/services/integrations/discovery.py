@@ -30,6 +30,7 @@ class DeployedApp:
     instance_name: str
     status: str
     url: str | None = None
+    has_persisted_url: bool = False
     icon: str | None = None
     project_id: int | None = None
     container_id: str | None = None
@@ -153,6 +154,15 @@ def _to_deployed_app(instance: AppInstance, host: str) -> DeployedApp:
     password = _first(group_entry.get("password"), config.get("password"), env_secrets.get("password"))
     api_key = _first(group_entry.get("api_key"), config.get("api_key"), env_secrets.get("api_key"))
     url = _resolve_url(instance, config, group_entry, host)
+    has_persisted_url = bool(
+        _first(
+            group_entry.get("url"),
+            config.get("url"),
+            config.get("access_url"),
+            config.get("suggested_url"),
+        )
+        or (_first(config.get("network_ip")) and config.get("container_port"))
+    )
 
     return DeployedApp(
         instance_id=instance.id,
@@ -161,6 +171,7 @@ def _to_deployed_app(instance: AppInstance, host: str) -> DeployedApp:
         instance_name=instance.instance_name,
         status=instance.status,
         url=url,
+        has_persisted_url=has_persisted_url,
         icon=app.icon if app else None,
         project_id=instance.project_id,
         container_id=_text(config.get("container_id")) or None,

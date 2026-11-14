@@ -450,7 +450,11 @@ function ArrayField({
               row.key !== undefined
             ) {
               const keyValue = String(row.key).toLowerCase();
-              if (keyValue.includes("password") || keyValue.includes("pass")) {
+              if (
+                keyValue.includes("password") ||
+                keyValue.includes("pass") ||
+                keyValue.includes("secret")
+              ) {
                 prop = { ...p, format: "password" };
               }
             }

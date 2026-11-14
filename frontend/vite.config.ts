@@ -51,6 +51,10 @@ export default defineConfig({
         changeOrigin: false,
         ws: true,
       },
+      "/mcp": {
+        target: "http://127.0.0.1:5001",
+        changeOrigin: false,
+      },
     },
   },
 });

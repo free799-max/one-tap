@@ -34,17 +34,20 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def create_access_token(data: dict) -> str:
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """签发 JWT 访问令牌。
 
     Args:
         data: 令牌载荷数据，通常包含 {"sub": "<user_id>"}。
+        expires_delta: 可选的短时有效期；缺省使用系统配置的登录有效期。
 
     Returns:
         编码后的 JWT 字符串。
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
 

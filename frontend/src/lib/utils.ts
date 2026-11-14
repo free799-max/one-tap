@@ -110,6 +110,16 @@ export function formatUptime(seconds: number): string {
   return `${minutes}分钟`;
 }
 
+function randomInt(max: number): number {
+  if (max <= 0) return 0;
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const buffer = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(buffer);
+    return buffer[0] % max;
+  }
+  return Math.floor(Math.random() * max);
+}
+
 /** 生成随机密码（大小写字母 + 数字） */
 export function generatePassword(length = 16): string {
   const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -117,19 +127,22 @@ export function generatePassword(length = 16): string {
   const digits = "0123456789";
   const all = upper + lower + digits;
 
-  let password = "";
-  password += upper[Math.floor(Math.random() * upper.length)];
-  password += lower[Math.floor(Math.random() * lower.length)];
-  password += digits[Math.floor(Math.random() * digits.length)];
+  const chars = [
+    upper[randomInt(upper.length)],
+    lower[randomInt(lower.length)],
+    digits[randomInt(digits.length)],
+  ];
 
   for (let i = 3; i < length; i++) {
-    password += all[Math.floor(Math.random() * all.length)];
+    chars.push(all[randomInt(all.length)]);
   }
 
-  return password
-    .split("")
-    .sort(() => Math.random() - 0.5)
-    .join("");
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+
+  return chars.join("");
 }
 
 /** 将实例名称转换为合法 Compose 项目名（严格：去除首尾连字符） */

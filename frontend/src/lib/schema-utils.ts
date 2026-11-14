@@ -45,8 +45,9 @@ export function extractDefaults(
 /**
  * 遍历 defaults，为空密码字段自动生成密码。
  *
- * 包括：format === "password" 的字段，以及 key/value 数组中 key 包含
- * password/pass 且 value 为空的项。
+ * 包括：format === "password" 的字段，key/value 数组中 key 包含
+ * password/pass/secret 且 value 为空的项，以及 schema 通过
+ * `x-generate-secrets` 显式声明的 key（如 AWS_ACCESS_KEY_ID）。
  */
 export function fillEmptyPasswords(
   schema: Record<string, unknown>,
@@ -57,6 +58,13 @@ export function fillEmptyPasswords(
     | undefined;
   if (!properties) return defaults;
 
+  const explicitSecretKeys = new Set(
+    Array.isArray(schema?.["x-generate-secrets"])
+      ? (schema["x-generate-secrets"] as unknown[]).map((item) =>
+          String(item).toLowerCase()
+        )
+      : []
+  );
   const filled = structuredClone(defaults);
 
   for (const [key, prop] of Object.entries(properties)) {
@@ -78,10 +86,16 @@ export function fillEmptyPasswords(
         ? (filled[key] as Record<string, unknown>[])
         : [];
       filled[key] = rows.map((row) => {
-        const keyValue = String(row?.key || "").toLowerCase();
+        const rowKey = String(row?.key || "");
+        const keyValue = rowKey.toLowerCase();
         const value = row?.value;
+        const looksSecret =
+          keyValue.includes("password") ||
+          keyValue.includes("pass") ||
+          keyValue.includes("secret") ||
+          explicitSecretKeys.has(keyValue);
         if (
-          (keyValue.includes("password") || keyValue.includes("pass")) &&
+          looksSecret &&
           (value === "" || value === undefined || value === null)
         ) {
           return { ...row, value: generatePassword() };

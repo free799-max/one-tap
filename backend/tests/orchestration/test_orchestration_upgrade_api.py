@@ -161,6 +161,11 @@ async def test_upgrade_endpoint_starts_image_only_upgrade(
     token = await _register_and_login(client_with_seed, "upgrade-api")
     monkeypatch.setattr(app_service, "deploy", _fake_deploy())
 
+    # 本用例只验证镜像升级，自动装配任务在对应服务测试中单独覆盖
+    monkeypatch.setattr(
+        orchestration_service, "_schedule_provisioning", lambda *args, **kwargs: None
+    )
+
     # 后台升级协程使用独立的全局会话，这里只验证接口同步阶段的行为
     monkeypatch.setattr(
         upgrade_module,

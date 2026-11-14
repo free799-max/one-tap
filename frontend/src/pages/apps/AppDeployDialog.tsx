@@ -155,16 +155,26 @@ export function AppDeployDialog({
   const appDisplayName = app?.display_name || "";
   const appConfigSchema = useMemo(() => app?.config_schema || {}, [app]);
 
-  // 端口顺序分配：统计端口总数并请求建议端口，用于表单初始化预填
-  const totalPorts = useMemo(
-    () => countSchemaPorts(appConfigSchema, extractDefaults(appConfigSchema)),
-    [appConfigSchema]
+  // 端口顺序分配：详情返回前先用列表里的 schema 开始探测，避免串行等待
+  const portCountSchema = useMemo(
+    () => app?.config_schema || propApp?.config_schema || {},
+    [app, propApp]
   );
-  const { data: portSuggestions } = usePortSuggestions(totalPorts);
+  const totalPorts = useMemo(
+    () => countSchemaPorts(portCountSchema, extractDefaults(portCountSchema)),
+    [portCountSchema]
+  );
+  const {
+    data: portSuggestions,
+    isError: portSuggestionsFailed,
+  } = usePortSuggestions(totalPorts);
+  const [portsReady, setPortsReady] = useState(false);
+  const [configInitialized, setConfigInitialized] = useState(false);
   const portsFilledRef = useRef(false);
   const appliedSlugRef = useRef("");
 
   useEffect(() => {
+    if (!app) return;
     setInstanceName(initialInstanceName ?? slugify(appDisplayName));
     const defaults = extractDefaults(appConfigSchema);
     const overrides = JSON.parse(initialConfigKey) as Record<string, unknown>;
@@ -172,8 +182,11 @@ export function AppDeployDialog({
       fillEmptyPasswords(appConfigSchema, { ...defaults, ...overrides })
     );
     portsFilledRef.current = false;
+    setPortsReady(false);
+    setConfigInitialized(true);
     appliedSlugRef.current = "";
   }, [
+    app,
     appDisplayName,
     appConfigSchema,
     initialInstanceName,
@@ -212,7 +225,27 @@ export function AppDeployDialog({
     const result = applyPortSuggestions(appConfigSchema, config, portSuggestions, 0);
     portsFilledRef.current = true;
     setConfig(result.config);
+    setPortsReady(true);
   }, [portSuggestions, appConfigSchema, config]);
+
+  // 有端口字段时必须等建议端口写入后再允许部署，避免抢在预填完成前
+  // 用 schema 默认端口（常与宿主机现有服务冲突）直接部署。
+  const configHasPorts = useMemo(
+    () => countSchemaPorts(appConfigSchema, config) > 0,
+    [appConfigSchema, config]
+  );
+  const needsPortAllocation =
+    totalPorts > 0 && (configHasPorts || !configInitialized);
+  const portSuggestionsUnavailable =
+    portSuggestionsFailed ||
+    (portSuggestions !== undefined && portSuggestions.length === 0);
+  const preparingConfig = !configInitialized;
+  const preparingPorts =
+    !preparingConfig &&
+    needsPortAllocation &&
+    !portsReady &&
+    !portSuggestionsUnavailable;
+  const preparing = preparingConfig || preparingPorts;
 
   const toast = useToast();
 
@@ -260,6 +293,12 @@ export function AppDeployDialog({
   }
 
   const handleDeploy = () => {
+    if (preparing) {
+      toast.error(
+        preparingConfig ? "正在加载配置，请稍候" : "正在分配可用端口，请稍候再部署"
+      );
+      return;
+    }
     const projectName = slugify(instanceName);
     if (!projectName) {
       toast.error("请输入有效的实例名称");
@@ -351,7 +390,17 @@ export function AppDeployDialog({
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+        <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+          {preparing && (
+            <p className="mr-auto text-xs text-muted-foreground">
+              {preparingConfig ? "正在加载配置…" : "正在分配可用端口…"}
+            </p>
+          )}
+          {!preparing && needsPortAllocation && portSuggestionsUnavailable && (
+            <p className="mr-auto text-xs text-destructive">
+              端口建议获取失败，将使用默认端口，请确认无冲突
+            </p>
+          )}
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -359,8 +408,14 @@ export function AppDeployDialog({
           >
             取消
           </Button>
-          <Button onClick={handleDeploy} disabled={isDeploying}>
-            {isDeploying ? "部署中…" : "一键部署"}
+          <Button onClick={handleDeploy} disabled={isDeploying || preparing}>
+            {isDeploying
+              ? "部署中…"
+              : preparingConfig
+                ? "准备中…"
+                : preparingPorts
+                  ? "分配端口中…"
+                  : "一键部署"}
           </Button>
         </div>
       </DialogContent>

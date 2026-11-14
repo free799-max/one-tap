@@ -4,7 +4,12 @@
  * 提供系统全局配置的查询和更新能力。
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
 import type { ApiError } from "@/api/types";
@@ -122,6 +127,38 @@ export function useAutoUpdateTargets(enabled = true) {
   });
 }
 
+const PORT_SUGGESTIONS_STALE_TIME = 15_000;
+
+function portSuggestionsQueryKey(
+  count: number,
+  options?: PortSuggestionOptions
+) {
+  return [
+    "settings",
+    "port-suggestions",
+    count,
+    options?.preferred?.join(",") ?? "",
+    options?.excludeContainer ?? "",
+  ];
+}
+
+/**
+ * 预取服务端口建议。安装按钮悬停/聚焦时调用，避免首次打开部署弹窗
+ * 还要等待端口探测。
+ */
+export function prefetchPortSuggestions(
+  queryClient: QueryClient,
+  count: number,
+  options?: PortSuggestionOptions
+) {
+  if (count <= 0) return Promise.resolve();
+  return queryClient.prefetchQuery({
+    queryKey: portSuggestionsQueryKey(count, options),
+    queryFn: () => getPortSuggestions(count, options),
+    staleTime: PORT_SUGGESTIONS_STALE_TIME,
+  });
+}
+
 /**
  * 查询服务端口分配建议（部署表单预填端口用）
  */
@@ -129,17 +166,11 @@ export function usePortSuggestions(
   count: number,
   options?: PortSuggestionOptions
 ) {
-  const preferredKey = options?.preferred?.join(",") ?? "";
   return useQuery<number[]>({
-    queryKey: [
-      "settings",
-      "port-suggestions",
-      count,
-      preferredKey,
-      options?.excludeContainer ?? "",
-    ],
+    queryKey: portSuggestionsQueryKey(count, options),
     queryFn: () => getPortSuggestions(count, options),
     enabled: count > 0,
+    staleTime: PORT_SUGGESTIONS_STALE_TIME,
   });
 }
 

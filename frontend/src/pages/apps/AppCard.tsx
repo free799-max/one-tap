@@ -4,10 +4,13 @@
  * 应用商店风格：左侧图标、右侧信息 + 底部操作栏。
  */
 
+import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBytes, formatRelativeTime } from "@/lib/utils";
+import { prefetchPortSuggestions } from "@/hooks/useSettings";
+import { countSchemaPorts, extractDefaults } from "@/lib/schema-utils";
 import { AppIcon } from "./AppIcon";
 import type { App } from "@/hooks/useApps";
 
@@ -18,6 +21,18 @@ interface AppCardProps {
 }
 
 export function AppCard({ app, onDeploy, onDetail }: AppCardProps) {
+  const queryClient = useQueryClient();
+  const portCount = countSchemaPorts(
+    app.config_schema ?? {},
+    extractDefaults(app.config_schema ?? {})
+  );
+
+  // 悬停安装按钮时提前探测端口，弹窗打开后无需再等预填
+  const warmPortSuggestions = () => {
+    if (app.type === "external") return;
+    void prefetchPortSuggestions(queryClient, portCount);
+  };
+
   return (
     <Card
       className="relative rounded-xl p-5 min-h-[140px] border border-border/80 shadow-sm hover:shadow-[0_4px_14px_rgba(0,0,0,0.08)] hover:border-border transition-all cursor-pointer"
@@ -86,6 +101,8 @@ export function AppCard({ app, onDeploy, onDetail }: AppCardProps) {
                 <Button
                   variant="outline"
                   size="sm"
+                  onMouseEnter={warmPortSuggestions}
+                  onFocus={warmPortSuggestions}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDeploy(app);

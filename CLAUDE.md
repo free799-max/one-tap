@@ -312,6 +312,16 @@ DockerComposeProject 1--1 DockerComposeStack
 - MoviePilot 插件管理：`GET/POST /api/orchestrations/instances/{id}/apps/moviepilot/plugins[/install]`。
 - 前端：`AppConfigPanel` 分 Tab（概览/检测优化/自动整理/自动同步/集成），应用头部提供「编排日志」按钮（复用 `StackLogsDialog` 查看该应用 Compose 项目日志），检测面板 `AppInspectPanel`、MoviePilot 集成面板 `MoviePilotIntegrationPanel`、Music Tag Web 自动整理面板 `MusicAutoOrganizePanel`、Reader 自动同步面板 `ReaderAutoSyncPanel` 均在 `pages/automation/`。
 
+### MCP 聚合
+
+- 基于 `fastmcp==2.14.7` 在 FastAPI 进程内提供唯一 Streamable HTTP 端点 `/mcp`，实现位于 `services/mcp/`。协议使用独立 ASGI 路由，不能经过 `StandardResponse` 包装；主 lifespan 必须显式启停 MCP session manager。
+- 原生上游目前支持 MoviePilot：自动从实例和 `app_configs` 解析地址/API Key，连接 `{url}/api/v1/mcp`，按 `moviepilot_<instance_id>_<原生工具名>` 暴露。携带凭据的上游只允许使用实例中持久化的 URL，不能根据请求 Host 生成目标；禁止自动跟随重定向，客户端 Authorization/Cookie 不透传给上游。远程发现并发执行，带总超时、短缓存和失败退避；本地工具优先调用，不枚举远程上游；实例删除后回收挂载及旧权限配置。
+- `IntegrationConfig(kind='mcp')` 保存全局开关、每实例工具白名单、本地工具开关和 OneTap API `api_operation_ids`。默认全局关闭、上游只读、API 操作白名单为空；空白名单表示不开放任何工具，订阅等写工具需管理员在「系统设置 → MCP 聚合」中显式开启。`tools/list` 与 `tools/call` 都执行同一套服务端校验。
+- 本地工具包括媒体目标查询、音乐整理状态/触发、Reader 同步状态/触发，以及 `onetap_api_catalog` / `onetap_api_request`。前者查询运行时完整 OpenAPI 目录和按需裁剪的 Schema；后者只按 operationId 调用已授权操作，不接受任意 URL、method 或请求头。调用使用短时内存 JWT 经 ASGI 执行原路由及权限依赖，响应递归脱敏并限制大小；认证、秘密查看、MCP 控制面、SSE、文件、WebSocket 和容器 exec 仅展示、不可调用。
+- 管理端 `/api/settings/mcp/catalog` 统一展示全部 OneTap API、本地工具和远程工具，含参数详情、授权与实际生效状态；前端默认展示可搜索、筛选和分页的完整接口目录。完整展示不代表默认授权。
+- 外部客户端使用独立的 `otmcp_*` 管理员 Token（Authorization Bearer），不能使用登录 JWT 或 URL query token。数据库只保存 SHA-256 哈希，支持过期和撤销；调用审计在 `mcp_tool_call_logs`，API 调用记录为 `api:<operationId>`，不保存参数和结果正文。
+- 测试位于 `backend/tests/mcp/`，覆盖真实 FastMCP 上游聚合、白名单直接调用拦截、请求头隔离、OpenAPI 全量目录、真实 API 调用和 ASGI 协议。FastMCP/Pydantic/Uvicorn 依赖变化后仍需按 `docker/base.Dockerfile` 重建基础镜像。
+
 ### 漫画自动化（Comic Auto + Komga/Kavita）
 
 - 编排模板为 `comics-stack`（`category=漫画`），组合为 `comic-auto`（必选）+ `komga` / `kavita`（可选，`group=阅读器`）。分组名由管理端填写、原样展示，不再做英文映射。

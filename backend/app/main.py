@@ -27,6 +27,7 @@ from app.api.settings import router as settings_router
 from app.api.integrations import router as integrations_router
 from app.api.acceleration import router as acceleration_router
 from app.api.license import router as license_router
+from app.api.mcp import router as mcp_router
 
 logger = logging.getLogger(__name__)
 
@@ -206,28 +207,32 @@ async def lifespan(app: FastAPI):
 
     installation_reporter.start_scheduler()
 
-    yield
+    from app.services.mcp.server import mcp_lifespan
 
-    await music_auto_service.stop_scheduler()
-    await reader_auto_service.stop_scheduler()
-    await hosts_optimizer_service.stop_scheduler()
-    await accel_sync_service.stop_scheduler()
-    await licensing_service.stop_scheduler()
-    await installation_reporter.stop_scheduler()
-
-    if auto_update_task is not None:
-        auto_update_task.cancel()
+    async with mcp_lifespan():
         try:
-            await auto_update_task
-        except asyncio.CancelledError:
-            pass
+            yield
+        finally:
+            await music_auto_service.stop_scheduler()
+            await reader_auto_service.stop_scheduler()
+            await hosts_optimizer_service.stop_scheduler()
+            await accel_sync_service.stop_scheduler()
+            await licensing_service.stop_scheduler()
+            await installation_reporter.stop_scheduler()
 
-    if sync_task is not None:
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            pass
+            if auto_update_task is not None:
+                auto_update_task.cancel()
+                try:
+                    await auto_update_task
+                except asyncio.CancelledError:
+                    pass
+
+            if sync_task is not None:
+                sync_task.cancel()
+                try:
+                    await sync_task
+                except asyncio.CancelledError:
+                    pass
 
 
 # 创建 FastAPI 应用实例
@@ -282,10 +287,15 @@ app.include_router(settings_router)
 app.include_router(integrations_router)
 app.include_router(acceleration_router)
 app.include_router(license_router)
+app.include_router(mcp_router)
 
 # Docker 管理路由（依赖可选的 Docker 环境）
 from app.api.docker import router as docker_router
 app.include_router(docker_router)
+
+# MCP 使用独立 ASGI 子应用，不能经过 StandardResponse 包装。
+from app.services.mcp.routes import mcp_routes
+app.router.routes.extend(mcp_routes)
 
 
 @app.get("/api/health")
