@@ -141,14 +141,14 @@ export function LoginPage() {
 
   if (isCheckingUsers) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="h-full flex items-center justify-center bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="h-full flex overflow-y-auto bg-background">
       {/* ===================== 左侧品牌区 ===================== */}
       <div className="hidden lg:flex lg:w-[55%] xl:w-1/2 relative bg-primary flex-col justify-between p-12 xl:p-16 overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-primary via-[#6d28d9] to-[#5b21b6]" />

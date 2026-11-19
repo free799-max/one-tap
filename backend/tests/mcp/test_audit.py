@@ -39,3 +39,26 @@ async def test_remote_exception_arguments_are_not_persisted(mcp_env):
     assert "argument-secret" not in logs[0].error_message
     assert "search failed" not in logs[0].error_message
     assert "RuntimeError" in logs[0].error_message
+
+
+@pytest.mark.asyncio
+async def test_local_only_listing_hides_remote_calls(mcp_env):
+    actor = McpActor(user_id=mcp_env["admin"].id, token_id=1, username="admin", request_host="test")
+    for name, source in (
+        ("moviepilot_1_media.search", "remote"),
+        ("onetap_search", "local"),
+    ):
+        await record_tool_call(
+            tool_name=name,
+            source=source,
+            upstream_instance_id=None,
+            success=True,
+            started_at=time.monotonic(),
+            actor=actor,
+        )
+    async with mcp_env["session"]() as db:
+        logs = await list_tool_call_logs(
+            db, user_id=mcp_env["admin"].id, local_only=True
+        )
+    assert [log.tool_name for log in logs] == ["onetap_search"]
+    assert logs[0].source == "local"

@@ -114,6 +114,8 @@ export interface OrchestrationInstanceApp {
   current_image?: string | null;
   /** 按当前模板升级后的目标镜像 */
   target_image?: string | null;
+  /** 后端按部署端口自动生成的访问地址（未显式配置时使用） */
+  url?: string | null;
 }
 
 /** 编排实例组 */
@@ -297,6 +299,164 @@ export interface ReaderAutoSyncPanel {
   } | null;
   last_run?: ReaderAutoSyncLastRun | null;
   stats?: { pending?: number; done?: number; failed?: number };
+}
+
+/** 用户添加的自定义源地址 */
+export interface CustomResourceSource {
+  id: string;
+  name: string;
+  url: string;
+}
+
+/** 源配置（存于 app_configs[appName].resource_sources） */
+export interface ResourceSourcesConfig {
+  enabled: boolean;
+  auto_filter: boolean;
+  selected_ids: string[];
+  /** Reader 自定义书源 / Suwayomi 自定义漫源 */
+  custom_sources?: CustomResourceSource[];
+  /** Reader 当前用户的书源数量上限 */
+  book_source_limit?: number;
+}
+
+/** 可供选择的源 */
+export interface ResourceSourceOption {
+  id: string;
+  name: string;
+  description?: string;
+  language?: string;
+  group?: string;
+  default_selected: boolean;
+  filtered: boolean;
+  filter_reason?: string;
+  custom?: boolean;
+}
+
+/** 单个源的最近一次装配结果 */
+export interface ResourceSourceResultItem {
+  id: string;
+  name: string;
+  status: string;
+  message?: string;
+}
+
+/** 最近一次源装配结果 */
+export interface ResourceSourcesLastResult {
+  status: string;
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+  items?: ResourceSourceResultItem[];
+}
+
+/** 源配置面板数据 */
+export interface ResourceSourcesPanel {
+  supported: boolean;
+  config: ResourceSourcesConfig;
+  options: ResourceSourceOption[];
+  last_result?: ResourceSourcesLastResult | null;
+}
+
+/** 巡影里已连接的一块网盘 */
+export interface StorageMountSource {
+  id: string;
+  provider: string;
+  provider_label: string;
+  /** 隐藏后的账号标识，如 AARq…NE7U */
+  account: string;
+  status: string;
+  /** 是否支持一键挂载到 OpenList */
+  supported: boolean;
+  driver?: string | null;
+  mounted: boolean;
+  mount_path?: string | null;
+  storage_id?: number | null;
+  /** OpenList 的 WebDAV 地址，容器外可直接访问 */
+  webdav_url?: string | null;
+  /** 挂载根目录下的条目名，如 Movies / Anime / TV */
+  contents?: string[];
+  contents_error?: string | null;
+}
+
+/** OpenList 存储挂载面板数据 */
+export interface StorageMountsPanel {
+  supported: boolean;
+  openlist_url?: string | null;
+  sources: StorageMountSource[];
+  error?: string | null;
+}
+
+/** 一键挂载结果 */
+export interface StorageMountResult {
+  ok: boolean;
+  message?: string;
+  storage_id?: number;
+  mount_path?: string;
+  contents?: string[];
+}
+
+/** MoviePilot 目录配置；保留后端返回的扩展字段 */
+export interface AppDirectory {
+  name: string;
+  download_path: string;
+  library_path: string;
+  transfer_type: "link" | "softlink" | "copy" | "move";
+  [key: string]: unknown;
+}
+
+/** 媒体服务器中的单个媒体库 */
+export interface AppMediaLibrary {
+  id: string;
+  name: string;
+  path: string[];
+  type: string | null;
+}
+
+/** MoviePilot 媒体服务器及媒体库同步配置 */
+export interface AppMediaServer {
+  name: string;
+  type: string;
+  enabled: boolean;
+  sync_libraries: string[];
+  libraries: AppMediaLibrary[];
+  error: string | null;
+}
+
+/** 自动创建媒体库的最近检测结果 */
+export interface AppAutoLibrarySyncResult {
+  targets: number;
+  present_directories: number;
+  created: number;
+  servers: Array<{
+    name: string;
+    created: number;
+    error: string | null;
+  }>;
+  message: string;
+}
+
+/** 自动创建媒体库配置 */
+export interface AppAutoLibrarySyncConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  last_run_at: string | null;
+  last_result: AppAutoLibrarySyncResult | null;
+}
+
+/** MoviePilot 目录配置面板数据 */
+export interface AppDirectoryConfigPanel {
+  supported: boolean;
+  directories: AppDirectory[];
+  detected: { download_path: string; library_path: string };
+  directory_template: AppDirectory;
+  media_servers: AppMediaServer[];
+  auto_library_sync: AppAutoLibrarySyncConfig;
+}
+
+/** 立即检测自动建库结果 */
+export interface AppAutoLibrarySyncRunResult {
+  created: number;
+  panel: AppDirectoryConfigPanel;
 }
 
 /** 更新编排实例组请求 */
@@ -685,6 +845,108 @@ export function runAppAutoSync(instanceId: number, appName: string) {
   return api
     .post<{ ok: boolean; message?: string; status?: Record<string, unknown> }>(
       `/orchestrations/instances/${instanceId}/apps/${appName}/auto-sync/run`
+    )
+    .then((r) => r.data);
+}
+
+/** 读取应用源配置与可选项 */
+export function getAppResourceSources(instanceId: number, appName: string) {
+  return api
+    .get<ResourceSourcesPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/resource-sources`
+    )
+    .then((r) => r.data);
+}
+
+/** 读取 OpenList 存储挂载面板（网盘来自巡影） */
+export function getAppStorageMounts(instanceId: number, appName: string) {
+  return api
+    .get<StorageMountsPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/storage-mounts`
+    )
+    .then((r) => r.data);
+}
+
+/** 一键挂载巡影网盘到 OpenList */
+export function mountAppStorage(
+  instanceId: number,
+  appName: string,
+  sourceId: string
+) {
+  return api
+    .post<StorageMountResult>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/storage-mounts/mount`,
+      { source_id: sourceId }
+    )
+    .then((r) => r.data);
+}
+
+/** 保存应用源配置 */
+export function saveAppResourceSources(
+  instanceId: number,
+  appName: string,
+  config: ResourceSourcesConfig
+) {
+  return api
+    .put<ResourceSourcesPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/resource-sources`,
+      {
+        enabled: config.enabled,
+        auto_filter: config.auto_filter,
+        selected_ids: config.selected_ids,
+        ...(appName === "reader"
+          ? {
+              book_source_limit: config.book_source_limit ?? 200,
+              custom_sources: config.custom_sources ?? [],
+            }
+          : {}),
+      }
+    )
+    .then((r) => r.data);
+}
+
+/** 读取 MoviePilot 目录与媒体库配置 */
+export function getAppDirectoryConfig(instanceId: number, appName: string) {
+  return api
+    .get<AppDirectoryConfigPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/directories`
+    )
+    .then((r) => r.data);
+}
+
+/** 保存 MoviePilot 目录配置 */
+export function saveAppDirectories(
+  instanceId: number,
+  appName: string,
+  directories: AppDirectory[]
+) {
+  return api
+    .put<AppDirectoryConfigPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/directories`,
+      { directories }
+    )
+    .then((r) => r.data);
+}
+
+/** 保存自动创建媒体库配置 */
+export function saveAppAutoLibrarySync(
+  instanceId: number,
+  appName: string,
+  config: Pick<AppAutoLibrarySyncConfig, "enabled" | "interval_minutes">
+) {
+  return api
+    .put<AppDirectoryConfigPanel>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/auto-library-sync`,
+      config
+    )
+    .then((r) => r.data);
+}
+
+/** 立即检测一次分类目录并创建媒体库 */
+export function runAppAutoLibrarySync(instanceId: number, appName: string) {
+  return api
+    .post<AppAutoLibrarySyncRunResult>(
+      `/orchestrations/instances/${instanceId}/apps/${appName}/auto-library-sync/run`
     )
     .then((r) => r.data);
 }

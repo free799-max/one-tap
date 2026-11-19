@@ -1,7 +1,8 @@
 /**
  * 升级编排实例组
  *
- * 升级只更新应用镜像：挂载目录、端口、环境变量沿用当前实例配置；
+ * 升级只更新应用镜像：挂载目录、端口等沿用当前实例配置；
+ * 账号密码类环境变量按系统设置里的统一管理员账号重新同步，
  * 模板新增应用按默认配置部署，模板已移除应用保留运行。
  * 后端会在开始升级前保存当前配置快照。
  */
@@ -20,6 +21,7 @@ import { useToast } from "@/components/ui/toast";
 import { AppIcon } from "../apps/AppIcon";
 import { useApps } from "@/hooks/useApps";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
+import { useSystemConfig } from "@/hooks/useSettings";
 import {
   useUpgradeOrchestrationInstance,
   type AppOrchestration,
@@ -31,6 +33,7 @@ import {
   ArrowUpCircle,
   Loader2,
   ShieldCheck,
+  UserRound,
 } from "lucide-react";
 
 interface AutomationUpgradeDialogProps {
@@ -57,6 +60,7 @@ export function AutomationUpgradeDialog({
   const toast = useToast();
   const { startTask } = useDeployTasks();
   const { data: allApps = [] } = useApps();
+  const { data: systemConfig } = useSystemConfig();
   const upgradeMutation = useUpgradeOrchestrationInstance();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -160,10 +164,23 @@ export function AutomationUpgradeDialog({
           <div className="flex items-start gap-2 rounded-xl border border-emerald-500/25 bg-emerald-500/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             <p>
-              升级只更新镜像，挂载目录、端口和环境变量保持当前配置不变。
+              升级只更新镜像，挂载目录与端口保持当前配置不变。
               开始前会自动备份当前配置。
             </p>
           </div>
+
+          {selected.size > 0 && (
+            <div className="flex items-start gap-2 rounded-xl border border-sky-500/25 bg-sky-500/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+              <UserRound className="mt-0.5 h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />
+              <p>
+                {systemConfig?.default_admin_username
+                  ? `账号密码类应用（MoviePilot / Reader / Suwayomi 等）会按统一管理员账号 ${systemConfig.default_admin_username} 重新同步登录信息，并自动补上模板新增的认证开关。`
+                  : "账号密码类应用（MoviePilot / Reader / Suwayomi 等）会按系统设置里的统一管理员账号重新同步登录信息，并自动补上模板新增的认证开关。"}
+                {!systemConfig?.default_admin_password_set &&
+                  " 当前未配置统一密码，将沿用各应用已保存的密码。"}
+              </p>
+            </div>
+          )}
 
           {removedApps.length > 0 && (
             <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
@@ -192,7 +209,7 @@ export function AutomationUpgradeDialog({
                     ? currentTag === targetTag
                       ? `镜像已是最新（${currentTag}）· 挂载与端口保持不变`
                       : `镜像 ${currentTag} → ${targetTag} · 挂载与端口保持不变`
-                    : "保留现有挂载与端口，只更新镜像"
+                    : "保留现有挂载与端口，只更新镜像与账号配置"
                   : targetTag
                     ? `新方案新增，按默认配置部署（${targetTag}）`
                     : "新方案新增，按默认配置部署";

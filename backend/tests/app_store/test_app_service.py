@@ -198,6 +198,46 @@ class TestValidateAndPreparePorts:
         assert config["ports"][0]["container_port"] == 3000
 
     @pytest.mark.asyncio
+    async def test_qbittorrent_syncs_torrenting_port_with_allocated_port(
+        self, app_service, array_port_schema_app
+    ):
+        """qBittorrent 的 TCP/UDP 共用自动端口，并同步容器端口和环境变量。"""
+        array_port_schema_app.name = "qbittorrent"
+        config = {
+            "ports": [
+                {"protocol": "tcp", "local_port": 52001, "container_port": 52001},
+                {"protocol": "udp", "local_port": 52001, "container_port": 52001},
+                {"protocol": "tcp", "local_port": 8016, "container_port": 8016},
+            ],
+            "qbittorrent_env": [
+                {"key": "QBT_TORRENTING_PORT", "value": "52001"},
+                {"key": "QBT_WEBUI_PORT", "value": "8016"},
+            ],
+        }
+
+        with patch(
+            "app.services.app_store.app_service.get_used_ports",
+            return_value={10000},
+        ):
+            _, allocated = await app_service._validate_and_prepare(
+                db_app=array_port_schema_app,
+                instance_name="movie-qbittorrent",
+                config=config,
+            )
+
+        assert allocated == [10001, 10003]
+        assert config["ports"] == [
+            {"protocol": "tcp", "local_port": 10001, "container_port": 10001},
+            {"protocol": "udp", "local_port": 10001, "container_port": 10001},
+            {"protocol": "tcp", "local_port": 10003, "container_port": 8016},
+        ]
+        assert config["qbittorrent_env"][0] == {
+            "key": "QBT_TORRENTING_PORT",
+            "value": "10001",
+        }
+        assert config["qbittorrent_env"][1]["value"] == "8016"
+
+    @pytest.mark.asyncio
     async def test_skips_port_check_when_check_ports_false(
         self, app_service, array_port_schema_app
     ):

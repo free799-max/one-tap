@@ -580,6 +580,16 @@ async def sync_orchestrations(mode: str = "auto") -> dict:
                         and orchestration.sort_order == sort_order
                         and orchestration.category == remote_category
                         and orchestration.is_listed
+                        and orchestration.display_name == remote_display_name
+                        and orchestration.description == item.get("description")
+                        and (orchestration.website or None)
+                        == (item.get("website") or None)
+                        and (orchestration.source_url or None)
+                        == (item.get("source_url") or None)
+                        and (orchestration.shared_config_schema or {})
+                        == (item.get("shared_config_schema") or {})
+                        and (orchestration.changelog or None)
+                        == (remote_changelog or None)
                     ):
                         # 内容、顺序与上架状态都没变：跳过更新，避免无谓写入与噪声
                         continue

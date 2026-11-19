@@ -53,6 +53,66 @@ def _items() -> list[dict]:
 
 
 @pytest.mark.asyncio
+async def test_music_tag_provision_enables_auto_organize(monkeypatch):
+    _patch_group(
+        monkeypatch,
+        {
+            "music-tag-web": {
+                "auto_organize": {
+                    "enabled": False,
+                    "interval_minutes": 10,
+                    "last_run_at": "2026-11-16T12:00:00",
+                }
+            }
+        },
+    )
+
+    await orchestration_service._write_provision_result(
+        1,
+        "music-tag-web",
+        {"username": "admin", "password": "pass"},
+        ProvisionResult(ok=True, message="ok"),
+        "ok",
+    )
+
+    group = orchestration_service.get_group.return_value
+    auto = group.app_configs["music-tag-web"]["auto_organize"]
+    assert auto["enabled"] is True
+    assert auto["interval_minutes"] == 10
+    assert "last_run_at" not in auto
+
+
+@pytest.mark.asyncio
+async def test_reader_provision_enables_auto_sync(monkeypatch):
+    _patch_group(
+        monkeypatch,
+        {
+            "reader": {
+                "auto_sync": {
+                    "enabled": False,
+                    "interval_minutes": 15,
+                    "last_run_at": "2026-11-16T12:00:00",
+                }
+            }
+        },
+    )
+
+    await orchestration_service._write_provision_result(
+        1,
+        "reader",
+        {"username": "admin", "password": "pass"},
+        ProvisionResult(ok=True, message="ok"),
+        "ok",
+    )
+
+    group = orchestration_service.get_group.return_value
+    auto = group.app_configs["reader"]["auto_sync"]
+    assert auto["enabled"] is True
+    assert auto["interval_minutes"] == 15
+    assert "last_run_at" not in auto
+
+
+@pytest.mark.asyncio
 async def test_provision_group_reports_progress_and_completes(monkeypatch):
     """配置与装配各阶段应推送到跟踪任务，全部成功后标记完成。"""
     manager = DeployTaskManager()
@@ -85,7 +145,7 @@ async def test_provision_group_reports_progress_and_completes(monkeypatch):
     task = manager.get_task(task_id)
     assert task is not None
     assert task["status"] == "completed"
-    assert task["progress"]["message"] == "账号与集成已自动配置完成"
+    assert task["progress"]["message"] == "账号、资源源与应用集成已自动配置完成"
     assert task["progress"]["percentage"] == 100
 
     stages = [entry["stage"] for entry in manager.get_task_history(task_id)]
@@ -212,7 +272,7 @@ async def test_provision_group_retries_failed_app_while_container_running(
     task = manager.get_task(task_id)
     assert task is not None
     assert task["status"] == "completed"
-    assert task["progress"]["message"] == "账号与集成已自动配置完成"
+    assert task["progress"]["message"] == "账号、资源源与应用集成已自动配置完成"
 
 
 @pytest.mark.asyncio
@@ -301,3 +361,68 @@ async def test_cancel_provisioning_rejects_regular_deploy_task(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert manager.get_task(task_id)["status"] == "deploying"
+
+
+@pytest.mark.asyncio
+async def test_source_only_app_schedules_without_credentials(monkeypatch):
+    manager = DeployTaskManager()
+    monkeypatch.setattr(provisioning_module, "deploy_task_manager", manager)
+    monkeypatch.setattr(
+        provisioning_module,
+        "create_background_task",
+        lambda coro: coro.close(),
+    )
+
+    task_id = orchestration_service._schedule_provisioning(
+        1,
+        "comic",
+        ["suwayomi"],
+        ["task-suwayomi"],
+        {},
+    )
+
+    assert task_id is not None
+    assert manager.get_task(task_id)["status"] == "deploying"
+
+
+@pytest.mark.asyncio
+async def test_source_only_app_skips_account_provisioning(monkeypatch):
+    manager = DeployTaskManager()
+    monkeypatch.setattr(provisioning_module, "deploy_task_manager", manager)
+    configs = {"suwayomi": {"url": "http://suwayomi.local"}}
+    _patch_group(monkeypatch, configs)
+    monkeypatch.setattr(
+        orchestration_service,
+        "_wait_task_terminal",
+        AsyncMock(return_value="completed"),
+    )
+    provision = AsyncMock()
+    write_result = AsyncMock()
+    wire = AsyncMock()
+    monkeypatch.setattr(orchestration_service, "_provision_app", provision)
+    monkeypatch.setattr(orchestration_service, "_write_provision_result", write_result)
+    monkeypatch.setattr(orchestration_service, "_wire_group", wire)
+    task_id = manager.create_task(
+        "orchestration_provision",
+        meta={"operation": "provision", "instance_name": "comic"},
+        enforce_limit=False,
+    )
+
+    await orchestration_service._provision_group(
+        1,
+        [
+            {
+                "app_name": "suwayomi",
+                "task_id": "task-suwayomi",
+                "project_name": "comic-suwayomi",
+                "credentials": {},
+                "provision_account": False,
+            }
+        ],
+        task_id,
+    )
+
+    provision.assert_not_awaited()
+    write_result.assert_not_awaited()
+    wire.assert_awaited_once_with(1)
+    assert configs == {"suwayomi": {"url": "http://suwayomi.local"}}

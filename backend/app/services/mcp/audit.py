@@ -86,12 +86,16 @@ async def record_tool_call(
 
 
 async def list_tool_call_logs(
-    db: AsyncSession, *, user_id: int, limit: int = 100
+    db: AsyncSession,
+    *,
+    user_id: int,
+    limit: int = 100,
+    local_only: bool = False,
 ) -> list[McpToolCallLog]:
+    query = sa.select(McpToolCallLog).where(McpToolCallLog.user_id == user_id)
+    if local_only:
+        query = query.where(McpToolCallLog.tool_name.startswith("onetap_"))
     result = await db.execute(
-        sa.select(McpToolCallLog)
-        .where(McpToolCallLog.user_id == user_id)
-        .order_by(McpToolCallLog.id.desc())
-        .limit(limit)
+        query.order_by(McpToolCallLog.id.desc()).limit(limit)
     )
     return list(result.scalars().all())

@@ -20,7 +20,7 @@ async def mcp_env(monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-    for module_name in ("server", "local_tools", "auth", "audit", "api_invoker"):
+    for module_name in ("server", "auth", "audit"):
         module = __import__(f"app.services.mcp.{module_name}", fromlist=["*"])
         monkeypatch.setattr(module, "async_session", Session)
 
@@ -51,6 +51,29 @@ async def moviepilot(mcp_env):
             instance_name="movie",
             status="running",
             config={"url": "http://moviepilot:3001", "api_key": "mp-secret"},
+        )
+        db.add(instance)
+        await db.commit()
+        await db.refresh(instance)
+        return instance
+
+
+@pytest_asyncio.fixture
+async def comic_auto(mcp_env):
+    Session = mcp_env["session"]
+    async with Session() as db:
+        app_record = App(
+            name="comic-auto",
+            display_name="Comic Auto",
+            yaml_template="services: {}",
+        )
+        db.add(app_record)
+        await db.flush()
+        instance = AppInstance(
+            app_id=app_record.id,
+            instance_name="comic-comic-auto",
+            status="running",
+            config={"url": "http://comic-auto:8055", "api_key": "ca-secret"},
         )
         db.add(instance)
         await db.commit()

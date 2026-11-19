@@ -1,7 +1,8 @@
 """编排实例组一键升级（upgrade）相关测试。
 
 升级语义：只更新镜像，原地重写 Compose 版本；挂载、端口等配置保持不变；
-升级前保存配置快照；模板已移除的应用保留运行。
+账号密码类环境变量按统一管理员账号同步；升级前保存配置快照；
+模板已移除的应用保留运行。
 """
 
 import asyncio
@@ -29,8 +30,11 @@ from app.services.app_store import app_service
 from app.services.compose.compose_service import compose_manager
 from app.services.orchestration import orchestration_service
 from app.services.orchestration import deploy as deploy_module
+from app.services.orchestration import provisioning as provisioning_module
 from app.services.orchestration import upgrade as upgrade_module
+from app.services.orchestration.compose_env import merge_env
 from app.services.orchestration.deploy_task_service import DeployTaskManager
+from app.services.system import system_config_service
 
 
 YAML_TEMPLATE = """services:
@@ -578,12 +582,13 @@ async def test_upgrade_resumes_interrupted_compose_up(
 
     升级中断（进程重启）后 Compose YAML 可能已更新、容器停在 Created，
     此时镜像比较结果相同，不能再直接跳过，否则服务永远不会启动。
+    这里用不带账号 env 的 Jellyfin，避免认证变量同步触发新版本。
     """
     async with session_factory() as prep_db:
         project = (
             await prep_db.execute(
                 select(DockerComposeProject).where(
-                    DockerComposeProject.project_name == "test-stack-moviepilot"
+                    DockerComposeProject.project_name == "test-stack-jellyfin"
                 )
             )
         ).scalar_one()
@@ -595,7 +600,7 @@ async def test_upgrade_resumes_interrupted_compose_up(
             )
         ).scalar_one()
         content = yaml.safe_load(version.content)
-        content["services"]["app"]["image"] = "moviepilot:v2"
+        content["services"]["app"]["image"] = "jellyfin:v2"
         version.content = yaml.safe_dump(content, sort_keys=False)
         await prep_db.commit()
 
@@ -609,7 +614,7 @@ async def test_upgrade_resumes_interrupted_compose_up(
         return {"returncode": 0}
 
     async def forbid_edit(*_args, **_kwargs):
-        raise AssertionError("镜像未变化时不应新增 Compose 版本")
+        raise AssertionError("镜像与认证变量未变化时不应新增 Compose 版本")
 
     monkeypatch.setattr(compose_manager, "action_async", fake_up)
     monkeypatch.setattr(compose_manager, "edit_and_deploy_async", forbid_edit)
@@ -618,7 +623,7 @@ async def test_upgrade_resumes_interrupted_compose_up(
     group, task_ids = await orchestration_service.upgrade_instance(
         db,
         group_id=legacy_group.id,
-        selected_apps=["moviepilot"],
+        selected_apps=["jellyfin"],
         app_configs={},
         shared_config={},
         user_id=1,
@@ -626,12 +631,160 @@ async def test_upgrade_resumes_interrupted_compose_up(
     assert len(task_ids) == 1
     await asyncio.gather(*scheduled_tasks)
 
-    assert calls == {"project": "test-stack-moviepilot", "action": "up"}
+    assert calls == {"project": "test-stack-jellyfin", "action": "up"}
 
     async with session_factory() as check_db:
         upgraded = await check_db.get(AppOrchestrationInstance, legacy_group.id)
         assert upgraded.orchestration_version == "2.0.0"
         assert upgraded.status == "running"
+
+
+def test_merge_env_supports_list_and_mapping():
+    """认证变量同时兼容 Compose environment 的列表与映射写法。"""
+    list_service = {"environment": ["TZ=Asia/Shanghai"]}
+    assert merge_env(list_service, {"AUTH_MODE": "simple_login"}) is True
+    assert list_service["environment"] == [
+        "TZ=Asia/Shanghai",
+        "AUTH_MODE=simple_login",
+    ]
+    assert merge_env(list_service, {"AUTH_MODE": "simple_login"}) is False
+
+    map_service = {"environment": {"TZ": "Asia/Shanghai"}}
+    assert merge_env(map_service, {"AUTH_MODE": "simple_login"}) is True
+    assert map_service["environment"] == {
+        "TZ": "Asia/Shanghai",
+        "AUTH_MODE": "simple_login",
+    }
+
+
+@pytest.mark.asyncio
+async def test_upgrade_syncs_credential_env_and_provisions(
+    db, session_factory, apps, template, legacy_group, scheduled_tasks, monkeypatch
+):
+    """升级把统一密码写进认证 env，并在结束后重跑账号自动配置。"""
+    sys_config = await system_config_service.get_or_create(db)
+    sys_config.default_admin_username = "nasadmin"
+    sys_config.default_admin_password = "Unified#Pass1"
+    await db.commit()
+
+    # 已存在的实例在应用面板里配置过访问地址，升级后按它重跑自动配置
+    group = await db.get(AppOrchestrationInstance, legacy_group.id)
+    group.app_configs = {
+        "moviepilot": {"url": "http://moviepilot.local", "auth_type": "basic"}
+    }
+    await db.commit()
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        compose_manager, "edit_and_deploy_async", _fake_edit_deploy(captured)
+    )
+    monkeypatch.setattr(compose_manager, "delete_project", _forbid_delete)
+
+    scheduled: dict = {}
+
+    def fake_schedule(*args, **kwargs):
+        scheduled["args"] = args
+        scheduled["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(
+        orchestration_service, "_schedule_provisioning", fake_schedule
+    )
+
+    await orchestration_service.upgrade_instance(
+        db,
+        group_id=legacy_group.id,
+        selected_apps=["moviepilot"],
+        app_configs={},
+        shared_config={},
+    )
+    await asyncio.gather(*scheduled_tasks)
+
+    service = yaml.safe_load(captured["content"])["services"]["app"]
+    env = dict(row.split("=", 1) for row in service["environment"])
+    assert env["SUPERUSER"] == "nasadmin"
+    assert env["SUPERUSER_PASSWORD"] == "Unified#Pass1"
+    assert env["API_TOKEN"]
+
+    async with session_factory() as check_db:
+        group = await check_db.get(AppOrchestrationInstance, legacy_group.id)
+        entry = group.app_configs["moviepilot"]
+        assert entry["username"] == "nasadmin"
+        assert entry["password"] == "Unified#Pass1"
+        assert "provisioned" not in entry
+
+        instance = (
+            await check_db.execute(
+                select(AppInstance).where(
+                    AppInstance.instance_name == "test-stack-moviepilot"
+                )
+            )
+        ).scalar_one()
+        env_rows = {
+            row["key"]: row["value"]
+            for row in instance.config["moviepilot_env"]
+        }
+        assert env_rows["SUPERUSER_PASSWORD"] == "Unified#Pass1"
+
+    # 升级后的账号配置在后台重跑，且不再等待组级升级任务结束
+    args = scheduled["args"]
+    assert args[2] == ["moviepilot"]
+    assert scheduled["kwargs"] == {"already_deployed": {"moviepilot"}}
+
+
+@pytest.mark.asyncio
+async def test_upgrade_keeps_stored_password_without_unified_password(
+    db, session_factory, apps, template, legacy_group, scheduled_tasks, monkeypatch
+):
+    """未配置统一密码时沿用已落库密码，不随机覆盖现有账号。"""
+    group = await db.get(AppOrchestrationInstance, legacy_group.id)
+    group.app_configs = {
+        "moviepilot": {
+            "url": "http://moviepilot.local",
+            "username": "admin",
+            "password": "stored-secret",
+            "auth_type": "basic",
+        }
+    }
+    await db.commit()
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        compose_manager, "edit_and_deploy_async", _fake_edit_deploy(captured)
+    )
+    monkeypatch.setattr(compose_manager, "delete_project", _forbid_delete)
+
+    scheduled: dict = {}
+
+    def fake_schedule(*args, **kwargs):
+        scheduled["args"] = args
+        scheduled["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(
+        orchestration_service, "_schedule_provisioning", fake_schedule
+    )
+
+    await orchestration_service.upgrade_instance(
+        db,
+        group_id=legacy_group.id,
+        selected_apps=["moviepilot"],
+        app_configs={},
+        shared_config={},
+    )
+    await asyncio.gather(*scheduled_tasks)
+
+    service = yaml.safe_load(captured["content"])["services"]["app"]
+    env = dict(row.split("=", 1) for row in service["environment"])
+    assert env["SUPERUSER_PASSWORD"] == "stored-secret"
+
+    async with session_factory() as check_db:
+        upgraded = await check_db.get(AppOrchestrationInstance, legacy_group.id)
+        entry = upgraded.app_configs["moviepilot"]
+        assert entry["password"] == "stored-secret"
+        assert entry["url"] == "http://moviepilot.local"
+
+    assert scheduled["args"][2] == ["moviepilot"]
 
 
 @pytest.mark.asyncio
@@ -689,6 +842,51 @@ async def test_upgrade_preview_images(db, legacy_group):
         resolve_target_image({"app_name": "moviepilot"}, db_app, {"image_tag": "v1.5"})
         == "moviepilot:v1.5"
     )
+
+
+@pytest.mark.asyncio
+async def test_reprovision_syncs_credential_env(
+    db, session_factory, apps, template, legacy_group, monkeypatch
+):
+    """重新装配把缺失的认证变量补进 Compose，并清掉已配置标记。
+
+    旧实例升级不会重建容器，模板新增的 simple_login 等认证开关只能
+    在重新装配时写入环境变量。
+    """
+    sys_config = await system_config_service.get_or_create(db)
+    sys_config.default_admin_username = "nasadmin"
+    sys_config.default_admin_password = "Unified#Pass1"
+    group = await db.get(AppOrchestrationInstance, legacy_group.id)
+    group.app_configs = {
+        "moviepilot": {
+            "url": "http://moviepilot.local",
+            "username": "admin",
+            "password": "old-secret",
+            "provisioned": True,
+        }
+    }
+    await db.commit()
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        compose_manager, "edit_and_deploy_async", _fake_edit_deploy(captured)
+    )
+    monkeypatch.setattr(provisioning_module, "async_session", session_factory)
+
+    await orchestration_service._sync_group_credential_env(legacy_group.id)
+
+    service = yaml.safe_load(captured["content"])["services"]["app"]
+    env = dict(row.split("=", 1) for row in service["environment"])
+    assert env["SUPERUSER"] == "nasadmin"
+    assert env["SUPERUSER_PASSWORD"] == "Unified#Pass1"
+
+    async with session_factory() as check_db:
+        upgraded = await check_db.get(AppOrchestrationInstance, legacy_group.id)
+        entry = upgraded.app_configs["moviepilot"]
+        assert entry["username"] == "nasadmin"
+        assert entry["password"] == "Unified#Pass1"
+        # 认证变量变了，需要重新走一遍账号验证
+        assert "provisioned" not in entry
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     APP_ICON_DIR: str = ""
     """图标文件存储目录，默认为 DATA_ROOT/app-icons，可单独覆盖。"""
 
+    NOTIFICATION_SYNC_HOST: str = "127.0.0.1"
+    """后台通知同步访问应用实例时使用的主机名；实例已持久化 URL 时不受影响。"""
+
+    NOTIFICATION_SYNC_INTERVAL_SECONDS: int = 300
+    """订阅与下载状态同步间隔（秒）。"""
+
     MANAGE_BASE_URL: str = ""
 
     MANAGE_SYNC_INTERVAL_MINUTES: int = 30

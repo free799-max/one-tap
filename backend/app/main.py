@@ -27,7 +27,10 @@ from app.api.settings import router as settings_router
 from app.api.integrations import router as integrations_router
 from app.api.acceleration import router as acceleration_router
 from app.api.license import router as license_router
-from app.api.mcp import router as mcp_router
+from app.api.mcp import router as mcp_router, skills_router
+from app.api.notifications import router as notifications_router
+from app.api.resources import router as resources_router
+from app.api.assets import router as assets_router
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,25 @@ async def lifespan(app: FastAPI):
 
     reader_auto_service.start_scheduler()
 
+    # MoviePilot 分类目录出现后，为同组 Jellyfin/Emby 补齐媒体库。
+    from app.services.orchestration.media_library_sync import (
+        media_library_sync_service,
+    )
+
+    media_library_sync_service.start_scheduler()
+
+    # 通知中心：分发 outbox，并同步各资源域的订阅/下载状态。
+    from app.services.notifications.dispatcher import notification_dispatcher
+    from app.services.notifications.sync import notification_sync_service
+
+    notification_dispatcher.start_scheduler()
+    notification_sync_service.start_scheduler()
+
+    # 微信 ClawBot：长轮询上行消息，保持 context_token 新鲜并唤醒积压通知。
+    from app.services.notifications.wechat_keeper import wechat_context_keeper
+
+    wechat_context_keeper.start_scheduler()
+
     # Hosts 优选：按系统设置中的模式定时维护 AdGuard DNS 重写。
     from app.services.system.hosts_optimizer_service import hosts_optimizer_service
 
@@ -215,6 +237,10 @@ async def lifespan(app: FastAPI):
         finally:
             await music_auto_service.stop_scheduler()
             await reader_auto_service.stop_scheduler()
+            await media_library_sync_service.stop_scheduler()
+            await notification_sync_service.stop_scheduler()
+            await notification_dispatcher.stop_scheduler()
+            await wechat_context_keeper.stop_scheduler()
             await hosts_optimizer_service.stop_scheduler()
             await accel_sync_service.stop_scheduler()
             await licensing_service.stop_scheduler()
@@ -288,6 +314,10 @@ app.include_router(integrations_router)
 app.include_router(acceleration_router)
 app.include_router(license_router)
 app.include_router(mcp_router)
+app.include_router(skills_router)
+app.include_router(notifications_router)
+app.include_router(resources_router)
+app.include_router(assets_router)
 
 # Docker 管理路由（依赖可选的 Docker 环境）
 from app.api.docker import router as docker_router

@@ -15,6 +15,7 @@ import { DashboardPage } from "./pages/dashboard/DashboardPage";
 import { AppsPage } from "./pages/apps/AppsPage";
 import { AutomationCategoriesPage } from "./pages/automation/AutomationCategoriesPage";
 import { AutomationCategoryPage } from "./pages/automation/AutomationCategoryPage";
+import { SubscriptionsPage } from "./pages/subscriptions/SubscriptionsPage";
 import { DockerPage } from "./pages/docker/containers/DockerPage";
 import { DockerHostPage } from "./pages/docker/host/DockerHostPage";
 import { DockerImagesPage } from "./pages/docker/images/DockerImagesPage";
@@ -43,7 +44,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   // 认证状态初始化中，显示空白占位避免闪烁
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-muted/30">
+      <div className="h-full flex items-center justify-center bg-muted/30">
         <div className="animate-spin h-8 w-8 border-2 border-primary border-t-transparent rounded-full" />
       </div>
     );
@@ -85,6 +86,7 @@ export default function App() {
                     path="/automation/:category"
                     element={<AutomationCategoryPage />}
                   />
+                  <Route path="/subscriptions" element={<SubscriptionsPage />} />
 
                   {/* Docker 管理 */}
                   <Route

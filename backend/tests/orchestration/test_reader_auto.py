@@ -35,9 +35,13 @@ async def _session_local(monkeypatch):
     SessionLocal = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )
+    import app.database as database_module
+
     monkeypatch.setattr(
         "app.services.orchestration.reader_auto.async_session", SessionLocal
     )
+    # 导出后的通知走 app.database.async_session，同样指向内存库，避免污染开发库
+    monkeypatch.setattr(database_module, "async_session", SessionLocal)
     yield SessionLocal
     await engine.dispose()
 
@@ -493,3 +497,93 @@ async def test_run_group_exports_epub_and_scans_ermao(
         assert auto["last_result"]["exported"] == 1
         assert auto["last_result"]["cached"] == 1
         assert auto["last_result"]["ermao"]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_group_reexports_when_book_gets_new_chapters(
+    session_local, tmp_path, monkeypatch
+):
+    """导出后小说又更新：检测到章数增长就补缓存并重新导出。"""
+    library = tmp_path / "books"
+
+    class GrowingReaderSession(_FakeReaderSession):
+        total = 2
+        cached = 1
+        exports: list[int] = []
+
+        async def shelf(self):
+            return [
+                {
+                    "name": "测试书",
+                    "bookUrl": "https://source/book",
+                    "cachedChapterCount": type(self).cached,
+                    "totalChapterNum": type(self).total,
+                }
+            ]
+
+        async def chapter_list(self, _url):
+            return [
+                {"title": f"第 {index} 章"}
+                for index in range(1, type(self).total + 1)
+            ]
+
+        async def export_epub(self, _url, destination):
+            type(self).exports.append(type(self).total)
+            _make_epub(destination)
+
+    group_id = await _seed_group(
+        session_local,
+        {
+            "reader": {
+                "url": "http://reader",
+                "auto_sync": {
+                    "enabled": True,
+                    "reader_url": "http://reader",
+                    "library_dir": "/storage/localStore/ermao",
+                    "library_host_dir": str(library),
+                    "ermao_library_dir": "/storage/localStore/ermao",
+                    "ermao_url": "http://ermao",
+                    "ermao_email": "admin@example.com",
+                    "ermao_password": "secret12345",
+                    "scan_enabled": False,
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.orchestration.reader_auto.ReaderSession",
+        GrowingReaderSession,
+    )
+    monkeypatch.setattr(
+        ReaderAutoSyncService, "_detect", AsyncMock(return_value={})
+    )
+    service = ReaderAutoSyncService()
+
+    await service._run_group(group_id, "manual", force=True)
+    assert GrowingReaderSession.exports == [2]
+
+    # 书源更新到 3 章，书架只缓存了 2 章
+    GrowingReaderSession.total = 3
+    GrowingReaderSession.cached = 2
+    await service._run_group(group_id, "auto", force=False)
+
+    assert GrowingReaderSession.exports == [2, 3]
+    async with session_local() as db:
+        state = (
+            await db.execute(
+                ReaderAutoSyncBook.__table__.select().where(
+                    ReaderAutoSyncBook.group_id == group_id
+                )
+            )
+        ).first()
+        assert state.status == "done"
+        assert state.exported_total == 3
+        assert state.total_chapters == 3
+        group = await db.get(AppOrchestrationInstance, group_id)
+        result = group.app_configs["reader"]["auto_sync"]["last_result"]
+        assert result["exported"] == 1
+        assert result["cached"] == 1
+
+    # 章数没再变化时不会再导出
+    await service._run_group(group_id, "auto", force=False)
+    assert GrowingReaderSession.exports == [2, 3]

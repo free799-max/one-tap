@@ -22,8 +22,15 @@ class McpPolicyMiddleware(Middleware):
     def __init__(self, aggregator: "McpAggregator"):
         self.aggregator = aggregator
 
-    async def _allowed_names(self) -> set[str]:
-        return await self.aggregator.allowed_tool_names()
+    async def _available_instance_ids(self) -> set[int]:
+        return await self.aggregator.available_instance_ids()
+
+    @staticmethod
+    def _is_allowed(name: str, available_ids: set[int]) -> bool:
+        if name.startswith("onetap_"):
+            return True
+        remote = split_public_tool_name(name)
+        return remote is not None and int(remote[0]) in available_ids
 
     async def on_list_tools(
         self,
@@ -34,8 +41,14 @@ class McpPolicyMiddleware(Middleware):
     ) -> Sequence[Tool]:
         await self.aggregator.ensure_upstreams()
         tools = await call_next(context)
-        allowed = await self._allowed_names()
-        return [tool for tool in tools if tool.key in allowed]
+        available_ids = await self._available_instance_ids()
+        local_enabled = await self.aggregator.mcp_enabled()
+        return [
+            tool
+            for tool in tools
+            if self._is_allowed(tool.key, available_ids)
+            and (local_enabled or not tool.key.startswith("onetap_"))
+        ]
 
     async def on_call_tool(
         self,
@@ -45,32 +58,27 @@ class McpPolicyMiddleware(Middleware):
         ],
     ) -> ToolResult:
         name = context.message.name
-        audit_name = name
         started_at = time.monotonic()
-        source = "local"
-        remote = split_public_tool_name(name)
+        is_local = name.startswith("onetap_")
+        source = "local" if is_local else "remote"
+        remote = None if is_local else split_public_tool_name(name)
         instance_id: int | None = None
-        if name == "onetap_api_request":
-            operation_id = (context.message.arguments or {}).get("operation_id")
-            if (
-                isinstance(operation_id, str)
-                and len(operation_id) <= 128
-                and operation_id.isidentifier()
-            ):
-                source = "api"
-                audit_name = f"api:{operation_id}"
-        elif remote is not None:
-            source = "remote"
+        if remote is not None:
             instance_id = int(remote[0])
         try:
             await self.aggregator.ensure_upstreams()
-            if name not in await self._allowed_names():
-                raise ToolError("工具未启用或不在白名单中")
+            if is_local:
+                if not await self.aggregator.mcp_enabled():
+                    raise ToolError("AI 接入未启用")
+            else:
+                available_ids = await self._available_instance_ids()
+                if instance_id is None or instance_id not in available_ids:
+                    raise ToolError("工具来源不可用")
             result = await call_next(context)
         except asyncio.CancelledError:
             await asyncio.shield(
                 record_tool_call(
-                    tool_name=audit_name,
+                    tool_name=name,
                     source=source,
                     upstream_instance_id=instance_id,
                     success=False,
@@ -81,7 +89,7 @@ class McpPolicyMiddleware(Middleware):
             raise
         except Exception as exc:
             await record_tool_call(
-                tool_name=audit_name,
+                tool_name=name,
                 source=source,
                 upstream_instance_id=instance_id,
                 success=False,
@@ -90,7 +98,7 @@ class McpPolicyMiddleware(Middleware):
             )
             raise
         await record_tool_call(
-            tool_name=audit_name,
+            tool_name=name,
             source=source,
             upstream_instance_id=instance_id,
             success=True,

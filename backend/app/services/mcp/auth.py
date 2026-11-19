@@ -1,5 +1,6 @@
 """MCP 专用访问令牌与 ASGI 鉴权。"""
 
+import base64
 import hashlib
 import secrets
 from contextvars import ContextVar
@@ -8,14 +9,16 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import sqlalchemy as sa
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.config import settings
 from app.core.exceptions import APIException
 from app.database import async_session
 from app.models.integration import IntegrationConfig
-from app.models.mcp import McpAccessToken
+from app.models.mcp import McpAccessToken, McpToolCallLog
 from app.models.user import User
 
 
@@ -50,6 +53,26 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _fernet() -> Fernet:
+    digest = hashlib.sha256(
+        f"mcp-token:{settings.SECRET_KEY}".encode("utf-8")
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _encrypt_token(raw_token: str) -> str:
+    return _fernet().encrypt(raw_token.encode("utf-8")).decode("ascii")
+
+
+def decrypt_access_token(record: McpAccessToken) -> str | None:
+    if not record.token_value:
+        return None
+    try:
+        return _fernet().decrypt(record.token_value.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return None
+
+
 def _request_host(scope: Scope) -> str:
     headers = {key.lower(): value for key, value in scope.get("headers", [])}
     raw = headers.get(b"x-forwarded-host", headers.get(b"host", b""))
@@ -79,6 +102,7 @@ async def create_access_token(
         name=clean_name,
         prefix=raw_token[:16],
         token_hash=_hash(raw_token),
+        token_value=_encrypt_token(raw_token),
         user_id=user.id,
         expires_at=_aware(expires_at),
     )
@@ -88,13 +112,7 @@ async def create_access_token(
     return record, raw_token
 
 
-async def list_access_tokens(db: AsyncSession, user: User) -> list[McpAccessToken]:
-    result = await db.execute(
-        sa.select(McpAccessToken)
-        .where(McpAccessToken.user_id == user.id)
-        .order_by(McpAccessToken.id.desc())
-    )
-    return list(result.scalars().all())
+ACCESS_KEY_NAME = "MCP 访问密钥"
 
 
 async def revoke_access_token(
@@ -106,6 +124,89 @@ async def revoke_access_token(
     if record.revoked_at is None:
         record.revoked_at = _now()
         await db.commit()
+    return record
+
+
+async def _detach_audit_logs(db: AsyncSession, token_ids: list[int]) -> None:
+    if not token_ids:
+        return
+    await db.execute(
+        sa.update(McpToolCallLog)
+        .where(McpToolCallLog.token_id.in_(token_ids))
+        .values(token_id=None)
+    )
+
+
+async def _delete_user_tokens(
+    db: AsyncSession, user: User, keep_id: int | None = None
+) -> None:
+    query = sa.select(McpAccessToken.id).where(McpAccessToken.user_id == user.id)
+    if keep_id is not None:
+        query = query.where(McpAccessToken.id != keep_id)
+    token_ids = list((await db.execute(query)).scalars().all())
+    if not token_ids:
+        return
+    await _detach_audit_logs(db, token_ids)
+    await db.execute(
+        sa.delete(McpAccessToken).where(McpAccessToken.id.in_(token_ids))
+    )
+
+
+def _is_usable_key(record: McpAccessToken) -> bool:
+    if record.revoked_at is not None or decrypt_access_token(record) is None:
+        return False
+    expires_at = _aware(record.expires_at)
+    return expires_at is None or expires_at > _now()
+
+
+async def _create_access_key(
+    db: AsyncSession, user: User
+) -> McpAccessToken:
+    raw_token = f"otmcp_{secrets.token_urlsafe(36)}"
+    record = McpAccessToken(
+        name=ACCESS_KEY_NAME,
+        prefix=raw_token[:16],
+        token_hash=_hash(raw_token),
+        token_value=_encrypt_token(raw_token),
+        user_id=user.id,
+        expires_at=None,
+    )
+    db.add(record)
+    return record
+
+
+async def get_or_create_access_key(
+    db: AsyncSession, user: User
+) -> McpAccessToken:
+    if user.role != "admin":
+        raise APIException("需要管理员权限", 403)
+    result = await db.execute(
+        sa.select(McpAccessToken)
+        .where(McpAccessToken.user_id == user.id)
+        .order_by(McpAccessToken.id.desc())
+    )
+    records = list(result.scalars().all())
+    current = next(
+        (record for record in records if _is_usable_key(record)), None
+    )
+    if current is not None:
+        await _delete_user_tokens(db, user, keep_id=current.id)
+        await db.commit()
+        return current
+    await _delete_user_tokens(db, user)
+    record = await _create_access_key(db, user)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def reset_access_key(db: AsyncSession, user: User) -> McpAccessToken:
+    if user.role != "admin":
+        raise APIException("需要管理员权限", 403)
+    await _delete_user_tokens(db, user)
+    record = await _create_access_key(db, user)
+    await db.commit()
+    await db.refresh(record)
     return record
 
 
@@ -155,7 +256,7 @@ class McpAuthMiddleware:
             if enabled is None or not enabled.enabled:
                 response = JSONResponse(
                     status_code=404,
-                    content={"error": "mcp_disabled", "message": "MCP 聚合未启用"},
+                    content={"error": "mcp_disabled", "message": "AI 接入未启用"},
                 )
                 await response(scope, receive, send)
                 return

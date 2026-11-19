@@ -6,7 +6,7 @@
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +21,10 @@ from app.schemas.app_auth import (
     AppAuthVerifyResponse,
 )
 from app.schemas.orchestration import (
+    DirectoriesUpdateRequest,
     InspectFixRequest,
+    MediaLibrariesUpdateRequest,
+    MediaLibraryAutoSyncUpdate,
     MusicAutoOrganizeConfigIn,
     OrchestrationBackupOut,
     OrchestrationDeleteResponse,
@@ -39,14 +42,19 @@ from app.schemas.orchestration import (
     OrchestrationUpdateEventOut,
     PluginInstallRequest,
     ReaderAutoSyncConfigIn,
+    ResourceSourceConfigIn,
+    StorageMountRequest,
 )
 from app.services.orchestration import orchestration_service
 from app.services.orchestration.music_auto import music_auto_service
 from app.services.orchestration.reader_auto import reader_auto_service
+from app.services.orchestration.resource_sources import resource_source_service
+from app.services.orchestration.storage_mounts import storage_mount_service
 from app.services.orchestration.upgrade import (
     read_current_image,
     resolve_target_image,
 )
+from app.services.overview import normalize_host, resolve_app_url
 
 from app.core.custom_route import CustomAPIRoute
 
@@ -86,12 +94,16 @@ def _instance_version_fields(group: AppOrchestrationInstance) -> dict:
 
 @router.get("/instances", response_model=list[OrchestrationInstanceGroupOut])
 async def list_orchestration_instances(
+    request: Request,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """列出当前用户的编排实例组（一次部署/导入记录）。"""
     groups = await orchestration_service.list_instances(db, category=category)
+    host = normalize_host(
+        request.headers.get("x-forwarded-host") or request.url.netloc
+    )
     return [
         OrchestrationInstanceGroupOut(
             id=g.id,
@@ -110,6 +122,11 @@ async def list_orchestration_instances(
                     status=inst.status,
                     config=inst.config or {},
                     project_id=inst.project_id,
+                    url=(
+                        resolve_app_url(inst.app, inst, g, host)
+                        if inst.app is not None
+                        else None
+                    ),
                 )
                 for inst in g.instances
             ],
@@ -121,6 +138,7 @@ async def list_orchestration_instances(
 async def _build_instance_detail_out(
     db: AsyncSession,
     group: AppOrchestrationInstance,
+    host: str,
 ) -> dict:
     """将 AppOrchestrationInstance 转换为详情响应字典。
 
@@ -156,6 +174,11 @@ async def _build_instance_detail_out(
                 project_id=inst.project_id,
                 current_image=current_image,
                 target_image=target_image,
+                url=(
+                    resolve_app_url(db_app, inst, group, host)
+                    if db_app is not None
+                    else None
+                ),
             )
         )
 
@@ -176,18 +199,23 @@ async def _build_instance_detail_out(
 @router.get("/instances/{instance_id}", response_model=OrchestrationInstanceDetailOut)
 async def get_orchestration_instance(
     instance_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """获取编排实例组详情。"""
     group = await orchestration_service.get_instance_detail(db, instance_id)
-    return await _build_instance_detail_out(db, group)
+    host = normalize_host(
+        request.headers.get("x-forwarded-host") or request.url.netloc
+    )
+    return await _build_instance_detail_out(db, group, host)
 
 
 @router.patch(path="/instances/{instance_id}", response_model=OrchestrationInstanceDetailOut)
 async def update_orchestration_instance(
     instance_id: int,
     data: OrchestrationInstanceUpdateRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
@@ -199,7 +227,10 @@ async def update_orchestration_instance(
         shared_config=data.shared_config,
         app_configs=data.app_configs,
     )
-    return await _build_instance_detail_out(db, group)
+    host = normalize_host(
+        request.headers.get("x-forwarded-host") or request.url.netloc
+    )
+    return await _build_instance_detail_out(db, group, host)
 
 
 @router.delete(
@@ -406,6 +437,56 @@ async def run_app_auto_organize(
     }
 
 
+@router.get("/instances/{instance_id}/apps/{app_name}/resource-sources")
+async def get_app_resource_sources(
+    instance_id: int,
+    app_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """读取内置、自定义源目录与实例配置。"""
+    return await resource_source_service.get_panel(db, instance_id, app_name)
+
+
+@router.get("/instances/{instance_id}/apps/{app_name}/storage-mounts")
+async def get_app_storage_mounts(
+    instance_id: int,
+    app_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """读取巡影已连接网盘与 OpenList 现有挂载。"""
+    return await storage_mount_service.get_panel(db, instance_id, app_name)
+
+
+@router.post("/instances/{instance_id}/apps/{app_name}/storage-mounts/mount")
+async def mount_app_storage(
+    instance_id: int,
+    app_name: str,
+    data: StorageMountRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """一键把巡影的网盘挂载到 OpenList。"""
+    return await storage_mount_service.mount(
+        db, instance_id, app_name, data.source_id
+    )
+
+
+@router.put("/instances/{instance_id}/apps/{app_name}/resource-sources")
+async def save_app_resource_sources(
+    instance_id: int,
+    app_name: str,
+    data: ResourceSourceConfigIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """保存实例选择的源地址与筛选策略。"""
+    return await resource_source_service.save_config(
+        db, instance_id, app_name, data.model_dump()
+    )
+
+
 @router.get("/instances/{instance_id}/apps/{app_name}/auto-sync")
 async def get_app_auto_sync(
     instance_id: int,
@@ -451,6 +532,76 @@ async def run_app_auto_sync(
         "message": "自动同步已开始",
         "status": status,
     }
+
+
+@router.get("/instances/{instance_id}/apps/{app_name}/directories")
+async def get_app_directories(
+    instance_id: int,
+    app_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """读取 MoviePilot 目录与媒体库同步配置面板。"""
+    return await orchestration_service.get_app_directories(db, instance_id, app_name)
+
+
+@router.put("/instances/{instance_id}/apps/{app_name}/directories")
+async def save_app_directories(
+    instance_id: int,
+    app_name: str,
+    data: DirectoriesUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """仅保存 MoviePilot 目录配置并返回最新面板。"""
+    return await orchestration_service.save_app_directories(
+        db, instance_id, app_name, data.model_dump()["directories"]
+    )
+
+
+@router.put("/instances/{instance_id}/apps/{app_name}/media-libraries")
+async def save_app_media_libraries(
+    instance_id: int,
+    app_name: str,
+    data: MediaLibrariesUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """仅保存 MoviePilot 媒体库同步范围并返回最新面板。"""
+    return await orchestration_service.save_app_media_libraries(
+        db, instance_id, app_name, data.model_dump()["media_servers"]
+    )
+
+
+@router.put(path="/instances/{instance_id}/apps/{app_name}/auto-library-sync")
+async def save_app_auto_library_sync(
+    instance_id: int,
+    app_name: str,
+    data: MediaLibraryAutoSyncUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """保存自动创建媒体库的启用状态和检测间隔。"""
+    return await orchestration_service.save_app_auto_library_config(
+        db,
+        instance_id,
+        app_name,
+        enabled=data.enabled,
+        interval_minutes=data.interval_minutes,
+    )
+
+
+@router.post(path="/instances/{instance_id}/apps/{app_name}/auto-library-sync/run")
+async def run_app_auto_library_sync(
+    instance_id: int,
+    app_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """立即检测 MoviePilot 分类目录并补齐媒体库。"""
+    return await orchestration_service.run_app_auto_library_sync(
+        db, instance_id, app_name
+    )
 
 
 @router.get("/instances/{instance_id}/apps/{app_name}/plugins")

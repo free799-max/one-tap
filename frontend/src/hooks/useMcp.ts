@@ -7,22 +7,15 @@ import {
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/api/types";
 import {
-  createMcpToken,
   getMcpCatalogDetail,
   getMcpConfig,
+  getMcpConnect,
+  getMcpKey,
   listMcpAudit,
   listMcpCatalog,
-  listMcpLocalTools,
-  listMcpTokens,
-  listMcpUpstreams,
-  revokeMcpToken,
+  resetMcpKey,
   testMcpUpstreamTools,
-  updateMcpApiOperations,
   updateMcpConfig,
-  updateMcpLocalTools,
-  updateMcpUpstream,
-  type McpTokenCreate,
-  type McpUpstreamUpdate,
 } from "@/api/mcp";
 
 export type {
@@ -32,14 +25,11 @@ export type {
   McpCatalogEntry,
   McpCatalogSource,
   McpConfig,
-  McpCreatedToken,
-  McpLocalTool,
-  McpToken,
-  McpTokenCreate,
+  McpConnectInfo,
+  McpKey,
   McpTool,
   McpToolList,
   McpUpstream,
-  McpUpstreamUpdate,
 } from "@/api/mcp";
 
 const MCP_KEY = ["settings", "mcp"] as const;
@@ -48,7 +38,6 @@ async function invalidateMcpConfiguration(queryClient: QueryClient) {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "catalog"] }),
     queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "config"] }),
-    queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "local-tools"] }),
     queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "upstreams"] }),
   ]);
 }
@@ -101,35 +90,6 @@ export function useUpdateMcpConfig() {
   });
 }
 
-export function useMcpUpstreams() {
-  return useQuery({
-    queryKey: [...MCP_KEY, "upstreams"],
-    queryFn: listMcpUpstreams,
-  });
-}
-
-export function useUpdateMcpUpstream() {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-
-  return useMutation({
-    mutationFn: ({
-      instanceId,
-      data,
-    }: {
-      instanceId: number;
-      data: McpUpstreamUpdate;
-    }) => updateMcpUpstream(instanceId, data),
-    onSuccess: async () => {
-      await invalidateMcpConfiguration(queryClient);
-      toast.success("上游设置已保存");
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "保存上游设置失败");
-    },
-  });
-}
-
 export function useMcpUpstreamTools(
   instanceId: number | null,
   enabled: boolean
@@ -146,82 +106,38 @@ export function useMcpUpstreamTools(
   });
 }
 
-export function useMcpLocalTools() {
+export function useMcpKey() {
   return useQuery({
-    queryKey: [...MCP_KEY, "local-tools"],
-    queryFn: listMcpLocalTools,
+    queryKey: [...MCP_KEY, "key"],
+    queryFn: getMcpKey,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
 }
 
-export function useUpdateMcpLocalTools() {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-
-  return useMutation({
-    mutationFn: (enabledTools: string[]) =>
-      updateMcpLocalTools({ enabled_tools: enabledTools }),
-    onSuccess: async () => {
-      await invalidateMcpConfiguration(queryClient);
-      toast.success("本地工具设置已保存");
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "保存本地工具设置失败");
-    },
-  });
-}
-
-export function useUpdateMcpApiOperations() {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-
-  return useMutation({
-    mutationFn: (operationIds: string[]) =>
-      updateMcpApiOperations({ operation_ids: operationIds }),
-    onSuccess: async () => {
-      await invalidateMcpConfiguration(queryClient);
-      toast.success("API 权限已保存");
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "保存 API 权限失败");
-    },
-  });
-}
-
-export function useMcpTokens() {
+export function useMcpConnect() {
   return useQuery({
-    queryKey: [...MCP_KEY, "tokens"],
-    queryFn: listMcpTokens,
+    queryKey: [...MCP_KEY, "connect"],
+    queryFn: getMcpConnect,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
-export function useCreateMcpToken() {
+export function useResetMcpKey() {
   const queryClient = useQueryClient();
   const toast = useToast();
 
   return useMutation({
-    mutationFn: (data: McpTokenCreate) => createMcpToken(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "tokens"] });
-      toast.success("Token 已创建，请立即复制保存");
+    mutationFn: resetMcpKey,
+    onSuccess: (data) => {
+      queryClient.setQueryData([...MCP_KEY, "key"], data);
+      queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "connect"] });
+      toast.success("密钥已重置");
     },
     onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "创建 Token 失败");
-    },
-  });
-}
-
-export function useRevokeMcpToken() {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-
-  return useMutation({
-    mutationFn: (id: number) => revokeMcpToken(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "tokens"] });
-      toast.success("Token 已撤销");
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "撤销 Token 失败");
+      toast.error(error.displayMessage || "重置密钥失败");
     },
   });
 }

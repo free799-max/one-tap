@@ -170,35 +170,6 @@ class QBittorrentInspectionMixin:
             )
         )
 
-        # 默认保存路径：应位于共享下载目录下
-        expected_dir = self._expected_download_dir(ctx.get("shared_config"))
-        current_dir = prefs.get("default_save_path") or ""
-        if expected_dir:
-            ok = current_dir == expected_dir or current_dir.startswith(
-                expected_dir.rstrip("/") + "/"
-            )
-            items.append(
-                InspectItem(
-                    id="save_path",
-                    title="默认保存路径",
-                    status="ok" if ok else "error",
-                    message=None if ok else "不在共享下载目录下，媒体应用将无法读取下载内容",
-                    current_value=current_dir or None,
-                    expected_value=expected_dir,
-                    fixable=not ok,
-                )
-            )
-        else:
-            items.append(
-                InspectItem(
-                    id="save_path",
-                    title="默认保存路径",
-                    status="ok" if current_dir else "warn",
-                    message=None if current_dir else "未设置默认保存路径",
-                    current_value=current_dir or None,
-                )
-            )
-
         # 监听端口：应与映射到宿主端口的容器内端口一致
         expected_port = ctx.get("expected_listen_port")
         if expected_port:
@@ -256,9 +227,6 @@ class QBittorrentInspectionMixin:
         """返回修复指定检测项需要写入的偏好设置，不可修复返回 None。"""
         if item_id == "host_header_validation":
             return {"web_ui_host_header_validation_enabled": False}
-        if item_id == "save_path":
-            expected_dir = self._expected_download_dir(ctx.get("shared_config"))
-            return {"default_save_path": expected_dir} if expected_dir else None
         if item_id == "listening_port":
             expected_port = ctx.get("expected_listen_port")
             return {"listen_port": expected_port} if expected_port else None
@@ -276,21 +244,3 @@ class QBittorrentInspectionMixin:
             authority = f"{parsed.hostname}:{host_header_port}"
             return {"Host": authority, "Referer": f"{parsed.scheme}://{authority}"}
         return {"Referer": base_url}
-
-    @staticmethod
-    def _expected_download_dir(shared_config: dict | None) -> str | None:
-        """从编排共享配置推导下载目录。
-
-        优先取 container_path 含 downloads 的挂载；单共享根目录时
-        （如影视自动化的 /data）下载目录位于其下的 downloads 子目录。
-        """
-        volumes = (shared_config or {}).get("volumes") or []
-        for volume in volumes:
-            container_path = str(volume.get("container_path") or "")
-            if "downloads" in container_path:
-                return container_path
-        for volume in volumes:
-            root = str(volume.get("container_path") or "").strip().rstrip("/")
-            if root and root != "/":
-                return f"{root}/downloads"
-        return None

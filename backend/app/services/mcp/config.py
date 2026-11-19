@@ -1,8 +1,12 @@
-"""MCP 聚合配置与原生上游实例发现。"""
+"""MCP 聚合配置与原生上游实例发现。
+
+聚合端只做原生 MCP 的透传：配置只有全局开关，已部署且可读的实例
+会自动注册，其全部原生工具都会透传。不同应用的 MCP 端点路径各异
+（MoviePilot 是 ``/api/v1/mcp``，Comic Auto 是 ``/api/mcp``）。
+"""
 
 import asyncio
 from dataclasses import dataclass
-import re
 from typing import Any
 
 import sqlalchemy as sa
@@ -14,80 +18,19 @@ from app.services.integrations.discovery import DeployedApp, list_deployed_apps
 
 
 MCP_CONFIG_KIND = "mcp"
-NATIVE_MCP_APPS = {"moviepilot"}
-MEDIA_APP_NAMES = {
-    "moviepilot",
-    "comic-auto",
-    "suwayomi",
-    "music-dl",
-    "music-tag-web",
-    "navidrome",
-    "reader",
-    "ermao-library",
-    "komga",
-    "kavita",
+
+# 原生 MCP 应用 → Streamable HTTP 端点路径
+NATIVE_MCP_PATHS: dict[str, str] = {
+    "moviepilot": "/api/v1/mcp",
+    "comic-auto": "/api/mcp",
 }
-DEFAULT_UPSTREAM_TOOLS = (
-    "media.search",
-    "library.exists",
-    "subscription.find",
-    "subscription.list",
-    "subscription.files",
-    "subscription.execution.get",
-    "download.tasks.active",
-    "download.history.list",
-)
-DEFAULT_LOCAL_TOOLS = (
-    "onetap_api_catalog",
-    "media_targets_list",
-    "music_organize_status",
-    "reader_sync_status",
-)
-LOCAL_TOOL_DEFINITIONS = {
-    "media_targets_list": {
-        "title": "查询媒体自动化目标",
-        "description": "列出 OneTap 已部署的媒体应用和原生 MCP 支持情况。",
-        "read_only": True,
-    },
-    "music_organize_status": {
-        "title": "查询音乐整理状态",
-        "description": "查询指定实例组的音乐刮削整理进度和统计。",
-        "read_only": True,
-    },
-    "reader_sync_status": {
-        "title": "查询书籍同步状态",
-        "description": "查询指定实例组的 Reader 导出同步进度和统计。",
-        "read_only": True,
-    },
-    "music_organize_run": {
-        "title": "执行音乐整理",
-        "description": "立即启动一轮音乐刮削、整理和媒体库扫描。",
-        "read_only": False,
-    },
-    "reader_sync_run": {
-        "title": "执行书籍同步",
-        "description": "立即启动一轮 Reader 章节缓存、EPUB 导出和书库扫描。",
-        "read_only": False,
-    },
-    "onetap_api_catalog": {
-        "title": "查询 OneTap 完整接口目录",
-        "description": "搜索全部 OneTap API，按 operationId 查看参数、请求体和响应 Schema。",
-        "read_only": True,
-    },
-    "onetap_api_request": {
-        "title": "调用已授权的 OneTap API",
-        "description": "按 operationId 调用管理员明确授权的接口，不能指定任意 URL 或请求头。",
-        "read_only": False,
-    },
-}
+NATIVE_MCP_APPS = set(NATIVE_MCP_PATHS)
 
 
 @dataclass(frozen=True)
 class UpstreamState:
     app: DeployedApp
     prefix: str
-    enabled: bool
-    allowed_tools: tuple[str, ...]
 
     @property
     def available(self) -> bool:
@@ -117,7 +60,8 @@ def public_tool_name(prefix: str, native_name: str) -> str:
 
 
 def split_public_tool_name(name: str) -> tuple[str, str] | None:
-    for app_name in NATIVE_MCP_APPS:
+    # 前缀可能相互包含，长的优先匹配（comic_auto_ 与 moviepilot_ 目前不冲突）
+    for app_name in sorted(NATIVE_MCP_APPS, key=len, reverse=True):
         prefix = f"{app_name.replace('-', '_')}_"
         if not name.startswith(prefix):
             continue
@@ -140,17 +84,6 @@ def _deduplicate(apps: list[DeployedApp]) -> list[DeployedApp]:
     return sorted(result, key=lambda item: item.instance_id)
 
 
-def _clean_tool_names(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
-    result: list[str] = []
-    for value in values:
-        name = str(value).strip()
-        if re.fullmatch(r"[A-Za-z0-9._-]{1,96}", name) is None:
-            raise APIException("工具名称格式不正确", 400)
-        if name not in result:
-            result.append(name)
-    return tuple(result)
-
-
 class McpConfigService:
     def __init__(self):
         self._config_lock = asyncio.Lock()
@@ -166,61 +99,44 @@ class McpConfigService:
         result = await db.execute(query)
         record = result.scalar_one_or_none()
         if record is None and create:
-            record = IntegrationConfig(kind=MCP_CONFIG_KIND, enabled=False, config={})
+            record = IntegrationConfig(kind=MCP_CONFIG_KIND, enabled=True, config={})
             db.add(record)
             await db.flush()
         return record
 
     async def get_config(self, db: AsyncSession) -> dict[str, Any]:
         record = await self._record(db, create=False)
-        config = (record.config or {}) if record is not None else {}
-        local_tools = config.get("local_tools")
-        api_operation_ids = config.get("api_operation_ids")
-        return {
-            "enabled": bool(record.enabled) if record is not None else False,
-            "upstreams": dict(config.get("upstreams") or {}),
-            "local_tools": list(
-                local_tools if isinstance(local_tools, list) else DEFAULT_LOCAL_TOOLS
-            ),
-            "api_operation_ids": list(
-                api_operation_ids if isinstance(api_operation_ids, list) else []
-            ),
-        }
+        return {"enabled": bool(record.enabled) if record is not None else True}
 
     async def set_enabled(self, db: AsyncSession, enabled: bool) -> dict[str, Any]:
         async with self._config_lock:
             record = await self._record(db)
             assert record is not None
             record.enabled = enabled
+            if record.config:
+                record.config = {}
             await db.commit()
             return await self.get_config(db)
 
-    async def _apps(self, db: AsyncSession, host: str) -> list[DeployedApp]:
+    async def _apps(
+        self, db: AsyncSession, host: str, app_names: set[str] | None = None
+    ) -> list[DeployedApp]:
         apps = await list_deployed_apps(db, host)
+        allowed = NATIVE_MCP_APPS if app_names is None else set(app_names)
         return _deduplicate(
-            [app for app in apps if app.app_name in NATIVE_MCP_APPS]
+            [app for app in apps if app.app_name in allowed]
         )
 
     async def list_upstreams(
-        self, db: AsyncSession, host: str
+        self,
+        db: AsyncSession,
+        host: str,
+        app_names: set[str] | None = None,
     ) -> list[UpstreamState]:
-        config = await self.get_config(db)
-        configured = config["upstreams"]
-        states: list[UpstreamState] = []
-        for app in await self._apps(db, host):
-            entry = configured.get(str(app.instance_id)) or {}
-            allowed = entry.get("allowed_tools")
-            states.append(
-                UpstreamState(
-                    app=app,
-                    prefix=upstream_prefix(app),
-                    enabled=bool(entry.get("enabled", False)),
-                    allowed_tools=_clean_tool_names(
-                        allowed if isinstance(allowed, list) else list(DEFAULT_UPSTREAM_TOOLS)
-                    ),
-                )
-            )
-        return states
+        return [
+            UpstreamState(app=app, prefix=upstream_prefix(app))
+            for app in await self._apps(db, host, app_names)
+        ]
 
     async def get_upstream(
         self, db: AsyncSession, instance_id: int, host: str
@@ -229,120 +145,6 @@ class McpConfigService:
             if state.app.instance_id == instance_id:
                 return state
         raise APIException("原生 MCP 应用实例不存在", 404)
-
-    async def update_upstream(
-        self,
-        db: AsyncSession,
-        *,
-        instance_id: int,
-        host: str,
-        enabled: bool,
-        allowed_tools: list[str] | None,
-    ) -> UpstreamState:
-        async with self._config_lock:
-            current = await self.get_upstream(db, instance_id, host)
-            record = await self._record(db)
-            assert record is not None
-            config = dict(record.config or {})
-            upstreams = dict(config.get("upstreams") or {})
-            upstreams[str(instance_id)] = {
-                "enabled": enabled,
-                "allowed_tools": list(
-                    _clean_tool_names(allowed_tools)
-                    if allowed_tools is not None
-                    else current.allowed_tools
-                ),
-            }
-            config["upstreams"] = upstreams
-            record.config = config
-            await db.commit()
-            return await self.get_upstream(db, instance_id, host)
-
-    async def prune_upstreams(self, db: AsyncSession, valid_ids: set[int]) -> None:
-        async with self._config_lock:
-            record = await self._record(db)
-            assert record is not None
-            config = dict(record.config or {})
-            upstreams = dict(config.get("upstreams") or {})
-            retained = {
-                key: value
-                for key, value in upstreams.items()
-                if key.isdigit() and int(key) in valid_ids
-            }
-            if retained == upstreams:
-                return
-            config["upstreams"] = retained
-            record.config = config
-            await db.commit()
-
-    async def local_tools(self, db: AsyncSession) -> list[dict[str, Any]]:
-        config = await self.get_config(db)
-        enabled = set(config["local_tools"])
-        return [
-            {
-                "name": name,
-                **definition,
-                "enabled": name in enabled,
-            }
-            for name, definition in LOCAL_TOOL_DEFINITIONS.items()
-        ]
-
-    async def update_local_tools(
-        self, db: AsyncSession, enabled_tools: list[str]
-    ) -> list[dict[str, Any]]:
-        async with self._config_lock:
-            unknown = set(enabled_tools) - set(LOCAL_TOOL_DEFINITIONS)
-            if unknown:
-                raise APIException("包含未知的本地工具", 400)
-            record = await self._record(db)
-            assert record is not None
-            config = dict(record.config or {})
-            config["local_tools"] = list(dict.fromkeys(enabled_tools))
-            record.config = config
-            await db.commit()
-            return await self.local_tools(db)
-
-    async def update_api_operations(
-        self, db: AsyncSession, operation_ids: list[str]
-    ) -> dict[str, Any]:
-        cleaned = list(dict.fromkeys(str(value).strip() for value in operation_ids))
-        if any(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is None for value in cleaned):
-            raise APIException("API operationId 格式不正确", 400)
-
-        from app.services.mcp.openapi_catalog import (
-            api_operation_ids,
-            get_api_operation,
-        )
-
-        unknown = set(cleaned) - api_operation_ids()
-        if unknown:
-            raise APIException("包含未知的 API operationId", 400)
-        blocked = [
-            operation_id
-            for operation_id in cleaned
-            if not (get_api_operation(operation_id) or {}).get("invocable", False)
-        ]
-        if blocked:
-            raise APIException("包含禁止通过 MCP 调用的 API", 400)
-
-        async with self._config_lock:
-            record = await self._record(db)
-            assert record is not None
-            config = dict(record.config or {})
-            config["api_operation_ids"] = cleaned
-            record.config = config
-            await db.commit()
-            return await self.get_config(db)
-
-    async def is_api_operation_enabled(
-        self, db: AsyncSession, operation_id: str
-    ) -> bool:
-        config = await self.get_config(db)
-        return operation_id in set(config["api_operation_ids"])
-
-    async def is_local_tool_enabled(self, db: AsyncSession, name: str) -> bool:
-        config = await self.get_config(db)
-        return name in set(config["local_tools"])
 
 
 mcp_config_service = McpConfigService()

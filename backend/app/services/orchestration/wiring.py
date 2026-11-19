@@ -16,6 +16,10 @@ from app.core.exceptions import APIException
 from app.database import async_session
 from app.services.apps import get_client
 from app.services.orchestration.deploy_task_service import deploy_task_manager
+from app.services.orchestration.resource_sources import (
+    SUPPORTED_RESOURCE_SOURCE_APPS,
+    resource_source_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,9 @@ class WiringMixin:
 
     async def _do_wire_group(self, group_id: int) -> None:
         """自动装配主流程。"""
+        from app.services.orchestration.credentials import _get_env
+        from app.services.system import system_config_service
+
         async with async_session() as db:
             group = await self.get_group(db, group_id)
             instance_name = group.instance_name
@@ -81,6 +88,41 @@ class WiringMixin:
                 group.orchestration.app_composition if group.orchestration else None
             ) or []
             app_configs = dict(group.app_configs or {})
+            if "reader" in app_configs:
+                for instance in group.instances:
+                    secure_key = _get_env(
+                        instance.config or {}, "reader_env", "READER_APP_SECUREKEY"
+                    )
+                    if secure_key:
+                        reader_entry = dict(app_configs["reader"] or {})
+                        reader_entry["_secure_key"] = secure_key
+                        app_configs["reader"] = reader_entry
+                        break
+            system_config = await system_config_service.get_or_create(db)
+            proxy = (
+                (system_config.https_proxy or system_config.http_proxy or "").strip()
+                if system_config.proxy_enabled
+                else None
+            ) or None
+
+        source_results: dict[str, dict] = {}
+        for app_name in SUPPORTED_RESOURCE_SOURCE_APPS:
+            if app_name not in app_configs:
+                continue
+            try:
+                source_results[app_name] = await resource_source_service.apply(
+                    app_name, app_configs.get(app_name) or {}, proxy=proxy
+                )
+            except Exception as exc:
+                logger.exception("%s 资源源自动装配失败", app_name)
+                now = datetime.now(timezone.utc).isoformat()
+                source_results[app_name] = {
+                    "status": "error",
+                    "message": str(exc),
+                    "started_at": now,
+                    "finished_at": now,
+                    "items": [],
+                }
 
         # 每个声明了 integrations 的目标应用一份装配结果
         target_results: dict[str, dict] = {}
@@ -140,12 +182,18 @@ class WiringMixin:
                     )
                     results[bucket].append(record)
 
-        if not target_results:
+        if not target_results and not source_results:
             return
 
         async with async_session() as db:
             group = await self.get_group(db, group_id)
             merged = dict(group.app_configs or {})
+            for app_name, result in source_results.items():
+                entry = dict(merged.get(app_name) or {})
+                source_config = dict(entry.get("resource_sources") or {})
+                source_config["last_result"] = result
+                entry["resource_sources"] = source_config
+                merged[app_name] = entry
             for target_name, payload in target_results.items():
                 entry = dict(merged.get(target_name) or {})
                 # 幂等：每次重跑整体覆盖同名目标应用的装配结果

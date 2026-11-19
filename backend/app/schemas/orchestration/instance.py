@@ -20,6 +20,8 @@ class OrchestrationInstanceAppOut(BaseModel):
     current_image: str | None = None
     # 按当前模板升级后要使用的镜像
     target_image: str | None = None
+    # 按当前访问主机与部署端口自动生成的访问地址；显式配置的 url 优先
+    url: str | None = None
 
 
 class OrchestrationInstanceGroupOut(BaseModel):
@@ -63,6 +65,12 @@ class InspectFixRequest(BaseModel):
     """检测项自动修复请求。"""
 
     item_ids: list[str] = []
+
+
+class StorageMountRequest(BaseModel):
+    """一键挂载请求：巡影网盘的连接 ID。"""
+
+    source_id: str = Field(..., min_length=1, max_length=200)
 
 
 class PluginInstallRequest(BaseModel):

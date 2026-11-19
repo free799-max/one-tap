@@ -939,6 +939,9 @@ class MusicAutoOrganizeService:
                     group_id=group_id, path=path, status=status
                 )
                 db.add(state)
+                previous_status = None
+            else:
+                previous_status = state.status
             state.status = status
             state.last_error = error
             state.updated_at = _now()
@@ -947,6 +950,19 @@ class MusicAutoOrganizeService:
             if increment_attempt:
                 state.attempts = (state.attempts or 0) + 1
             await db.commit()
+
+        if status in {"done", "failed"} and status != previous_status:
+            from app.services.notifications.subscriptions import notify_music_file
+
+            try:
+                await notify_music_file(
+                    path=path,
+                    status=status,
+                    previous_status=previous_status,
+                    error=error,
+                )
+            except Exception as exc:  # noqa: BLE001 - 通知失败不阻断整理
+                logger.warning("发送音乐整理通知失败：%s", exc)
 
     async def _scan_navidrome(self, group_id: int) -> tuple[bool, str]:
         """整理移动文件后触发 Navidrome 扫描。"""

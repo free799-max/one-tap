@@ -20,6 +20,7 @@ import {
   Settings,
   ChevronDown,
   Plug,
+  Rss,
 } from "lucide-react";
 import { LogoIcon } from "@/components/LogoIcon";
 import { useOrchestrations } from "@/hooks/useOrchestrations";
@@ -36,6 +37,7 @@ interface NavItemConfig {
 const topItems: NavItemConfig[] = [
   { path: "/", label: "服务概览", icon: LayoutDashboard },
   { path: "/appstore", label: "应用市场", icon: Store },
+  { path: "/subscriptions", label: "订阅记录", icon: Rss },
 ];
 
 // DOCKER 分组：容器与主机管理
@@ -232,7 +234,7 @@ export function Sidebar({ collapsed }: SidebarProps) {
 
   return (
     <aside
-      className={`flex flex-col h-screen bg-white shadow-[1px_0_0_0_rgba(0,0,0,0.04)] transition-all duration-300 ${
+      className={`flex flex-col h-full bg-white shadow-[1px_0_0_0_rgba(0,0,0,0.04)] transition-all duration-300 ${
         collapsed ? "w-[60px]" : "w-52"
       }`}
     >

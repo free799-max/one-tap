@@ -28,6 +28,30 @@ async def test_moviepilot_url_and_headers_are_isolated(mcp_env, moviepilot):
 
 
 @pytest.mark.asyncio
+async def test_comic_auto_uses_its_own_mcp_path(mcp_env, comic_auto):
+    async with mcp_env["session"]() as db:
+        state = await mcp_config_service.get_upstream(db, comic_auto.id, "test")
+    assert upstream_url(state) == "http://comic-auto:8055/api/mcp"
+
+    upstream_client = build_upstream_client(state)
+    assert upstream_client.transport.headers["X-API-KEY"] == "ca-secret"
+
+
+@pytest.mark.asyncio
+async def test_upstreams_can_be_filtered_by_app(mcp_env, moviepilot, comic_auto):
+    async with mcp_env["session"]() as db:
+        all_states = await mcp_config_service.list_upstreams(db, "test")
+        video_states = await mcp_config_service.list_upstreams(
+            db, "test", app_names={"moviepilot"}
+        )
+    assert {state.app.app_name for state in all_states} == {
+        "moviepilot",
+        "comic-auto",
+    }
+    assert [state.app.instance_id for state in video_states] == [moviepilot.id]
+
+
+@pytest.mark.asyncio
 async def test_host_cannot_be_used_to_redirect_upstream_credentials(
     mcp_env, moviepilot
 ):

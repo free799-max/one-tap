@@ -656,12 +656,15 @@ async def test_sync_unchanged_version_and_composition_is_skipped(
         session.add(
             AppOrchestration(
                 name="media-stack",
-                display_name="本地显示名",
+                display_name="media-stack 显示名",
+                description="描述",
                 category="media",
                 version="1.0.0",
                 icon="/icons/orchestrations/media-stack.svg",
+                website="https://example.com",
+                source_url=None,
                 app_composition=[{"app_name": "app-a", "relation": "required"}],
-                shared_config_schema={},
+                shared_config_schema={"type": "object", "properties": {}},
             )
         )
         await session.commit()
@@ -680,7 +683,7 @@ async def test_sync_unchanged_version_and_composition_is_skipped(
     assert await _get_events(sync_db) == []
     # 未触发更新：本地展示字段保持原值
     orchestration = await _get_by_name(sync_db, "media-stack")
-    assert orchestration.display_name == "本地显示名"
+    assert orchestration.display_name == "media-stack 显示名"
 
 
 async def test_sync_failure_writes_failed_event(sync_db, monkeypatch):

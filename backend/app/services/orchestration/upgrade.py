@@ -2,7 +2,9 @@
 
 升级只更新应用镜像，不重建实例组：
 
-- 已部署应用的挂载目录、端口、环境变量、凭据全部沿用当前实例配置；
+- 已部署应用的挂载目录、端口与普通环境变量沿用当前实例配置；
+- 仅在模板中声明了账号密码的 env 注入类应用（MoviePilot / Reader /
+  Suwayomi）会按统一管理员账号同步认证变量，并在升级后重跑账号配置；
 - 使用现有 Compose 项目原地写入新版本并 ``docker compose up -d``，
   不删除项目、不重新分配端口；
 - 模板新增的应用按默认配置部署；
@@ -35,7 +37,12 @@ from app.models.orchestration import (
 from app.services.app_store import app_service
 from app.services.app_store.app_validator import extract_default_values
 from app.services.compose import compose_manager
-from app.services.orchestration.credentials import prepare_app_credentials
+from app.services.orchestration.compose_env import merge_env, resolve_main_service
+from app.services.orchestration.credentials import (
+    has_credential_env,
+    prepare_app_credentials,
+    resolve_credential_env,
+)
 from app.services.orchestration.deploy import _resolve_composition_image
 from app.services.orchestration.deploy_task_service import deploy_task_manager
 from app.services.orchestration.events import add_update_event
@@ -219,6 +226,8 @@ class UpgradeMixin:
 
         已存在的应用只更新镜像，忽略请求里的 ``app_configs`` / ``shared_config``，
         避免误改挂载与端口；这两个参数只用于模板新增应用的初始化配置。
+        账号密码类环境变量（MoviePilot / Reader / Suwayomi）例外：升级时
+        按系统设置里的统一管理员账号重新同步，并在升级后重跑账号配置。
         ``mode`` 用于更新事件标记来源：用户触发为 manual，自动更新为 auto。
 
         Returns:
@@ -357,7 +366,9 @@ class UpgradeMixin:
 
         try:
             new_task_ids: list[str] = []
+            new_deployed_apps: list[str] = []
             new_credentials: dict[str, dict] = {}
+            upgraded_credentials: dict[str, dict] = {}
             async with async_session() as db:
                 group = await self.get_group(db, group_id)
                 template = group.orchestration
@@ -413,8 +424,9 @@ class UpgradeMixin:
                             start,
                             f"升级 {db_app.display_name}（{index}/{total}）",
                         )
-                        await self._upgrade_existing_app(
+                        credentials = await self._upgrade_existing_app(
                             db,
+                            group=group,
                             instance=existing_by_name[app_name],
                             db_app=db_app,
                             composition_item=composition_by_name.get(app_name) or {},
@@ -424,6 +436,24 @@ class UpgradeMixin:
                             to_version=template.version,
                             user_id=user_id,
                         )
+                        if credentials:
+                            upgraded_credentials[app_name] = credentials
+                            entry = dict(
+                                (group.app_configs or {}).get(app_name) or {}
+                            )
+                            # 容器已按新认证变量重启，落库密码要与
+                            # 环境变量一致，否则面板会显示旧密码
+                            entry["username"] = credentials["username"]
+                            entry["password"] = credentials["password"]
+                            if credentials.get("api_key"):
+                                entry["api_key"] = credentials["api_key"]
+                            entry.pop("provisioned", None)
+                            entry.pop("provision_error", None)
+                            group.app_configs = {
+                                **(group.app_configs or {}),
+                                app_name: entry,
+                            }
+                            await db.commit()
                     else:
                         report(
                             "preparing",
@@ -447,6 +477,7 @@ class UpgradeMixin:
                                 f"新增应用 {app_name} 部署失败", 500
                             )
                         new_task_ids.append(deploy_task_id)
+                        new_deployed_apps.append(app_name)
                         if credentials:
                             new_credentials[app_name] = credentials
 
@@ -477,14 +508,24 @@ class UpgradeMixin:
                 )
                 await db.commit()
 
-                # 新增应用的账号自动配置在后台继续，不阻塞升级进度
-                if new_task_ids:
+                # 新增应用与升级后需要重新认证的应用都在后台继续配置账号，
+                # 不阻塞升级进度
+                provision_apps = [
+                    name
+                    for name in upgraded_credentials
+                    if ((group.app_configs or {}).get(name) or {}).get("url")
+                ]
+                scheduled_apps = new_deployed_apps + provision_apps
+                scheduled_task_ids = new_task_ids + [task_id] * len(provision_apps)
+                scheduled_credentials = {**new_credentials, **upgraded_credentials}
+                if scheduled_apps:
                     self._schedule_provisioning(
                         group.id,
                         group.instance_name,
-                        new_apps,
-                        new_task_ids,
-                        new_credentials,
+                        scheduled_apps,
+                        scheduled_task_ids,
+                        scheduled_credentials,
+                        already_deployed=set(provision_apps),
                     )
 
             report("completed", 100, "升级完成")
@@ -506,6 +547,7 @@ class UpgradeMixin:
         self,
         db: AsyncSession,
         *,
+        group: AppOrchestrationInstance,
         instance: AppInstance,
         db_app: App,
         composition_item: dict,
@@ -514,22 +556,42 @@ class UpgradeMixin:
         end: int,
         to_version: str,
         user_id: int | None,
-    ) -> None:
-        """原地更新单个应用的镜像，保留全部运行时配置。
+    ) -> dict | None:
+        """原地更新单个应用的镜像，保留挂载、端口与普通环境变量。
 
         直接复用当前 Compose YAML，只替换主服务的 ``image``，不重新渲染
-        模板、不合并 Schema 默认值。这样挂载目录、端口、环境变量与旧部署
-        完全一致，即使新模板改了字段默认值也不会影响现有实例。
+        模板、不合并 Schema 默认值。唯一例外是账号密码类环境变量：模板
+        新增的认证开关（如 Suwayomi 的 simple_login）必须写进现有容器，
+        否则升级后仍然没有登录配置。
+
+        Returns:
+            升级后需要重新自动配置的凭据；应用不使用 env 凭据时返回 None
         """
         if is_external_app(db_app):
             instance.status = "running"
             await db.commit()
-            return
+            return None
         target_image = resolve_target_image(
             composition_item, db_app, instance.config
         )
         if not target_image:
             raise APIException(f"应用 {db_app.name} 未配置镜像", 400)
+
+        target_config = copy.deepcopy(instance.config or {})
+        entry = (group.app_configs or {}).get(db_app.name) or {}
+        credentials: dict | None = None
+        env_updates: dict[str, str] = {}
+        if has_credential_env(db_app.name):
+            # 统一密码优先：升级同样按系统设置里的管理员账号重新同步
+            credentials = await prepare_app_credentials(
+                db,
+                db_app.name,
+                target_config,
+                fallback_password=entry.get("password"),
+            )
+            credential_env = resolve_credential_env(db_app.name, target_config)
+            if credential_env is not None:
+                env_updates = credential_env[1]
 
         def _progress(
             stage: str,
@@ -555,10 +617,10 @@ class UpgradeMixin:
             progress=_progress,
             comment=f"方案升级到 v{to_version}",
             user_id=user_id,
+            env_updates=env_updates,
         )
 
-        # 仅记录镜像覆盖变化，挂载/端口/环境变量保持原样
-        target_config = copy.deepcopy(instance.config or {})
+        # 记录镜像覆盖与同步后的认证变量，挂载/端口保持原样
         image_override = _resolve_composition_image(composition_item)
         if image_override:
             target_config["image"] = image_override
@@ -567,6 +629,7 @@ class UpgradeMixin:
         instance.config = target_config
         instance.status = "running"
         await db.commit()
+        return credentials
 
     async def _swap_image_and_deploy(
         self,
@@ -578,10 +641,12 @@ class UpgradeMixin:
         progress: Callable[..., None],
         comment: str,
         user_id: int | None = None,
+        env_updates: dict[str, str] | None = None,
     ) -> str:
         """把实例当前 Compose 主服务镜像替换为目标镜像并重新拉起。
 
-        只改 ``image``，挂载目录、端口、环境变量保持原样；返回替换前的镜像。
+        只改 ``image`` 与 ``env_updates`` 中列出的认证变量，挂载目录、
+        端口与其它环境变量保持原样；返回替换前的镜像。
         """
         project = await db.get(DockerComposeProject, instance.project_id)
         if project is None:
@@ -621,33 +686,38 @@ class UpgradeMixin:
             raise APIException(f"应用 {db_app.name} 的主服务配置无效", 500)
 
         current_image = str(service.get("image") or "")
-        if current_image == target_image:
-            # 镜像已是目标版本：可能是上次升级在 compose up 阶段中断，
-            # YAML 已写好但容器还没拉起来。补一次 up -d 确保服务运行，
-            # 不新增 Compose 版本，避免产生内容相同的版本记录。
+        image_changed = current_image != target_image
+        env_changed = merge_env(service, env_updates or {})
+        if not image_changed and not env_changed:
+            # 镜像与认证变量都已是目标值：可能是上次升级在 compose up
+            # 阶段中断，YAML 已写好但容器还没拉起来。补一次 up -d 确保
+            # 服务运行，不新增 Compose 版本，避免产生重复版本记录。
             await compose_manager.action_async(
                 db, project, "up", progress_callback=progress
             )
             return current_image
 
-        current_tag = _split_image_tag(current_image)[1] or current_image
-        target_tag = _split_image_tag(target_image)[1] or target_image
-        progress(
-            "preparing",
-            0,
-            f"镜像 {current_tag} → {target_tag}",
-        )
-        # 同一应用可能有多个服务复用同一镜像（如主服务 + worker），
-        # 只替换镜像相同的服务，避免误改 Redis/Postgres 等依赖镜像
-        targets = [
-            item
-            for item in services.values()
-            if isinstance(item, dict)
-            and current_image
-            and str(item.get("image") or "") == current_image
-        ]
-        for item in targets or [service]:
-            item["image"] = target_image
+        if image_changed:
+            current_tag = _split_image_tag(current_image)[1] or current_image
+            target_tag = _split_image_tag(target_image)[1] or target_image
+            progress(
+                "preparing",
+                0,
+                f"镜像 {current_tag} → {target_tag}",
+            )
+            # 同一应用可能有多个服务复用同一镜像（如主服务 + worker），
+            # 只替换镜像相同的服务，避免误改 Redis/Postgres 等依赖镜像
+            targets = [
+                item
+                for item in services.values()
+                if isinstance(item, dict)
+                and current_image
+                and str(item.get("image") or "") == current_image
+            ]
+            for item in targets or [service]:
+                item["image"] = target_image
+        if env_changed:
+            progress("preparing", 0, "同步账号与认证配置")
         updated_yaml = yaml.safe_dump(
             compose_data, sort_keys=False, allow_unicode=True
         )
@@ -880,32 +950,7 @@ class UpgradeMixin:
         services: dict, db_app: App, project_name: str
     ) -> str:
         """从 Compose 服务中定位应用主服务，避免误改 Redis/Postgres 镜像。"""
-        containers = (db_app.config_schema or {}).get("containers") or []
-        main_name = next(
-            (
-                container.get("name")
-                for container in containers
-                if container.get("name") == db_app.name
-            ),
-            None,
-        )
-        if main_name is None and containers:
-            main_name = containers[0].get("name")
-
-        for candidate in (db_app.name, main_name):
-            if candidate and candidate in services:
-                return candidate
-        for name, service in services.items():
-            if (
-                isinstance(service, dict)
-                and service.get("container_name") == project_name
-            ):
-                return name
-        if len(services) == 1:
-            return next(iter(services))
-        raise APIException(
-            f"无法识别应用 {db_app.name} 的主服务，已取消升级", 409
-        )
+        return resolve_main_service(services, db_app, project_name)
 
     async def _deploy_new_app(
         self,

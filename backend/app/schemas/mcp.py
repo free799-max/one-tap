@@ -29,15 +29,8 @@ class McpUpstreamOut(BaseModel):
     instance_name: str
     status: str
     prefix: str
-    enabled: bool
     available: bool
     unavailable_reason: str
-    allowed_tools: list[str]
-
-
-class McpUpstreamUpdate(BaseModel):
-    enabled: bool
-    allowed_tools: list[str] | None = None
 
 
 class McpUpstreamToolOut(BaseModel):
@@ -53,24 +46,12 @@ class McpUpstreamToolsOut(BaseModel):
     tools: list[McpUpstreamToolOut]
 
 
-class McpLocalToolOut(BaseModel):
-    name: str
-    title: str
-    description: str
-    read_only: bool
-    enabled: bool
-
-
-class McpLocalToolsUpdate(BaseModel):
-    enabled_tools: list[str]
-
-
 class McpCatalogSourceOut(BaseModel):
     id: str
+    instance_id: int
     kind: str
     name: str
     available: bool
-    enabled: bool
     error: str = ""
     count: int
 
@@ -93,9 +74,6 @@ class McpCatalogEntryOut(BaseModel):
     required_role: str
     invocable: bool
     blocked_reason: str = ""
-    enabled: bool
-    effective: bool
-    status_reason: str = ""
     upstream_instance_id: int | None = None
 
 
@@ -106,23 +84,28 @@ class McpCatalogOut(BaseModel):
 
 
 class McpCatalogDetailOut(McpCatalogEntryOut):
-    parameters: list[dict] = Field(default_factory=list)
-    request_body: dict | None = None
-    responses: dict = Field(default_factory=dict)
-    components: dict = Field(default_factory=dict)
-    security: list[dict[str, list[str]]] | None = None
     input_schema: dict | None = None
     output_schema: dict | None = None
     annotations: dict | None = None
 
 
-class McpApiOperationsUpdate(BaseModel):
-    operation_ids: list[str]
+class McpKeyOut(BaseModel):
+    key: str
+    masked_key: str
+    created_at: datetime
+    last_used_at: datetime | None
+
+    @field_validator("created_at", "last_used_at")
+    @classmethod
+    def normalize_datetime(cls, value: datetime | None) -> datetime | None:
+        return _as_utc(value)
 
 
-class McpTokenCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    expires_at: datetime | None = None
+class McpConnectOut(BaseModel):
+    endpoint: str
+    masked_key: str
+    config_json: str
+    prompt: str
 
 
 class McpTokenOut(BaseModel):
@@ -140,10 +123,6 @@ class McpTokenOut(BaseModel):
     @classmethod
     def normalize_datetime(cls, value: datetime | None) -> datetime | None:
         return _as_utc(value)
-
-
-class McpTokenCreatedOut(McpTokenOut):
-    token: str
 
 
 class McpAuditOut(BaseModel):

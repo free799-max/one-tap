@@ -206,7 +206,7 @@ class AutoUpdateTargetOut(BaseModel):
     apps: list[str] = Field(default_factory=list)
     complex: bool = Field(
         False,
-        description="组合部署或多容器应用，升级只替换主服务镜像，建议谨慎开启",
+        description="组合部署或多容器应用，升级只替换主服务镜像并同步账号认证变量，建议谨慎开启",
     )
     selectable: bool = True
     reason: Optional[str] = Field(None, description="不可选或需要谨慎的原因")

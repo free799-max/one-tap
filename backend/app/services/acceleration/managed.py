@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -15,8 +16,11 @@ import yaml
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import APIException
+from app.models.system_config import SystemConfig
 from app.services.acceleration import mihomo
 from app.services.system.config_service import system_config_service
+
+logger = logging.getLogger(__name__)
 
 SUBSCRIPTION_TIMEOUT = 30.0
 
@@ -156,6 +160,21 @@ async def update_sync_settings(
     config.acceleration_sync_interval_minutes = interval_minutes
 
 
+async def _fill_system_proxy(db: AsyncSession, config: SystemConfig) -> str:
+    """同步成功后把系统代理指向本机 Mihomo；已有代理地址则保持原样。"""
+    if config.http_proxy or config.https_proxy:
+        return ""
+    try:
+        url = await mihomo.proxy_url(db)
+    except Exception as exc:  # 探测宿主地址失败不应影响订阅同步结果
+        logger.warning("自动配置系统代理失败: %s", exc)
+        return ""
+    config.http_proxy = url
+    config.https_proxy = url
+    config.proxy_enabled = True
+    return url
+
+
 async def sync(
     db: AsyncSession,
     url: str | None = None,
@@ -188,8 +207,9 @@ async def sync(
         config.acceleration_subscription_url = target
         config.acceleration_managed_rules = rules
         config.acceleration_rules_synced_at = _now()
+        proxy_url = await _fill_system_proxy(db, config)
         revision = int(state.get("revision") or 0)
-        message = "订阅无变化"
+        message = "订阅无变化" + ("，已自动配置系统代理" if proxy_url else "")
         await mihomo.record_sync_result(
             db,
             status="unchanged",
@@ -202,7 +222,12 @@ async def sync(
         return {
             "ok": True,
             "message": message,
-            "detail": {"revision": revision, "changed": False, "rules": len(rules)},
+            "detail": {
+                "revision": revision,
+                "changed": False,
+                "rules": len(rules),
+                "system_proxy": proxy_url,
+            },
         }
 
     revision = int(sha[:8], 16)
@@ -222,7 +247,10 @@ async def sync(
     config.acceleration_subscription_url = target
     config.acceleration_managed_rules = rules
     config.acceleration_rules_synced_at = _now()
-    message = "订阅已同步到本机 Mihomo"
+    proxy_url = await _fill_system_proxy(db, config)
+    message = "订阅已同步到本机 Mihomo" + (
+        "，已自动配置系统代理" if proxy_url else ""
+    )
     await mihomo.record_sync_result(
         db,
         status="success",
@@ -235,5 +263,10 @@ async def sync(
     return {
         "ok": True,
         "message": message,
-        "detail": {"revision": revision, "changed": True, "rules": len(rules)},
+        "detail": {
+            "revision": revision,
+            "changed": True,
+            "rules": len(rules),
+            "system_proxy": proxy_url,
+        },
     }

@@ -97,7 +97,8 @@ function AppNode({
             icon: app.icon,
           } as App
         }
-        className="h-7 w-7 shrink-0 rounded-[24%] object-cover shadow-sm ring-1 ring-foreground/5"
+        frameless
+        className="h-7 w-7 shrink-0 rounded-[24%]"
       />
 
       <div className="min-w-0 flex-1">

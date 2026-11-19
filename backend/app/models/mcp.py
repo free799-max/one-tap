@@ -9,7 +9,7 @@ from app.database import Base
 
 
 class McpAccessToken(Base):
-    """供外部 MCP Client 使用的管理员专用令牌，数据库只保存哈希。"""
+    """供外部 MCP Client 使用的管理员专用密钥，保存哈希和加密后的原值。"""
 
     __tablename__ = "mcp_access_tokens"
 
@@ -19,6 +19,7 @@ class McpAccessToken(Base):
     token_hash: Mapped[str] = mapped_column(
         String(64), unique=True, index=True, nullable=False
     )
+    token_value: Mapped[str | None] = mapped_column(String(512), nullable=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), index=True, nullable=False
     )

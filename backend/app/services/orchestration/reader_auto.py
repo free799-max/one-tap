@@ -895,6 +895,13 @@ class ReaderAutoSyncService:
             password=config["reader_password"],
         ) as session:
             shelf = await session.shelf()
+            root = str(config.get("reader_url") or "").rstrip("/")
+            for book in shelf:
+                if not isinstance(book, dict):
+                    continue
+                cover = str(book.get("coverUrl") or "")
+                if cover.startswith("/"):
+                    book["coverUrl"] = f"{root}{cover}"
             total_books = len(shelf)
             self._update_progress(
                 group_id,
@@ -972,6 +979,23 @@ class ReaderAutoSyncService:
                         deadline,
                     )
                     cached_total += added
+                    if added > 0 and not timed_out:
+                        try:
+                            from app.services.notifications.subscriptions import (
+                                notify_reader_cached,
+                            )
+
+                            await notify_reader_cached(
+                                book_url=book_url,
+                                title=name,
+                                total=total,
+                                cached=cached + added,
+                                author=str(item.get("author") or "") or None,
+                                origin_name=str(item.get("originName") or "") or None,
+                                cover=str(item.get("coverUrl") or "") or None,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 通知失败不阻断导出
+                            logger.warning("%s: 发送缓存通知失败：%s", name, exc)
 
                     need_export = (
                         not destination.is_file()
@@ -987,6 +1011,7 @@ class ReaderAutoSyncService:
                         await self._export_book(
                             session, book_url, name, destination
                         )
+                        previous_exported = state.exported_total
                         state.status = "done"
                         state.destination = str(destination)
                         state.exported_total = total
@@ -996,6 +1021,28 @@ class ReaderAutoSyncService:
                         state.exported_at = _now()
                         await self._save_state(state)
                         exported += 1
+                        try:
+                            from app.services.notifications.subscriptions import (
+                                notify_reader_export,
+                            )
+
+                            await notify_reader_export(
+                                book_url=book_url,
+                                title=name,
+                                total=total,
+                                previous_exported=previous_exported,
+                                destination=str(destination),
+                                author=str(item.get("author") or "") or None,
+                                origin_name=str(item.get("originName") or "") or None,
+                                cover=str(item.get("coverUrl") or "") or None,
+                                size=(
+                                    destination.stat().st_size
+                                    if destination.is_file()
+                                    else None
+                                ),
+                            )
+                        except Exception as exc:  # noqa: BLE001 - 通知失败不阻断导出
+                            logger.warning("%s: 发送导出通知失败：%s", name, exc)
                     else:
                         state.total_chapters = total
                         if state.status != "done":

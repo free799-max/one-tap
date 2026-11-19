@@ -163,6 +163,51 @@ def _normalize_qbittorrent_env(config: dict, image: str) -> None:
     config["qbittorrent_env"] = normalized
 
 
+def _sync_qbittorrent_torrenting_port(config: dict) -> None:
+    """让 BT 的宿主机、容器监听端口和环境变量保持一致。"""
+    ports = config.get("ports")
+    env_list = config.get("qbittorrent_env")
+    if not isinstance(ports, list) or not isinstance(env_list, list):
+        return
+
+    env_items = [
+        item
+        for item in env_list
+        if isinstance(item, dict)
+        and item.get("key") in {"QBT_TORRENTING_PORT", "TORRENTING_PORT"}
+    ]
+    if not env_items:
+        return
+    try:
+        original_port = int(env_items[0].get("value"))
+    except (TypeError, ValueError):
+        return
+
+    torrent_ports = [
+        entry
+        for entry in ports
+        if isinstance(entry, dict)
+        and str(entry.get("protocol") or "tcp").lower() in {"tcp", "udp"}
+        and entry.get("container_port") in {original_port, str(original_port)}
+    ]
+    if not torrent_ports:
+        return
+    selected = next(
+        (entry for entry in torrent_ports if entry.get("protocol") == "tcp"),
+        torrent_ports[0],
+    )
+    try:
+        selected_port = int(selected.get("local_port"))
+    except (TypeError, ValueError):
+        return
+
+    for entry in torrent_ports:
+        entry["local_port"] = selected_port
+        entry["container_port"] = selected_port
+    for item in env_items:
+        item["value"] = str(selected_port)
+
+
 # 社区版 Reader（hectorqin/reader、自建 free5104/reader）固定监听 8080、
 # 数据根目录为 /storage；环境变量 PORT、DATA_DIR 对它不生效。
 # reader-pro 模板的 5888 与 /data 只适用于 pro 镜像。
@@ -612,6 +657,12 @@ class AppService:
                         config[key] = port
                     else:
                         config["ports"][index]["local_port"] = port
+
+        if getattr(db_app, "name", None) == "qbittorrent":
+            _sync_qbittorrent_torrenting_port(config)
+            if allocated:
+                active_ports = set(_collect_config_ports(schema, config))
+                allocated = [port for port in allocated if port in active_ports]
 
         # 3. 生成项目名
         return _slugify(instance_name), allocated

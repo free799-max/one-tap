@@ -48,6 +48,30 @@ from app.services.system.host_path_aliases import host_path_aliases
 logger = logging.getLogger(__name__)
 
 
+def _missing_chain(path: Path) -> list[Path]:
+    """返回从顶层到叶子上当前尚不存在的目录链。"""
+    chain: list[Path] = []
+    current = path
+    while not current.exists() and current != current.parent:
+        chain.append(current)
+        current = current.parent
+    chain.reverse()
+    return chain
+
+
+def _grant_owner_rwx(path: Path) -> None:
+    """补齐目录的属主读写执行位。
+
+    SeaweedFS 4.x 等镜像只检查目录 mode 位里的属主写位（0200），
+    0007、0555 这类目录即使由 root 挂载也会被判定为不可写。
+    """
+    mode = path.stat().st_mode & 0o7777
+    if mode & 0o200:
+        return
+    os.chmod(path, mode | 0o700)
+    logger.info("修正宿主机目录权限 %s: %04o → %04o", path, mode, mode | 0o700)
+
+
 class ComposeService:
     """Docker Compose 编排核心服务。
 
@@ -652,9 +676,13 @@ class ComposeService:
         """解析 Compose YAML，为 bind mount 的宿主机路径自动创建目录。
 
         对本次新建的目录，若服务显式声明了 PUID/PGID，将目录属主调整为
-        该运行用户，避免容器因权限不足无法写入而反复重启。已存在的目录
-        不做任何改动。不检查镜像 Config.User——镜像不在本地时 inspect
-        会触发静默拉取，导致部署长时间无进度。
+        该运行用户，避免容器因权限不足无法写入而反复重启。不检查镜像
+        Config.User——镜像不在本地时 inspect 会触发静默拉取，导致部署
+        长时间无进度。
+
+        另外补齐缺失的属主写位：部分镜像（如 SeaweedFS 4.x）只读目录的
+        mode 位判断是否可写，umask 过严或 ACL 继承产生的 0007/0555 目录
+        会让容器直接报 Not writable，即使是 root 也会退出重启。
         """
         try:
             data = yaml.safe_load(content) or {}
@@ -672,14 +700,20 @@ class ComposeService:
             for source in extract_bind_sources(svc):
                 path = Path(source)
                 is_new = not path.exists()
+                missing = _missing_chain(path)
                 try:
-                    path.mkdir(parents=True, exist_ok=True)
+                    path.mkdir(parents=True, exist_ok=True, mode=0o755)
                 except OSError:
                     # 权限不足或路径非法时跳过，避免阻塞部署
                     logger.warning("自动创建宿主机目录失败: %s", source)
                     continue
                 if is_new:
                     new_paths.append(path)
+                for target in missing or [path]:
+                    try:
+                        _grant_owner_rwx(target)
+                    except OSError as e:
+                        logger.warning("修正宿主机目录权限失败 %s: %s", target, e)
             if not new_paths:
                 continue
 

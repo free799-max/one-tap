@@ -14,10 +14,12 @@ from fastmcp.server.proxy import FastMCPProxy, ProxyClient
 from fastmcp.tools.tool import Tool, ToolResult
 
 from app.core.exceptions import APIException
-from app.services.mcp.config import UpstreamState
+from app.services.mcp.config import NATIVE_MCP_PATHS, UpstreamState
 
 
-UPSTREAM_TIMEOUT_SECONDS = 30
+# MoviePilot 的写操作（订阅、下载）自己兜底 30s，这里必须留出余量，
+# 否则上游带原始错误信息的响应会被我们的超时先吃掉。
+UPSTREAM_TIMEOUT_SECONDS = 60
 UPSTREAM_DISCOVERY_TIMEOUT_SECONDS = 5
 UPSTREAM_CACHE_SECONDS = 15
 UPSTREAM_FAILURE_BACKOFF_SECONDS = 5
@@ -34,7 +36,12 @@ def upstream_url(state: UpstreamState) -> str:
         raise APIException("实例访问地址格式不正确", 400)
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise APIException("实例访问地址不能包含凭据、查询参数或片段", 400)
-    return f"{state.app.url.rstrip('/')}/api/v1/mcp"
+    path = NATIVE_MCP_PATHS.get(state.app.app_name)
+    if path is None:
+        raise APIException(
+            f"{state.app.display_name} 未提供原生 MCP 接口", 400
+        )
+    return f"{state.app.url.rstrip('/')}{path}"
 
 
 def _http_client_factory(api_key: str) -> Callable[..., httpx.AsyncClient]:
@@ -114,7 +121,7 @@ def build_upstream_proxy(
 ) -> UpstreamFastMCPProxy:
     async def client_factory() -> Client:
         state = await loader()
-        if state is None or not state.enabled or not state.available:
+        if state is None or not state.available:
             return ProxyClient(FastMCP("disabled-upstream"))
         return build_upstream_client(state)
 

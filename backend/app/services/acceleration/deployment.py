@@ -86,7 +86,10 @@ async def _sync_subscription_after_deploy(db: AsyncSession) -> str:
         result = await managed.sync(db, force=True, trigger="deploy")
         await db.commit()
         rules = int(result["detail"].get("rules") or 0)
-        return f"，已同步订阅（{rules} 条规则）"
+        note = f"，已同步订阅（{rules} 条规则）"
+        if result["detail"].get("system_proxy"):
+            note += "，已自动配置系统代理"
+        return note
     except Exception as exc:
         await db.rollback()
         logger.warning("Mihomo 部署后同步订阅失败: %s", exc)

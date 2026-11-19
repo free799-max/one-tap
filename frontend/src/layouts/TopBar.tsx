@@ -1,7 +1,7 @@
 /**
  * 顶部栏组件 - 极简风格
  *
- * 包含帮助、用户菜单
+ * 包含同步、通知、帮助、用户菜单
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -17,6 +17,7 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { useDeployTasks } from "@/hooks/useDeployTasks";
 import { useCatalogSync } from "@/hooks/useCatalogSync";
+import { NotificationBell } from "@/components/NotificationBell";
 import {
   Tooltip,
   TooltipContent,
@@ -91,6 +92,7 @@ export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
             </TooltipContent>
           </Tooltip>
         )}
+        <NotificationBell />
         <Tooltip>
           <TooltipTrigger
             delay={150}

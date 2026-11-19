@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "xiu2",
+      "name": "XIU2 精选书源",
+      "url": "https://bitbucket.org/xiu2/yuedu/raw/master/shuyuan",
+      "default_selected": true
+    },
+    {
+      "id": "yck-novel",
+      "name": "YCK 小说书源",
+      "url": "https://raw.githubusercontent.com/liufuyou/read/main/sources/yck-novel.json",
+      "mirror_urls": [
+        "https://cdn.jsdelivr.net/gh/liufuyou/read@main/sources/yck-novel.json"
+      ],
+      "default_selected": false
+    },
+    {
+      "id": "yiove-novel",
+      "name": "Yiove 小说书源",
+      "url": "https://raw.githubusercontent.com/liufuyou/read/main/sources/yiove-novel.json",
+      "mirror_urls": [
+        "https://cdn.jsdelivr.net/gh/liufuyou/read@main/sources/yiove-novel.json"
+      ],
+      "default_selected": false
+    }
+  ]
+}

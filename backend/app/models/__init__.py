@@ -31,6 +31,14 @@ from app.models.integration import IntegrationConfig
 from app.models.storage_directory import StorageDirectory
 from app.models.license import LicenseState
 from app.models.mcp import McpAccessToken, McpToolCallLog
+from app.models.notification import (
+    Notification,
+    NotificationChannel,
+    NotificationDelivery,
+    NotificationSetting,
+    NotificationSyncState,
+    ResourceSubscription,
+)
 from app.models.docker import (
     DockerMirrorConfig,
     DockerComposeProject,
@@ -47,6 +55,8 @@ __all__ = [
     "ReaderAutoSyncBook",
     "SystemConfig", "StorageDirectory", "LicenseState",
     "IntegrationConfig", "McpAccessToken", "McpToolCallLog",
+    "Notification", "NotificationChannel", "NotificationDelivery",
+    "NotificationSetting", "NotificationSyncState", "ResourceSubscription",
     "DockerMirrorConfig",
     "DockerComposeProject", "DockerComposeVersion", "DockerComposeStack",
     "COMPOSE_PROJECT_LABEL",

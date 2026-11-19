@@ -2,13 +2,14 @@ import json
 
 import httpx
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.server.proxy import ProxyClient
 from httpx import ASGITransport
 
 from app.main import app
 from app.services.mcp.auth import create_access_token
-from app.services.mcp.config import DEFAULT_LOCAL_TOOLS, mcp_config_service
+from app.services.mcp.config import mcp_config_service
 from app.services.mcp.server import mcp_aggregator
 
 
@@ -43,10 +44,7 @@ async def test_real_streamable_http_protocol_without_standard_response(mcp_env):
     raw = await _raw_token(mcp_env)
     async with mcp_aggregator.lifespan():
         async with Client(_transport(raw)) as client:
-            tools = await client.list_tools()
-            assert "media_targets_list" in {tool.name for tool in tools}
-            result = await client.call_tool("media_targets_list", {})
-            assert result.is_error is False
+            assert [t for t in await client.list_tools() if t.name.startswith('moviepilot_')] == []
 
         async with httpx.AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -91,14 +89,21 @@ async def test_protocol_requires_valid_bearer_and_enabled_server(mcp_env):
 
 
 @pytest.mark.asyncio
-async def test_protocol_catalog_schema_request_and_audit(mcp_env):
+async def test_protocol_remote_tool_call_is_audited(
+    mcp_env, moviepilot, monkeypatch
+):
+    upstream = FastMCP("MoviePilot")
+
+    @upstream.tool(name="media.search")
+    async def media_search(query: str):
+        return {"results": [{"title": f"result:{query}"}]}
+
+    monkeypatch.setattr(
+        "app.services.mcp.upstream.build_upstream_client",
+        lambda state: ProxyClient(upstream),
+    )
     raw = await _raw_token(mcp_env)
-    health_id = "health_check_api_health_get"
-    async with mcp_env["session"]() as db:
-        await mcp_config_service.update_local_tools(
-            db, [*DEFAULT_LOCAL_TOOLS, "onetap_api_request"]
-        )
-        await mcp_config_service.update_api_operations(db, [health_id])
+    tool_name = f"moviepilot_{moviepilot.id}_media.search"
 
     from app.services.mcp.server import McpAggregator
 
@@ -106,36 +111,19 @@ async def test_protocol_catalog_schema_request_and_audit(mcp_env):
     async with aggregator.lifespan():
         async with Client(_transport(raw, aggregator.asgi_app, "/")) as client:
             names = {tool.name for tool in await client.list_tools()}
-            assert {"onetap_api_catalog", "onetap_api_request"} <= names
-
-            catalog_result = await client.call_tool(
-                "onetap_api_catalog", {"query": "health", "method": "GET"}
+            assert tool_name in names
+            result = await client.call_tool(tool_name, {"query": "demo"})
+            assert (
+                json.loads(result.content[0].text)["results"][0]["title"]
+                == "result:demo"
             )
-            catalog = json.loads(catalog_result.content[0].text)
-            assert catalog["total"] == 1
-            assert catalog["items"][0]["name"] == health_id
-            assert catalog["items"][0]["authorized"] is True
-
-            detail_result = await client.call_tool(
-                "onetap_api_catalog", {"operation_id": health_id}
-            )
-            detail = json.loads(detail_result.content[0].text)
-            assert detail["items"][0]["path"] == "/api/health"
-            assert "components" in detail["items"][0]
-
-            request_result = await client.call_tool(
-                "onetap_api_request", {"operation_id": health_id}
-            )
-            response = json.loads(request_result.content[0].text)
-            assert response["status_code"] == 200
-            assert response["data"]["status"] == "ok"
 
     from app.services.mcp.audit import list_tool_call_logs
 
     async with mcp_env["session"]() as db:
         logs = await list_tool_call_logs(db, user_id=mcp_env["admin"].id)
-    api_log = next(log for log in logs if log.source == "api")
-    assert api_log.tool_name == f"api:{health_id}"
-    assert api_log.success is True
-    assert "health" in api_log.tool_name
-    assert all("Authorization" not in log.error_message for log in logs)
+    assert len(logs) == 1
+    assert logs[0].tool_name == tool_name
+    assert logs[0].source == "remote"
+    assert logs[0].success is True
+    assert "Authorization" not in logs[0].error_message

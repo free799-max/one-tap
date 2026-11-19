@@ -67,7 +67,7 @@ export function StackLogsDialog({
   const logsUrl =
     open && basePath
       ? withLogToken(
-          `${basePath}${basePath.includes("?") ? "&" : "?"}tail=${tail}&follow=${follow}`
+          `${basePath}${basePath.includes("?") ? "&" : "?"}tail=${tail}&follow=true`
         )
       : null;
   const { logs, connected, clearLogs } = useLogsStream(logsUrl, (message) => {

@@ -135,9 +135,13 @@ async def test_sync_saves_rules_and_applies(client, monkeypatch, tmp_path):
         applied["kwargs"] = kwargs
         return {"running": True}
 
+    async def fake_proxy_url(db):
+        return "http://192.168.1.10:7890"
+
     monkeypatch.setattr(managed, "_fetch", fake_fetch)
     monkeypatch.setattr(managed, "_fetch_rule_apps", fake_rule_apps)
     monkeypatch.setattr(mihomo, "apply_subscription_async", fake_apply)
+    monkeypatch.setattr(mihomo, "proxy_url", fake_proxy_url)
 
     await client.put(
         "/api/acceleration/managed",
@@ -173,6 +177,81 @@ async def test_sync_saves_rules_and_applies(client, monkeypatch, tmp_path):
     assert data["last_sync_result"]["changed"] is True
     assert data["last_sync_result"]["rules"] == 2
     assert data["last_sync_result"]["synced_at"]
+
+
+async def _install_sync_stubs(monkeypatch, proxy_url: str):
+    async def fake_fetch(url: str) -> str:
+        return SUBSCRIPTION_YAML
+
+    async def fake_rule_apps(url: str) -> dict:
+        return {}
+
+    async def fake_apply(db, content, **kwargs):
+        return {"running": True}
+
+    async def fake_proxy_url(db):
+        return proxy_url
+
+    monkeypatch.setattr(managed, "_fetch", fake_fetch)
+    monkeypatch.setattr(managed, "_fetch_rule_apps", fake_rule_apps)
+    monkeypatch.setattr(mihomo, "apply_subscription_async", fake_apply)
+    monkeypatch.setattr(mihomo, "proxy_url", fake_proxy_url)
+
+
+@pytest.mark.asyncio
+async def test_sync_fills_empty_system_proxy(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path))
+    token = await _admin_token(client, "accel_proxy_admin")
+    await _install_sync_stubs(monkeypatch, "http://192.168.1.10:7890")
+
+    await client.put(
+        "/api/settings",
+        json={"proxy_enabled": False, "http_proxy": "", "https_proxy": ""},
+        headers=_auth(token),
+    )
+    await client.put(
+        "/api/acceleration/managed",
+        json={"subscription_url": "https://manage.example.com/sub/abc"},
+        headers=_auth(token),
+    )
+    result = await client.post("/api/acceleration/managed/sync", headers=_auth(token))
+    assert result.status_code == 200, result.text
+    assert "已自动配置系统代理" in result.json()["data"]["message"]
+    assert result.json()["data"]["detail"]["system_proxy"] == "http://192.168.1.10:7890"
+
+    config = (await client.get("/api/settings", headers=_auth(token))).json()["data"]
+    assert config["proxy_enabled"] is True
+    assert config["http_proxy"] == "http://192.168.1.10:7890"
+    assert config["https_proxy"] == "http://192.168.1.10:7890"
+
+
+@pytest.mark.asyncio
+async def test_sync_keeps_existing_system_proxy(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path))
+    token = await _admin_token(client, "accel_proxy_admin2")
+    await _install_sync_stubs(monkeypatch, "http://192.168.1.10:7890")
+
+    await client.put(
+        "/api/settings",
+        json={
+            "proxy_enabled": True,
+            "http_proxy": "http://127.0.0.1:1080",
+            "https_proxy": "http://127.0.0.1:1080",
+        },
+        headers=_auth(token),
+    )
+    await client.put(
+        "/api/acceleration/managed",
+        json={"subscription_url": "https://manage.example.com/sub/abc"},
+        headers=_auth(token),
+    )
+    result = await client.post("/api/acceleration/managed/sync", headers=_auth(token))
+    assert result.status_code == 200, result.text
+    assert "已自动配置系统代理" not in result.json()["data"]["message"]
+
+    config = (await client.get("/api/settings", headers=_auth(token))).json()["data"]
+    assert config["http_proxy"] == "http://127.0.0.1:1080"
+    assert config["https_proxy"] == "http://127.0.0.1:1080"
 
 
 @pytest.mark.asyncio

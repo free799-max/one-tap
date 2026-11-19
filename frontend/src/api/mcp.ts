@@ -14,15 +14,8 @@ export interface McpUpstream {
   instance_name: string;
   status: string;
   prefix: string;
-  enabled: boolean;
   available: boolean;
   unavailable_reason: string | null;
-  allowed_tools: string[];
-}
-
-export interface McpUpstreamUpdate {
-  enabled: boolean;
-  allowed_tools?: string[];
 }
 
 export interface McpTool {
@@ -38,31 +31,18 @@ export interface McpToolList {
   tools: McpTool[];
 }
 
-export interface McpLocalTool {
-  name: string;
-  title: string;
-  description: string;
-  read_only: boolean;
-  enabled: boolean;
-}
-
-export interface McpToken {
-  id: number;
-  name: string;
-  prefix: string;
+export interface McpKey {
+  key: string;
+  masked_key: string;
   created_at: string;
-  expires_at: string | null;
-  revoked_at: string | null;
   last_used_at: string | null;
 }
 
-export interface McpTokenCreate {
-  name: string;
-  expires_at?: string | null;
-}
-
-export interface McpCreatedToken extends McpToken {
-  token: string;
+export interface McpConnectInfo {
+  endpoint: string;
+  masked_key: string;
+  config_json: string;
+  prompt: string;
 }
 
 export interface McpAuditRecord {
@@ -90,15 +70,6 @@ export function listMcpUpstreams(): Promise<McpUpstream[]> {
   return api.get(`${MCP_BASE}/upstreams`).then((r) => r.data as McpUpstream[]);
 }
 
-export function updateMcpUpstream(
-  instanceId: number,
-  data: McpUpstreamUpdate
-): Promise<McpUpstream> {
-  return api
-    .put(`${MCP_BASE}/upstreams/${instanceId}`, data)
-    .then((r) => r.data as McpUpstream);
-}
-
 export function testMcpUpstreamTools(
   instanceId: number
 ): Promise<McpToolList> {
@@ -107,32 +78,18 @@ export function testMcpUpstreamTools(
     .then((r) => r.data as McpToolList);
 }
 
-export function listMcpLocalTools(): Promise<McpLocalTool[]> {
-  return api
-    .get(`${MCP_BASE}/local-tools`)
-    .then((r) => r.data as McpLocalTool[]);
-}
-
-export function updateMcpLocalTools(data: {
-  enabled_tools: string[];
-}): Promise<McpLocalTool[]> {
-  return api
-    .put(`${MCP_BASE}/local-tools`, data)
-    .then((r) => r.data as McpLocalTool[]);
-}
-
 export interface McpCatalogSource {
   id: string;
+  instance_id: number;
   kind: string;
   name: string;
   available: boolean;
-  enabled: boolean;
   error: string;
   count: number;
 }
 
 export interface McpCatalogEntry {
-  kind: "onetap_api" | "local_tool" | "remote_tool" | string;
+  kind: "remote_tool";
   entry_id: string;
   source: string;
   source_name: string;
@@ -144,22 +101,11 @@ export interface McpCatalogEntry {
   path: string;
   public_name: string;
   tags: string[];
-  risk:
-    | "read"
-    | "write"
-    | "destructive"
-    | "secret"
-    | "control_plane"
-    | "unsupported"
-    | "unknown"
-    | string;
-  transport: "http" | "mcp" | "sse" | "file" | "websocket" | string;
+  risk: "read" | "write" | "destructive" | "unknown";
+  transport: "mcp";
   required_role: string;
   invocable: boolean;
   blocked_reason: string;
-  enabled: boolean;
-  effective: boolean;
-  status_reason: string;
   upstream_instance_id: number | null;
 }
 
@@ -170,11 +116,6 @@ export interface McpCatalog {
 }
 
 export interface McpCatalogDetail extends McpCatalogEntry {
-  parameters: Array<Record<string, unknown>>;
-  request_body: Record<string, unknown> | null;
-  responses: Record<string, unknown>;
-  components: Record<string, unknown>;
-  security: Array<Record<string, string[]>> | null;
   input_schema: Record<string, unknown> | null;
   output_schema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
@@ -192,28 +133,16 @@ export function getMcpCatalogDetail(
     .then((r) => r.data as McpCatalogDetail);
 }
 
-export function updateMcpApiOperations(data: {
-  operation_ids: string[];
-}): Promise<string[]> {
-  return api
-    .put(`${MCP_BASE}/api-operations`, data)
-    .then((r) => r.data as string[]);
+export function getMcpKey(): Promise<McpKey> {
+  return api.get(`${MCP_BASE}/key`).then((r) => r.data as McpKey);
 }
 
-export function listMcpTokens(): Promise<McpToken[]> {
-  return api.get(`${MCP_BASE}/tokens`).then((r) => r.data as McpToken[]);
+export function resetMcpKey(): Promise<McpKey> {
+  return api.post(`${MCP_BASE}/key/reset`).then((r) => r.data as McpKey);
 }
 
-export function createMcpToken(
-  data: McpTokenCreate
-): Promise<McpCreatedToken> {
-  return api
-    .post(`${MCP_BASE}/tokens`, data)
-    .then((r) => r.data as McpCreatedToken);
-}
-
-export function revokeMcpToken(id: number): Promise<McpToken> {
-  return api.delete(`${MCP_BASE}/tokens/${id}`).then((r) => r.data as McpToken);
+export function getMcpConnect(): Promise<McpConnectInfo> {
+  return api.get(`${MCP_BASE}/connect`).then((r) => r.data as McpConnectInfo);
 }
 
 export function listMcpAudit(limit = 100): Promise<McpAuditRecord[]> {

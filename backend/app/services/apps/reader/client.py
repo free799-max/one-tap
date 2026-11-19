@@ -166,6 +166,59 @@ class ReaderSession:
         data = payload.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
+    async def search_book_sources(
+        self,
+        book_url: str,
+        *,
+        search_size: int = 20,
+        last_index: int = -1,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """按书名和作者搜索同书的其他书源候选。"""
+        payload = await self._post_json(
+            "/reader3/searchBookSource",
+            {
+                "url": book_url,
+                "lastIndex": last_index,
+                "searchSize": max(search_size, 1),
+            },
+        )
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "搜索同书书源失败")
+            )
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return [], last_index
+        books = data.get("list")
+        return (
+            [item for item in books if isinstance(item, dict)]
+            if isinstance(books, list)
+            else [],
+            int(data.get("lastIndex") or last_index),
+        )
+
+    async def set_book_source(
+        self,
+        book_url: str,
+        new_url: str,
+        book_source_url: str,
+    ) -> dict[str, Any]:
+        """切换书架书籍的书源，返回切换后的书籍信息。"""
+        payload = await self._post_json(
+            "/reader3/setBookSource",
+            {
+                "bookUrl": book_url,
+                "newUrl": new_url,
+                "bookSourceUrl": book_source_url,
+            },
+        )
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "切换书源失败")
+            )
+        data = payload.get("data")
+        return data if isinstance(data, dict) else {}
+
     async def cache_chapter(self, book_url: str, index: int) -> bool:
         """让 Reader 缓存指定章节；返回是否成功。"""
         payload = await self._json(
@@ -196,6 +249,130 @@ class ReaderSession:
             raise ReaderClientError(f"导出 EPUB 失败: {exc}") from exc
         finally:
             part.unlink(missing_ok=True)
+
+    async def _post_json(
+        self,
+        path: str,
+        body: dict[str, Any] | list[dict[str, Any]],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """写接口：query 带 accessToken，body 为对象或批量对象数组。"""
+        try:
+            response = await self._client.post(
+                path, params=self._params(params), json=body
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ReaderClientError(f"请求 {path} 失败: {exc}") from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ReaderClientError(
+                f"{path} 返回的不是 JSON: {response.text[:200]}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ReaderClientError(f"{path} 返回结构异常")
+        return payload
+
+    async def book_sources(self) -> list[dict[str, Any]]:
+        payload = await self._json("/reader3/getBookSources")
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "读取书源失败")
+            )
+        data = payload.get("data")
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    async def update_book_source_limit(
+        self, username: str, limit: int, secure_key: str
+    ) -> None:
+        if not secure_key:
+            raise ReaderClientError(
+                "Reader 未配置管理密码，无法修改书源上限；请重新部署 Reader 应用配置"
+            )
+        payload = await self._post_json(
+            "/reader3/updateUser",
+            {"username": username, "bookSourceLimit": limit},
+            params={"secureKey": secure_key},
+        )
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "修改书源上限失败")
+            )
+
+    async def save_book_sources(
+        self, sources: list[dict[str, Any]]
+    ) -> dict[str, bool | str]:
+        if not sources:
+            return {"limit_reached": False, "message": ""}
+        payload = await self._post_json("/reader3/saveBookSources", sources)
+        message = str(payload.get("errorMsg") or "")
+        limit_reached = "书源数上限" in message
+        if not payload.get("isSuccess") and not limit_reached:
+            raise ReaderClientError(message or "导入书源失败")
+        return {"limit_reached": limit_reached, "message": message}
+
+    async def search_books(
+        self, keyword: str, page: int = 1
+    ) -> list[dict[str, Any]]:
+        """使用全部已启用书源搜索，并按页继续拉取。"""
+        last_index = -1
+        for current_page in range(1, max(page, 1) + 1):
+            payload = await self._json(
+                "/reader3/searchBookMulti",
+                {
+                    "key": keyword,
+                    "lastIndex": last_index,
+                    "searchSize": 50,
+                    "concurrentCount": 12,
+                },
+            )
+            if not payload.get("isSuccess"):
+                raise ReaderClientError(
+                    str(payload.get("errorMsg") or "搜索小说失败")
+                )
+            data = payload.get("data")
+            books = data.get("list") if isinstance(data, dict) else data
+            if current_page == page:
+                return [item for item in books or [] if isinstance(item, dict)]
+            if not isinstance(data, dict) or not books:
+                return []
+            last_index = int(data.get("lastIndex", -1))
+        return []
+
+    async def save_book(self, book: dict[str, Any]) -> dict[str, Any]:
+        """把书籍加入书架（即订阅），返回 saveBook 的回读数据。"""
+        payload = await self._post_json("/reader3/saveBook", book)
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "加入书架失败")
+            )
+        data = payload.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def remove_book(self, book_url: str, name: str = "") -> None:
+        """从书架删除（即退订）；带上书名更稳妥。"""
+        body: dict[str, Any] = {"bookUrl": book_url}
+        if name:
+            body["name"] = name
+        payload = await self._post_json("/reader3/deleteBook", body)
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "删除书架书籍失败")
+            )
+
+    async def cache_books(self, book_urls: list[str]) -> None:
+        """提交服务器缓存任务（即下载/补齐缓存）。"""
+        urls = [str(url).strip() for url in book_urls if str(url or "").strip()]
+        if not urls:
+            return
+        payload = await self._post_json(
+            "/reader3/cacheBookOnServer", {"bookUrlList": urls}
+        )
+        if not payload.get("isSuccess"):
+            raise ReaderClientError(
+                str(payload.get("errorMsg") or "提交缓存任务失败")
+            )
 
 
 class ErmaoClient:

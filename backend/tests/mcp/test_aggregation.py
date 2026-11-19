@@ -32,20 +32,13 @@ def _moviepilot_server():
     return upstream
 
 
-async def _enable_moviepilot(mcp_env, instance_id, allowed_tools):
+async def _enable_moviepilot(mcp_env):
     async with mcp_env["session"]() as db:
         await mcp_config_service.set_enabled(db, True)
-        await mcp_config_service.update_upstream(
-            db,
-            instance_id=instance_id,
-            host="test",
-            enabled=True,
-            allowed_tools=allowed_tools,
-        )
 
 
 @pytest.mark.asyncio
-async def test_local_and_remote_tools_are_aggregated(
+async def test_installed_source_exposes_all_native_tools(
     mcp_env, moviepilot, monkeypatch
 ):
     upstream = _moviepilot_server()
@@ -53,27 +46,60 @@ async def test_local_and_remote_tools_are_aggregated(
         "app.services.mcp.upstream.build_upstream_client",
         lambda state: ProxyClient(upstream),
     )
-    await _enable_moviepilot(mcp_env, moviepilot.id, ["media.search"])
+    await _enable_moviepilot(mcp_env)
     aggregator = McpAggregator()
 
     async with Client(aggregator.server) as client:
         tools = await client.list_tools()
-        names = {tool.name for tool in tools}
-        remote_name = f"moviepilot_{moviepilot.id}_media.search"
-        assert remote_name in names
-        assert f"moviepilot_{moviepilot.id}_subscription.add" not in names
-        assert "media_targets_list" in names
+        names = {tool.name for tool in tools if tool.name.startswith('moviepilot_')}
+        read_name = f"moviepilot_{moviepilot.id}_media.search"
+        write_name = f"moviepilot_{moviepilot.id}_subscription.add"
+        assert names == {read_name, write_name}
 
-        result = await client.call_tool(remote_name, {"query": "demo"})
+        result = await client.call_tool(read_name, {"query": "demo"})
         assert json.loads(result.content[0].text)["results"][0]["title"] == "result:demo"
-        with pytest.raises(ToolError, match="白名单"):
+        result = await client.call_tool(write_name, {"name": "demo"})
+        assert json.loads(result.content[0].text)["id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_unavailable_source_tools_are_hidden_and_rejected(
+    mcp_env, moviepilot, monkeypatch
+):
+    from app.models.orchestration import AppInstance
+
+    upstream = _moviepilot_server()
+    monkeypatch.setattr(
+        "app.services.mcp.upstream.build_upstream_client",
+        lambda state: ProxyClient(upstream),
+    )
+    async with mcp_env["session"]() as db:
+        await mcp_config_service.set_enabled(db, True)
+        instance = await db.get(AppInstance, moviepilot.id)
+        assert instance is not None
+        instance.status = "stopped"
+        await db.commit()
+    aggregator = McpAggregator()
+
+    async with Client(aggregator.server) as client:
+        assert [t for t in await client.list_tools() if t.name.startswith('moviepilot_')] == []
+        with pytest.raises(ToolError, match="来源不可用"):
             await client.call_tool(
                 f"moviepilot_{moviepilot.id}_subscription.add", {"name": "demo"}
             )
 
 
 @pytest.mark.asyncio
-async def test_explicitly_allowed_write_tool_can_call_remote(
+async def test_global_disable_hides_and_rejects_all_tools(mcp_env, moviepilot):
+    aggregator = McpAggregator()
+    async with Client(aggregator.server) as client:
+        assert [t for t in await client.list_tools() if t.name.startswith('moviepilot_')] == []
+        with pytest.raises(ToolError):
+            await client.call_tool(f"moviepilot_{moviepilot.id}_media.search", {})
+
+
+@pytest.mark.asyncio
+async def test_successful_call_is_audited_without_arguments(
     mcp_env, moviepilot, monkeypatch
 ):
     upstream = _moviepilot_server()
@@ -81,45 +107,22 @@ async def test_explicitly_allowed_write_tool_can_call_remote(
         "app.services.mcp.upstream.build_upstream_client",
         lambda state: ProxyClient(upstream),
     )
-    await _enable_moviepilot(mcp_env, moviepilot.id, ["subscription.add"])
-    aggregator = McpAggregator()
-
-    async with Client(aggregator.server) as client:
-        result = await client.call_tool(
-            f"moviepilot_{moviepilot.id}_subscription.add", {"name": "demo"}
-        )
-        assert json.loads(result.content[0].text)["id"] == 7
-
-
-@pytest.mark.asyncio
-async def test_global_disable_hides_and_rejects_all_tools(mcp_env, moviepilot):
-    aggregator = McpAggregator()
-    async with Client(aggregator.server) as client:
-        assert await client.list_tools() == []
-        with pytest.raises(ToolError):
-            await client.call_tool("media_targets_list", {})
-
-
-@pytest.mark.asyncio
-async def test_successful_call_is_audited_without_arguments(
-    mcp_env, monkeypatch
-):
+    await _enable_moviepilot(mcp_env)
     actor = McpActor(user_id=mcp_env["admin"].id, token_id=1, username="admin", request_host="test")
     monkeypatch.setattr("app.services.mcp.audit.current_mcp_actor", lambda: actor)
-    async with mcp_env["session"]() as db:
-        await mcp_config_service.set_enabled(db, True)
     aggregator = McpAggregator()
+    tool_name = f"moviepilot_{moviepilot.id}_media.search"
 
     async with Client(aggregator.server) as client:
-        await client.call_tool("media_targets_list", {})
+        await client.call_tool(tool_name, {"query": "demo"})
 
     from app.services.mcp.audit import list_tool_call_logs
 
     async with mcp_env["session"]() as db:
         logs = await list_tool_call_logs(db, user_id=mcp_env["admin"].id)
     assert len(logs) == 1
-    assert logs[0].tool_name == "media_targets_list"
-    assert logs[0].source == "local"
+    assert logs[0].tool_name == tool_name
+    assert logs[0].source == "remote"
     assert logs[0].success is True
 
 
@@ -132,7 +135,7 @@ async def test_resources_and_prompts_are_never_exposed(
         "app.services.mcp.upstream.build_upstream_client",
         lambda state: ProxyClient(upstream),
     )
-    await _enable_moviepilot(mcp_env, moviepilot.id, [])
+    await _enable_moviepilot(mcp_env)
     aggregator = McpAggregator()
 
     async with Client(aggregator.server) as client:
@@ -146,34 +149,8 @@ async def test_resources_and_prompts_are_never_exposed(
 
 
 @pytest.mark.asyncio
-async def test_local_call_does_not_enumerate_remote_upstreams(
-    mcp_env, moviepilot, monkeypatch
-):
-    upstream = _moviepilot_server()
-    monkeypatch.setattr(
-        "app.services.mcp.upstream.build_upstream_client",
-        lambda state: ProxyClient(upstream),
-    )
-    await _enable_moviepilot(mcp_env, moviepilot.id, ["media.search"])
-    from app.services.mcp.upstream import UpstreamFastMCPProxy
-
-    discoveries = []
-    original = UpstreamFastMCPProxy.get_tools
-
-    async def tracked(self):
-        discoveries.append(self.name)
-        return await original(self)
-
-    monkeypatch.setattr(UpstreamFastMCPProxy, "get_tools", tracked)
-    aggregator = McpAggregator()
-    async with Client(aggregator.server) as client:
-        await client.call_tool("media_targets_list", {})
-    assert discoveries == []
-
-
-@pytest.mark.asyncio
 async def test_deleted_instance_mount_and_config_are_reconciled(mcp_env, moviepilot):
-    await _enable_moviepilot(mcp_env, moviepilot.id, ["media.search"])
+    await _enable_moviepilot(mcp_env)
     aggregator = McpAggregator()
     await aggregator.ensure_upstreams()
     assert len(aggregator.server._mounted_servers) == 1
@@ -190,5 +167,5 @@ async def test_deleted_instance_mount_and_config_are_reconciled(mcp_env, moviepi
     assert aggregator.server._mounted_servers == []
     assert aggregator._mounted == {}
     async with mcp_env["session"]() as db:
-        config = await mcp_config_service.get_config(db)
-        assert config["upstreams"] == {}
+        states = await mcp_config_service.list_upstreams(db, "test")
+        assert states == []

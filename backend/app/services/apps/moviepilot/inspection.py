@@ -1,16 +1,15 @@
 """MoviePilot 配置健康检测与自动修复能力。
 
 下载器/媒体服务器检测项的修复通过 ``ctx['wire']`` 回调重跑所在组的
-自动装配（wiring）完成；目录、硬链接、媒体库同步、订阅搜索等检测项
-直接写回 MoviePilot 系统设置。
+自动装配（wiring）完成；目录、硬链接、媒体库同步等检测项直接写回
+MoviePilot 系统设置。
 
-检测项参考 MoviePilot 官方配置指引，覆盖「基础装配 → 站点媒体 →
-体验优化」三个层次，并尽量把可以安全写入的设置做成自动修复。
+检测项覆盖「基础装配 → 站点媒体」两个层次，并尽量把可以安全写入的
+设置做成自动修复。
 """
 
 import logging
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 
@@ -27,14 +26,10 @@ _WIRED_ITEMS = {
 # 检测项分组（前端按分组渲染）
 _GROUP_CORE = "核心配置"
 _GROUP_MEDIA = "站点与媒体"
-_GROUP_OPTIMIZE = "体验与安全"
 
 # 无法从编排共享配置推导时的容器内默认路径
 _DEFAULT_DOWNLOAD_PATH = "/downloads"
 _DEFAULT_LIBRARY_PATH = "/media"
-
-# 通知渠道在部分 MoviePilot 版本中的旧键名
-_NOTIFICATION_KEYS = ("Notifications", "NotificationChannels")
 
 # 整理方式的中文说明
 _TRANSFER_TYPE_LABELS = {
@@ -51,7 +46,7 @@ class MoviePilotInspectionMixin:
     TIMEOUT = 10.0
 
     async def inspect(self, ctx: dict) -> InspectReport:
-        """检测认证、装配、目录、站点与常用优化项。"""
+        """检测认证、装配、目录、站点与用户认证。"""
         base_url = str(ctx.get("url") or "").rstrip("/")
         api_key = ctx.get("api_key") or ""
         if not base_url or not api_key:
@@ -75,28 +70,8 @@ class MoviePilotInspectionMixin:
 
         items: list[InspectItem] = [auth_item, *await self._inspect_wired_items(ctx)]
         items.extend(await self._inspect_directories(base_url, api_key))
-        items.extend(await self._inspect_mediaserver_libraries(base_url, api_key))
         items.append(await self._inspect_sites(base_url, api_key))
-
-        env_ok, env, env_err = await self._get_env(base_url, api_key)
-        if env_ok:
-            items.append(self._inspect_site_auth(env))
-            items.append(self._inspect_subscribe_search(env))
-            items.append(await self._inspect_notifications(base_url, api_key))
-            items.append(self._inspect_proxy(env))
-            items.append(self._inspect_github_token(env))
-            items.append(await self._inspect_plugins(base_url, api_key))
-            items.append(self._inspect_api_token(env, api_key))
-        else:
-            items.append(
-                InspectItem(
-                    id="settings_readable",
-                    title="系统设置读取",
-                    status="warn",
-                    message=f"无法读取系统设置，部分优化项已跳过: {env_err}",
-                    category=_GROUP_OPTIMIZE,
-                )
-            )
+        items.append(await self._inspect_site_auth(base_url, api_key))
         return InspectReport(supported=True, items=items)
 
     async def apply_fix(self, ctx: dict, item_ids: list[str]) -> list[FixResultItem]:
@@ -147,14 +122,6 @@ class MoviePilotInspectionMixin:
                 results.append(FixResultItem(id=item_id, ok=ok, message=message))
             elif item_id == "transfer_mode":
                 ok, message = await self._fix_transfer_mode(base_url, api_key)
-                results.append(FixResultItem(id=item_id, ok=ok, message=message))
-            elif item_id == "mediaserver_library_sync":
-                ok, message = await self._fix_mediaserver_library_sync(
-                    base_url, api_key
-                )
-                results.append(FixResultItem(id=item_id, ok=ok, message=message))
-            elif item_id == "subscribe_search":
-                ok, message = await self._fix_subscribe_search(base_url, api_key)
                 results.append(FixResultItem(id=item_id, ok=ok, message=message))
             else:
                 results.append(
@@ -375,147 +342,6 @@ class MoviePilotInspectionMixin:
             category=_GROUP_CORE,
         )
 
-    # ---------------- 媒体服务器 ----------------
-
-    async def _inspect_mediaserver_libraries(
-        self, base_url: str, api_key: str
-    ) -> list[InspectItem]:
-        """检测媒体服务器连通性与媒体库同步范围。"""
-        ok, value, err = await self.get_setting(base_url, api_key, "MediaServers")
-        if not ok:
-            return [
-                InspectItem(
-                    id="mediaserver_connection",
-                    title="媒体服务器连接",
-                    status="error",
-                    message=f"读取媒体服务器配置失败: {err}",
-                    category=_GROUP_MEDIA,
-                ),
-                InspectItem(
-                    id="mediaserver_library_sync",
-                    title="媒体库同步",
-                    status="warn",
-                    message="无法读取媒体服务器配置，暂时无法检测同步范围",
-                    category=_GROUP_MEDIA,
-                ),
-            ]
-
-        servers = [
-            entry
-            for entry in (value if isinstance(value, list) else [])
-            if isinstance(entry, dict) and entry.get("enabled") and entry.get("name")
-        ]
-        if not servers:
-            return [
-                InspectItem(
-                    id="mediaserver_connection",
-                    title="媒体服务器连接",
-                    status="error",
-                    message="未启用媒体服务器，整理完成后无法自动刷新媒体库",
-                    category=_GROUP_MEDIA,
-                ),
-                InspectItem(
-                    id="mediaserver_library_sync",
-                    title="媒体库同步",
-                    status="warn",
-                    message="未启用媒体服务器，无法设置媒体库同步",
-                    category=_GROUP_MEDIA,
-                ),
-            ]
-
-        failures: list[str] = []
-        sync_missing: list[str] = []
-        synced = 0
-        for server in servers:
-            name = str(server.get("name"))
-            libs_ok, libs, libs_err = await self._fetch_libraries(
-                base_url, api_key, name
-            )
-            if not libs_ok:
-                failures.append(f"{name}: {libs_err}")
-                continue
-            if not libs:
-                failures.append(f"{name}: 未获取到媒体库")
-                continue
-            configured = {str(i) for i in (server.get("sync_libraries") or [])}
-            missing = [i for i in libs if i not in configured]
-            if missing:
-                sync_missing.append(f"{name}（缺少 {len(missing)} 个库）")
-            else:
-                synced += 1
-
-        if failures:
-            connection_item = InspectItem(
-                id="mediaserver_connection",
-                title="媒体服务器连接",
-                status="error",
-                message="；".join(failures),
-                category=_GROUP_MEDIA,
-            )
-        else:
-            connection_item = InspectItem(
-                id="mediaserver_connection",
-                title="媒体服务器连接",
-                status="ok",
-                message=f"已连接 {len(servers)} 个媒体服务器",
-                current_value="、".join(str(s.get("name")) for s in servers),
-                category=_GROUP_MEDIA,
-            )
-
-        if sync_missing:
-            sync_item = InspectItem(
-                id="mediaserver_library_sync",
-                title="媒体库同步",
-                status="warn",
-                message=(
-                    "以下媒体服务器未选择同步库，整理完成后不会触发对应媒体库刷新："
-                    + "；".join(sync_missing)
-                ),
-                current_value=f"{synced}/{len(servers)} 已全选",
-                expected_value="同步全部媒体库",
-                fixable=True,
-                category=_GROUP_MEDIA,
-            )
-        elif failures:
-            sync_item = InspectItem(
-                id="mediaserver_library_sync",
-                title="媒体库同步",
-                status="warn",
-                message="媒体服务器连接异常，暂时无法检测同步范围",
-                category=_GROUP_MEDIA,
-            )
-        else:
-            sync_item = InspectItem(
-                id="mediaserver_library_sync",
-                title="媒体库同步",
-                status="ok",
-                message="已选择同步全部媒体库",
-                current_value=f"{len(servers)}/{len(servers)} 已全选",
-                expected_value="同步全部媒体库",
-                category=_GROUP_MEDIA,
-            )
-        return [connection_item, sync_item]
-
-    async def _fetch_libraries(
-        self, base_url: str, api_key: str, server_name: str
-    ) -> tuple[bool, list[str], str | None]:
-        """读取指定媒体服务器的媒体库 ID 列表。"""
-        ok, data, err = await self._api_get(
-            base_url,
-            api_key,
-            f"/api/v1/mediaserver/library?server={quote(server_name)}",
-        )
-        if not ok:
-            return False, [], err
-        if not isinstance(data, list):
-            return False, [], "媒体库接口返回异常"
-        ids = [
-            str(lib.get("id"))
-            for lib in data
-            if isinstance(lib, dict) and lib.get("id") is not None
-        ]
-        return True, ids, None
-
     # ---------------- 站点与通知 ----------------
 
     async def _inspect_sites(self, base_url: str, api_key: str) -> InspectItem:
@@ -548,9 +374,32 @@ class MoviePilotInspectionMixin:
             category=_GROUP_MEDIA,
         )
 
-    def _inspect_site_auth(self, env: dict) -> InspectItem:
-        """检测用户站点认证配置。"""
-        auth_site = str(env.get("AUTH_SITE") or "").strip()
+    async def _inspect_site_auth(
+        self, base_url: str, api_key: str
+    ) -> InspectItem:
+        """检测用户站点认证配置。
+
+        MoviePilot v2 把用户认证保存在 ``UserSiteAuthParams`` 系统设置里，
+        v1 使用 ``AUTH_SITE`` 环境变量；两种来源都读取，任一存在即视为已配置。
+        """
+        ok, value, err = await self.get_setting(
+            base_url, api_key, "UserSiteAuthParams"
+        )
+        if ok and isinstance(value, dict):
+            site = str(value.get("site") or "").strip()
+            params = value.get("params")
+            if site and isinstance(params, dict) and params:
+                return InspectItem(
+                    id="site_auth",
+                    title="用户认证",
+                    status="ok",
+                    message="已配置认证站点",
+                    current_value=site,
+                    category=_GROUP_MEDIA,
+                )
+
+        env_ok, env, env_err = await self._get_env(base_url, api_key)
+        auth_site = str(env.get("AUTH_SITE") or "").strip() if env_ok else ""
         if auth_site:
             return InspectItem(
                 id="site_auth",
@@ -560,173 +409,22 @@ class MoviePilotInspectionMixin:
                 current_value=auth_site,
                 category=_GROUP_MEDIA,
             )
+
+        if not ok and not env_ok:
+            return InspectItem(
+                id="settings_readable",
+                title="系统设置读取",
+                status="warn",
+                message=f"无法读取系统设置，用户认证检测已跳过: {err or env_err}",
+                category=_GROUP_MEDIA,
+            )
+
         return InspectItem(
             id="site_auth",
             title="用户认证",
             status="warn",
             message="未配置用户认证，站点数据、做种统计等站点功能不可用；可在 MoviePilot 头像菜单 → 用户认证中配置",
             category=_GROUP_MEDIA,
-        )
-
-    async def _inspect_notifications(
-        self, base_url: str, api_key: str
-    ) -> InspectItem:
-        """检测是否配置了启用的通知渠道。"""
-        readable = False
-        channels: list[dict] = []
-        for key in _NOTIFICATION_KEYS:
-            ok, value, _ = await self.get_setting(base_url, api_key, key)
-            if not ok:
-                continue
-            readable = True
-            if isinstance(value, list):
-                channels = [
-                    item
-                    for item in value
-                    if isinstance(item, dict) and item.get("enabled")
-                ]
-                break
-        if not readable:
-            return InspectItem(
-                id="notifications_configured",
-                title="通知渠道",
-                status="warn",
-                message="无法读取通知配置",
-                category=_GROUP_OPTIMIZE,
-            )
-        if channels:
-            return InspectItem(
-                id="notifications_configured",
-                title="通知渠道",
-                status="ok",
-                message=f"已启用 {len(channels)} 个通知渠道",
-                current_value="、".join(
-                    str(c.get("name") or c.get("type") or "未命名")
-                    for c in channels
-                ),
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="notifications_configured",
-            title="通知渠道",
-            status="warn",
-            message="未配置通知渠道，下载、整理和订阅结果无法推送；可在 MoviePilot 设定 → 通知中配置",
-            category=_GROUP_OPTIMIZE,
-        )
-
-    # ---------------- 体验与安全 ----------------
-
-    def _inspect_subscribe_search(self, env: dict) -> InspectItem:
-        """检测订阅自动搜索是否开启。"""
-        enabled = self._as_bool(env.get("SUBSCRIBE_SEARCH"))
-        if enabled:
-            return InspectItem(
-                id="subscribe_search",
-                title="订阅自动搜索",
-                status="ok",
-                message="已开启订阅自动搜索",
-                current_value="已开启",
-                expected_value="已开启",
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="subscribe_search",
-            title="订阅自动搜索",
-            status="warn",
-            message="未开启订阅自动搜索，订阅仅依赖 RSS，可能漏掉资源；开启后会按设定间隔主动搜索",
-            current_value="未开启",
-            expected_value="已开启",
-            fixable=True,
-            category=_GROUP_OPTIMIZE,
-        )
-
-    def _inspect_proxy(self, env: dict) -> InspectItem:
-        """检测网络代理配置。"""
-        proxy = str(env.get("PROXY_HOST") or "").strip()
-        if proxy:
-            return InspectItem(
-                id="proxy_configured",
-                title="网络代理",
-                status="ok",
-                message="已配置网络代理",
-                current_value=proxy,
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="proxy_configured",
-            title="网络代理",
-            status="warn",
-            message="未配置网络代理，访问 TMDB/GitHub 可能较慢或失败；若直连正常可忽略",
-            category=_GROUP_OPTIMIZE,
-        )
-
-    def _inspect_github_token(self, env: dict) -> InspectItem:
-        """检测 GitHub Token 配置。"""
-        token = str(env.get("GITHUB_TOKEN") or "").strip()
-        if token:
-            return InspectItem(
-                id="github_token",
-                title="GitHub Token",
-                status="ok",
-                message="已配置 GitHub Token",
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="github_token",
-            title="GitHub Token",
-            status="warn",
-            message="未配置 GitHub Token，插件安装和自动更新可能触发 API 限流",
-            category=_GROUP_OPTIMIZE,
-        )
-
-    async def _inspect_plugins(self, base_url: str, api_key: str) -> InspectItem:
-        """检测已安装插件数量。"""
-        ok, data, err = await self._api_get(
-            base_url, api_key, "/api/v1/plugin/installed"
-        )
-        if not ok:
-            return InspectItem(
-                id="plugins_installed",
-                title="插件安装",
-                status="warn",
-                message=f"读取已安装插件失败: {err}",
-                category=_GROUP_OPTIMIZE,
-            )
-        count = len(data) if isinstance(data, list) else 0
-        if count:
-            return InspectItem(
-                id="plugins_installed",
-                title="插件安装",
-                status="ok",
-                message=f"已安装 {count} 个插件",
-                current_value=str(count),
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="plugins_installed",
-            title="插件安装",
-            status="warn",
-            message="未安装插件，可按需安装站点同步、自动签到、目录监控等增强插件",
-            category=_GROUP_OPTIMIZE,
-        )
-
-    def _inspect_api_token(self, env: dict, fallback: str) -> InspectItem:
-        """检测 API Token 强度。"""
-        token = str(env.get("API_TOKEN") or fallback or "")
-        if len(token) >= 16 and token.lower() != "moviepilot":
-            return InspectItem(
-                id="api_token_strength",
-                title="API Token 强度",
-                status="ok",
-                message="API Token 长度符合安全要求",
-                category=_GROUP_OPTIMIZE,
-            )
-        return InspectItem(
-            id="api_token_strength",
-            title="API Token 强度",
-            status="warn",
-            message="API Token 过短，建议使用 16 位以上复杂字符串，并在修改后同步更新本应用的认证配置",
-            category=_GROUP_OPTIMIZE,
         )
 
     # ---------------- 自动修复 ----------------
@@ -751,6 +449,8 @@ class MoviePilotInspectionMixin:
                     entry["library_path"] = library_path
                 entry.setdefault("storage", "local")
                 entry.setdefault("library_storage", "local")
+                entry.setdefault("media_type", "")
+                entry.setdefault("media_category", "")
                 if not entry.get("transfer_type"):
                     entry["transfer_type"] = "link"
 
@@ -799,73 +499,6 @@ class MoviePilotInspectionMixin:
             if str(e.get("storage") or "local") == "local" and e.get("library_path")
         ):
             return True, f"已把 {changed} 个目录改为硬链接整理"
-        return False, "写入后回读验证失败"
-
-    async def _fix_mediaserver_library_sync(
-        self, base_url: str, api_key: str
-    ) -> tuple[bool, str]:
-        """让已启用的媒体服务器同步全部媒体库。"""
-        ok, value, err = await self.get_setting(base_url, api_key, "MediaServers")
-        if not ok:
-            return False, f"读取媒体服务器配置失败: {err}"
-        servers = [
-            dict(entry)
-            for entry in (value if isinstance(value, list) else [])
-            if isinstance(entry, dict) and entry.get("enabled") and entry.get("name")
-        ]
-        if not servers:
-            return False, "未启用媒体服务器，无法设置媒体库同步"
-
-        changed = 0
-        failures: list[str] = []
-        for server in servers:
-            name = str(server.get("name"))
-            libs_ok, libs, libs_err = await self._fetch_libraries(
-                base_url, api_key, name
-            )
-            if not libs_ok:
-                failures.append(f"{name}: {libs_err}")
-                continue
-            if not libs:
-                failures.append(f"{name}: 未获取到媒体库")
-                continue
-            if set(libs) - {str(i) for i in (server.get("sync_libraries") or [])}:
-                server["sync_libraries"] = libs
-                changed += 1
-
-        if changed == 0:
-            if failures:
-                return False, "；".join(failures)
-            return True, "媒体库同步已是最新"
-
-        ok, err = await self.set_setting(
-            base_url, api_key, "MediaServers", servers
-        )
-        if not ok:
-            return False, err or "写入媒体服务器配置失败"
-        if failures:
-            return (
-                True,
-                f"已更新 {changed} 个媒体服务器；未完成: " + "；".join(failures),
-            )
-        return True, f"已把 {changed} 个媒体服务器设为同步全部媒体库"
-
-    async def _fix_subscribe_search(
-        self, base_url: str, api_key: str
-    ) -> tuple[bool, str]:
-        """开启订阅自动搜索。"""
-        ok, err = await self.set_setting(
-            base_url, api_key, "SUBSCRIBE_SEARCH", True
-        )
-        if not ok:
-            return False, err or "写入订阅搜索设置失败"
-        ok, value, err = await self.get_setting(
-            base_url, api_key, "SUBSCRIBE_SEARCH"
-        )
-        if not ok:
-            return False, f"写入后回读验证失败: {err}"
-        if self._as_bool(value):
-            return True, "已开启订阅自动搜索"
         return False, "写入后回读验证失败"
 
     # ---------------- 工具方法 ----------------
@@ -970,6 +603,8 @@ class MoviePilotInspectionMixin:
             "priority": 1,
             "storage": "local",
             "download_path": download_path,
+            "media_type": "",
+            "media_category": "",
             "download_type_folder": True,
             "download_category_folder": True,
             "monitor_type": "downloader",
@@ -984,10 +619,3 @@ class MoviePilotInspectionMixin:
             "scraping": True,
             "notify": True,
         }
-
-    @staticmethod
-    def _as_bool(value: Any) -> bool:
-        """兼容布尔值、字符串和数字形式的开关读取。"""
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in ("1", "true", "yes", "on")

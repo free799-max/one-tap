@@ -2,7 +2,7 @@
  * 应用配置面板
  *
  * 头部展示应用图标、名称、描述与运行状态，并提供访问与认证设置入口；
- * 下方以 Tab 组织「概览 / 检测优化 / 集成」内容。概览按
+ * 下方以 Tab 组织概览、检测优化及应用专属配置。概览按
  * 「访问与认证」「编排与集成」两组信息卡展示，避免同等权重的瓦片堆叠。
  */
 
@@ -29,17 +29,24 @@ import {
   AlertTriangle,
   BookOpen,
   Check,
+  Cloud,
   Copy,
   ExternalLink,
+  FolderTree,
   Globe,
+  History,
+  Info,
   Layers,
   LayoutGrid,
   Loader2,
-  Plug,
+  Play,
   RefreshCw,
+  RotateCcw,
   ScrollText,
   Shield,
   ShieldCheck,
+  Square,
+  SquarePen,
   Stethoscope,
   Wand2,
   type LucideIcon,
@@ -60,10 +67,18 @@ import {
 } from "@/hooks/useOrchestrations";
 import { isAuthConfigReady } from "./auth-config-utils";
 import { AppInspectPanel } from "./AppInspectPanel";
+import { StackDetailDialog } from "@/pages/docker/stacks/StackDetailDialog";
+import { StackEditorDialog } from "@/pages/docker/stacks/StackEditorDialog";
 import { StackLogsDialog } from "@/pages/docker/stacks/StackLogsDialog";
-import { MoviePilotIntegrationPanel } from "./MoviePilotIntegrationPanel";
+import { StackVersionDialog } from "@/pages/docker/stacks/StackVersionDialog";
+import { useComposeAction } from "@/hooks/useCompose";
+import { useDeployTasks } from "@/hooks/useDeployTasks";
+import { useQueryClient } from "@tanstack/react-query";
 import { MusicAutoOrganizePanel } from "./MusicAutoOrganizePanel";
+import { MoviePilotDirectoryConfigPanel } from "./MoviePilotDirectoryConfigPanel";
 import { ReaderAutoSyncPanel } from "./ReaderAutoSyncPanel";
+import { ResourceSourcesPanel } from "./ResourceSourcesPanel";
+import { StorageMountPanel } from "./StorageMountPanel";
 import { APP_STATUS_META, APP_STATUS_PILL } from "./app-status";
 import { getAppRoleLabel } from "./composition-meta";
 
@@ -86,6 +101,20 @@ const AUTH_TYPE_LABELS: Record<AuthType, string> = {
 };
 
 const INSPECTABLE_APPS = new Set(["jellyfin", "moviepilot", "qbittorrent"]);
+const RESOURCE_SOURCE_APPS = new Set(["reader", "suwayomi"]);
+// 部署后由自动装配维护账号/集成的应用；这里列出可直接触发「自动装配」的应用
+const WIRABLE_APPS = new Set([
+  "moviepilot",
+  "comic-auto",
+  "music-dl",
+  "music-tag-web",
+  "navidrome",
+  "reader",
+  "suwayomi",
+  "ermao-library",
+  "mediary-scout",
+  "openlist",
+]);
 
 // 这些应用装配时依赖账号密码（如飞牛影视接入 MoviePilot 的飞牛模块），
 // 无认证/API Key 无法完成装配
@@ -180,11 +209,17 @@ export function AppConfigPanel({
   );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [stackDetailOpen, setStackDetailOpen] = useState(false);
+  const [composeEditorOpen, setComposeEditorOpen] = useState(false);
   const [draft, setDraft] = useState<AppAuthConfig>(authConfig);
   const [isVerifying, setIsVerifying] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const verifyMutation = useVerifyAppAuth();
   const wireMutation = useWireOrchestrationInstance();
+  const composeAction = useComposeAction();
+  const { startTask } = useDeployTasks();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const next = getInitialAuthConfig(detail?.app_configs?.[app?.app_name ?? ""]);
@@ -195,6 +230,28 @@ export function AppConfigPanel({
   if (!app || !detail) {
     return null;
   }
+
+  const projectId = app.project_id ?? null;
+  const isRunning = app.status === "running";
+  const actionPending = composeAction.isPending;
+
+  /** 启动/停止/重启：与容器编排、服务概览共用同一套 Compose 操作 */
+  const runLifecycleAction = (action: "up" | "down" | "restart") => {
+    if (!projectId) return;
+    composeAction.mutate(
+      { projectId, action },
+      {
+        onSuccess: (response) => {
+          startTask(response.task_id);
+        },
+        onSettled: () => {
+          queryClient.invalidateQueries({
+            queryKey: ["orchestration-instances"],
+          });
+        },
+      }
+    );
+  };
 
   const handleOpen = () => {
     const next = { ...authConfig };
@@ -240,7 +297,7 @@ export function AppConfigPanel({
     setDialogOpen(false);
   };
 
-  const url = authConfig.url?.trim() || "";
+  const url = authConfig.url?.trim() || app?.url?.trim() || "";
   const isValidUrl =
     url.startsWith("http://") || url.startsWith("https://");
 
@@ -316,7 +373,8 @@ export function AppConfigPanel({
               icon: app.icon,
             } as App
           }
-          className="h-12 w-12 shrink-0 rounded-[24%] object-cover shadow-sm ring-1 ring-foreground/5"
+          frameless
+          className="h-12 w-12 shrink-0 rounded-[24%]"
         />
 
         <div className="min-w-0 flex-1">
@@ -364,20 +422,112 @@ export function AppConfigPanel({
                 <Button
                   size="icon"
                   variant="outline"
-                  onClick={() => setLogsOpen(true)}
-                  disabled={!app.project_id}
-                  aria-label="编排日志"
+                  disabled={!projectId || actionPending}
+                  aria-label={isRunning ? "停止" : "启动"}
+                  onClick={() => runLifecycleAction(isRunning ? "down" : "up")}
                 >
-                  <ScrollText className="h-4 w-4" />
+                  {isRunning ? <Square /> : <Play />}
                 </Button>
               }
             />
-            <TooltipContent side="bottom" align="end">
-              {app.project_id
+            <TooltipContent side="bottom">
+              {projectId
+                ? isRunning
+                  ? "停止"
+                  : "启动"
+                : "该应用未通过 Compose 编排部署，无法直接操作容器"}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <Button
+                  size="icon"
+                  variant="outline"
+                  disabled={!projectId || actionPending || !isRunning}
+                  aria-label="重启"
+                  onClick={() => runLifecycleAction("restart")}
+                >
+                  <RotateCcw />
+                </Button>
+              }
+            />
+            <TooltipContent side="bottom">重启</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <Button
+                  size="icon"
+                  variant="outline"
+                  disabled={!projectId}
+                  aria-label="日志"
+                  onClick={() => setLogsOpen(true)}
+                >
+                  <ScrollText />
+                </Button>
+              }
+            />
+            <TooltipContent side="bottom">
+              {projectId
                 ? "编排日志"
                 : "该应用未通过 Compose 编排部署，无编排日志"}
             </TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <Button
+                  size="icon"
+                  variant="outline"
+                  disabled={!projectId}
+                  aria-label="版本"
+                  onClick={() => setVersionsOpen(true)}
+                >
+                  <History />
+                </Button>
+              }
+            />
+            <TooltipContent side="bottom">版本</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <Button
+                  size="icon"
+                  variant="outline"
+                  disabled={!projectId}
+                  aria-label="编辑 Compose"
+                  onClick={() => setComposeEditorOpen(true)}
+                >
+                  <SquarePen />
+                </Button>
+              }
+            />
+            <TooltipContent side="bottom">编辑 Compose</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <Button
+                  size="icon"
+                  variant="outline"
+                  disabled={!projectId}
+                  aria-label="编排详情"
+                  onClick={() => setStackDetailOpen(true)}
+                >
+                  <Info />
+                </Button>
+              }
+            />
+            <TooltipContent side="bottom">编排详情</TooltipContent>
+          </Tooltip>
+          <div className="mx-0.5 h-4 w-px bg-border" />
           <Tooltip>
             <TooltipTrigger
               delay={150}
@@ -433,6 +583,15 @@ export function AppConfigPanel({
             <LayoutGrid className="h-4 w-4" aria-hidden="true" />
             概览
           </TabsTrigger>
+          {app.app_name === "mediary-scout" && (
+            <TabsTrigger
+              value="storage-mounts"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <Cloud className="h-4 w-4" aria-hidden="true" />
+              存储挂载
+            </TabsTrigger>
+          )}
           {INSPECTABLE_APPS.has(app.app_name) && (
             <TabsTrigger
               value="inspect"
@@ -440,6 +599,15 @@ export function AppConfigPanel({
             >
               <Stethoscope className="h-4 w-4" aria-hidden="true" />
               检测优化
+            </TabsTrigger>
+          )}
+          {app.app_name === "moviepilot" && (
+            <TabsTrigger
+              value="directories"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <FolderTree className="h-4 w-4" aria-hidden="true" />
+              目录配置
             </TabsTrigger>
           )}
           {app.app_name === "music-tag-web" && (
@@ -451,6 +619,15 @@ export function AppConfigPanel({
               自动整理
             </TabsTrigger>
           )}
+          {RESOURCE_SOURCE_APPS.has(app.app_name) && (
+            <TabsTrigger
+              value="resource-sources"
+              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
+            >
+              <Layers className="h-4 w-4" aria-hidden="true" />
+              {app.app_name === "reader" ? "书源" : "漫源"}
+            </TabsTrigger>
+          )}
           {app.app_name === "reader" && (
             <TabsTrigger
               value="auto-sync"
@@ -458,15 +635,6 @@ export function AppConfigPanel({
             >
               <BookOpen className="h-4 w-4" aria-hidden="true" />
               自动同步
-            </TabsTrigger>
-          )}
-          {app.app_name === "moviepilot" && (
-            <TabsTrigger
-              value="integration"
-              className="h-9 flex-none gap-2 rounded-none border-0! bg-transparent! px-0 text-sm font-medium text-muted-foreground shadow-none! outline-none! ring-0! transition-colors duration-200 after:hidden hover:text-foreground motion-reduce:transition-none data-active:text-primary"
-            >
-              <Plug className="h-4 w-4" aria-hidden="true" />
-              集成
             </TabsTrigger>
           )}
         </TabsList>
@@ -590,13 +758,7 @@ export function AppConfigPanel({
               action={
                 (integrationRecords.length > 0 ||
                   !!provisionError ||
-                  app.app_name === "moviepilot" ||
-                  app.app_name === "comic-auto" ||
-                  app.app_name === "music-dl" ||
-                  app.app_name === "music-tag-web" ||
-                  app.app_name === "navidrome" ||
-                  app.app_name === "reader" ||
-                  app.app_name === "ermao-library") && (
+                  WIRABLE_APPS.has(app.app_name)) && (
                   <Button
                     size="xs"
                     variant="outline"
@@ -609,7 +771,9 @@ export function AppConfigPanel({
                     ) : (
                       <RefreshCw className="h-3 w-3" />
                     )}
-                    重新装配
+                    {provisioned || integrationRecords.length > 0
+                      ? "重新装配"
+                      : "自动装配"}
                   </Button>
                 )
               }
@@ -690,9 +854,36 @@ export function AppConfigPanel({
           </TabsContent>
         )}
 
+        {app.app_name === "moviepilot" && (
+          <TabsContent value="directories" className="pt-4">
+            <MoviePilotDirectoryConfigPanel
+              instanceId={detail.id}
+              appName={app.app_name}
+            />
+          </TabsContent>
+        )}
+
         {app.app_name === "music-tag-web" && detail && (
           <TabsContent value="organize" className="pt-4">
             <MusicAutoOrganizePanel
+              instanceId={detail.id}
+              appName={app.app_name}
+            />
+          </TabsContent>
+        )}
+
+        {RESOURCE_SOURCE_APPS.has(app.app_name) && (
+          <TabsContent value="resource-sources" className="pt-4">
+            <ResourceSourcesPanel
+              instanceId={detail.id}
+              appName={app.app_name}
+            />
+          </TabsContent>
+        )}
+
+        {app.app_name === "mediary-scout" && detail && (
+          <TabsContent value="storage-mounts" className="pt-4">
+            <StorageMountPanel
               instanceId={detail.id}
               appName={app.app_name}
             />
@@ -708,14 +899,6 @@ export function AppConfigPanel({
           </TabsContent>
         )}
 
-        {app.app_name === "moviepilot" && (
-          <TabsContent value="integration" className="pt-4">
-            <MoviePilotIntegrationPanel
-              instanceId={detail.id}
-              detail={detail}
-            />
-          </TabsContent>
-        )}
       </Tabs>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -735,7 +918,7 @@ export function AppConfigPanel({
                 onChange={(e) =>
                   setDraft((prev) => ({ ...prev, url: e.target.value }))
                 }
-                placeholder="http://192.168.1.1:3000"
+                placeholder={app?.url || "http://192.168.1.1:3000"}
               />
             </div>
 
@@ -873,6 +1056,40 @@ export function AppConfigPanel({
         projectName={app.display_name}
         open={logsOpen}
         onOpenChange={setLogsOpen}
+      />
+      <StackVersionDialog
+        projectId={projectId}
+        open={versionsOpen}
+        onOpenChange={setVersionsOpen}
+      />
+      <StackDetailDialog
+        projectId={projectId}
+        open={stackDetailOpen}
+        onOpenChange={setStackDetailOpen}
+      />
+      <StackEditorDialog
+        mode="edit"
+        project={
+          projectId != null
+            ? {
+                id: projectId,
+                project_name: app.app_name,
+                description: null,
+              }
+            : null
+        }
+        open={composeEditorOpen}
+        onOpenChange={(next) => {
+          setComposeEditorOpen(next);
+          if (!next) {
+            queryClient.invalidateQueries({
+              queryKey: ["orchestration-instances"],
+            });
+          }
+        }}
+        onTaskCreated={(taskId) => {
+          startTask(taskId);
+        }}
       />
     </>
   );

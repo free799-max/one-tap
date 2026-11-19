@@ -33,7 +33,7 @@ const AUTOMATION_CATEGORY_META: Record<string, AutomationCategoryMeta> = {
     label: "漫画",
     icon: BookImage,
     description:
-      "漫画自动化可以帮你抓取、整理、阅读漫画资源，让书架始终保持最新。",
+      "本地方案用 Comic Auto + Komga/Kavita 下载入库；在线方案用 Suwayomi 配合客户端直接在线阅读，默认开启简单登录。两套可同时部署。",
   },
   书籍: {
     label: "书籍",

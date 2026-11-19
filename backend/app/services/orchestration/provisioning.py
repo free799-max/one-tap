@@ -1,6 +1,7 @@
 """应用编排部署后账号自动配置（provisioning）能力。"""
 
 import asyncio
+import copy
 import logging
 import re
 import time
@@ -15,6 +16,7 @@ from app.models.orchestration import AppInstance
 from app.services.apps import ProvisionResult, get_client
 from app.services.docker import docker_manager
 from app.services.orchestration.deploy_task_service import deploy_task_manager
+from app.services.orchestration.resource_sources import SUPPORTED_RESOURCE_SOURCE_APPS
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +100,13 @@ class ProvisionMixin:
         selected_apps: list[str],
         task_ids: list[str],
         pending_credentials: dict[str, dict],
+        already_deployed: set[str] | None = None,
     ) -> str | None:
-        """为部署后的账号自动配置启动后台协程。
+        """为部署后的账号、资源源和应用集成启动后台装配协程。
 
-        每个待配置应用等待其部署任务结束后，由应用客户端把统一
-        账号密码配置进真实服务并复验，结果写入 group.app_configs。
+        Args:
+            already_deployed: 已经在本轮升级中完成镜像/容器更新的应用，
+                无需再等待部署任务终态
 
         Returns:
             进度跟踪任务 ID；没有待配置应用时返回 None
@@ -110,10 +114,12 @@ class ProvisionMixin:
         # 延迟导入：避免 app_store -> orchestration -> provisioning 的循环依赖
         from app.services.app_store.app_service import _slugify
 
+        deployed = already_deployed or set()
         items = []
         for app_name, task_id in zip(selected_apps, task_ids, strict=True):
-            creds = pending_credentials.get(app_name)
-            if not creds:
+            creds = pending_credentials.get(app_name) or {}
+            provision_account = bool(creds)
+            if not provision_account and app_name not in SUPPORTED_RESOURCE_SOURCE_APPS:
                 continue
             items.append(
                 {
@@ -121,6 +127,8 @@ class ProvisionMixin:
                     "task_id": task_id,
                     "project_name": _slugify(f"{instance_name}-{app_name}"),
                     "credentials": creds,
+                    "provision_account": provision_account,
+                    "deployed": app_name in deployed,
                 }
             )
         if not items:
@@ -210,11 +218,14 @@ class ProvisionMixin:
                 for index, item in enumerate(pending, start=1):
                     app_name = item["app_name"]
                     creds = item["credentials"]
+                    provision_account = item.get(
+                        "provision_account", bool(creds)
+                    )
                     base_message = (
                         f"自动配置账号：{app_name}（{index}/{len(pending)}）"
                     )
                     try:
-                        if attempt == 0:
+                        if attempt == 0 and not item.get("deployed"):
                             status = await self._wait_task_terminal(
                                 item["task_id"]
                             )
@@ -226,11 +237,34 @@ class ProvisionMixin:
                                     + int(75 * index / max(len(pending), 1)),
                                     f"跳过 {app_name}：部署未成功",
                                 )
-                                await self._write_provision_result(
-                                    group_id, app_name, creds, None,
-                                    "部署未成功，跳过账号自动配置",
-                                )
+                                if provision_account:
+                                    await self._write_provision_result(
+                                        group_id, app_name, creds, None,
+                                        "部署未成功，跳过账号自动配置",
+                                    )
                                 continue
+                        # env 注入类应用：新生成的 Token / 认证开关要在
+                        # 配置账号前写进 Compose，容器重启后才会生效
+                        try:
+                            from app.services.orchestration.credentials import (
+                                has_credential_env,
+                            )
+
+                            if has_credential_env(app_name):
+                                await self._sync_group_credential_env(
+                                    group_id, app_names={app_name}
+                                )
+                        except Exception:
+                            logger.exception(
+                                "应用 %s 同步认证环境变量失败", app_name
+                            )
+                        if not provision_account:
+                            report(
+                                "provisioning",
+                                10 + int(75 * index / max(len(pending), 1)),
+                                f"{app_name} 部署完成，等待资源源装配",
+                            )
+                            continue
 
                         report(
                             "provisioning",
@@ -274,11 +308,8 @@ class ProvisionMixin:
 
             failed = deploy_failed + [item["app_name"] for item in pending]
 
-            # 所有应用账号配置完毕后，按模板 integrations 声明把来源应用
-            # （下载器/媒体服务器）自动装配进目标应用（如 MoviePilot）。
-            # 注：无任何待配置应用时 _schedule_provisioning 不会调度本协程，
-            # 该场景下自动装配也不触发（没有已配置应用可装配），属预期行为。
-            report("wiring", 90, "装配应用集成（下载器/媒体服务器）")
+            # 账号完成后统一装配资源源和模板声明的应用间集成。
+            report("wiring", 90, "装配资源源与应用集成")
             try:
                 await self._wire_group(group_id)
             except Exception:
@@ -296,7 +327,7 @@ class ProvisionMixin:
                 else:
                     deploy_task_manager.complete_task(
                         progress_task_id,
-                        message="账号与集成已自动配置完成",
+                        message="账号、资源源与应用集成已自动配置完成",
                     )
         except Exception as exc:
             logger.exception("实例组 %s 自动配置任务异常", group_id)
@@ -320,6 +351,8 @@ class ProvisionMixin:
             for item in items:
                 app_name = item["app_name"]
                 creds = item["credentials"]
+                if not item.get("provision_account", bool(creds)):
+                    continue
                 entry = dict(configs.get(app_name) or {})
                 if not entry.get("username"):
                     entry["username"] = creds["username"]
@@ -375,7 +408,11 @@ class ProvisionMixin:
         """
         client = self._resolve_provision_client(app_name)
         if client is None or not url:
-            message = "该应用不支持自动配置"
+            message = (
+                "缺少访问地址，无法自动配置"
+                if client is not None
+                else "该应用不支持自动配置"
+            )
             await self._write_provision_result(
                 group_id, app_name, creds, None, message
             )
@@ -497,12 +534,90 @@ class ProvisionMixin:
                 return cleaned[:120]
         return ""
 
+    async def _sync_group_credential_env(
+        self,
+        group_id: int,
+        progress=None,
+        app_names: set[str] | None = None,
+    ) -> None:
+        """把账号密码类环境变量同步进现有 Compose（重新装配用）。
+
+        模板新增的认证开关（如 Suwayomi 的 simple_login）只存在于容器
+        环境变量里，旧实例升级不会重建容器，重新装配前必须先补上；
+        变量变化时清掉 ``provisioned``，由后续补配流程重新验证账号。
+
+        ``app_names`` 只同步指定应用，供部署流程在单个应用就绪后补注入
+        新生成的 Agent API Token。
+        """
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from app.models.orchestration import AppInstance
+        from app.services.orchestration.compose_env import sync_env
+        from app.services.orchestration.credentials import (
+            has_credential_env,
+            prepare_app_credentials,
+            resolve_credential_env,
+        )
+
+        async with async_session() as db:
+            group = await self.get_group(db, group_id)
+            instances = (
+                await db.execute(
+                    select(AppInstance)
+                    .where(AppInstance.orchestration_group_id == group_id)
+                    .options(selectinload(AppInstance.app))
+                )
+            ).scalars().all()
+            app_configs = dict(group.app_configs or {})
+            for instance in instances:
+                db_app = instance.app
+                if db_app is None or not has_credential_env(db_app.name):
+                    continue
+                if app_names is not None and db_app.name not in app_names:
+                    continue
+                if (instance.config or {}).get("external"):
+                    continue
+                entry = dict(app_configs.get(db_app.name) or {})
+                target_config = copy.deepcopy(instance.config or {})
+                credentials = await prepare_app_credentials(
+                    db,
+                    db_app.name,
+                    target_config,
+                    fallback_password=entry.get("password"),
+                )
+                credential_env = resolve_credential_env(
+                    db_app.name, target_config
+                )
+                if credentials is None or credential_env is None:
+                    continue
+                changed = await sync_env(
+                    db,
+                    instance=instance,
+                    db_app=db_app,
+                    updates=credential_env[1],
+                    comment="重新装配：同步账号与认证配置",
+                    progress=progress,
+                )
+                instance.config = target_config
+                entry["username"] = credentials["username"]
+                entry["password"] = credentials["password"]
+                if credentials.get("api_key"):
+                    entry["api_key"] = credentials["api_key"]
+                if changed:
+                    entry.pop("provisioned", None)
+                    entry.pop("provision_error", None)
+                app_configs[db_app.name] = entry
+                await db.commit()
+            group.app_configs = app_configs
+            await db.commit()
+
     async def _reprovision_and_wire(
         self,
         group_id: int,
         progress_task_id: str | None = None,
     ) -> None:
-        """手动重跑：先补做未完成的账号自动配置，再执行自动装配。"""
+        """手动重跑：先补齐认证变量与未完成的账号配置，再执行自动装配。"""
 
         def report(stage: str, percentage: int, message: str) -> None:
             if progress_task_id:
@@ -511,7 +626,18 @@ class ProvisionMixin:
                 )
 
         try:
-            report("provisioning", 5, "补做未完成的账号自动配置")
+            report("provisioning", 5, "同步账号认证变量")
+            try:
+                await self._sync_group_credential_env(
+                    group_id,
+                    progress=lambda message: report("provisioning", 20, message),
+                )
+            except Exception:
+                logger.exception(
+                    "实例组 %s 同步账号认证变量失败", group_id
+                )
+
+            report("provisioning", 30, "补做未完成的账号自动配置")
             try:
                 await self._reprovision_pending(
                     group_id,
@@ -585,8 +711,8 @@ class ProvisionMixin:
             default_username = (sys_config.default_admin_username or "").strip()
             email_domain = (sys_config.default_email_domain or "").strip()
             unified_password = (sys_config.default_admin_password or "").strip()
-            stored_configs = {
-                inst.app.name: inst.config or {}
+            stored_instances = {
+                inst.app.name: inst
                 for inst in (
                     await db.execute(
                         select(AppInstance)
@@ -596,6 +722,30 @@ class ProvisionMixin:
                 ).scalars()
                 if inst.app
             }
+            stored_configs = {
+                name: inst.config or {} for name, inst in stored_instances.items()
+            }
+
+            # 后加入实例组的应用（如导入的 OpenList）还没有 app_configs 条目，
+            # 先按当前端口补一条访问地址，装配时才能定位到真实服务
+            backfilled = False
+            for name, inst in stored_instances.items():
+                if self._resolve_provision_client(name) is None:
+                    continue
+                entry = dict(app_configs.get(name) or {})
+                if entry.get("url"):
+                    continue
+                url = self._build_access_url(
+                    inst.app, inst.config or {}, self._get_host_ip()
+                )
+                if not url:
+                    continue
+                entry["url"] = url
+                app_configs[name] = entry
+                backfilled = True
+            if backfilled:
+                group.app_configs = app_configs
+                await db.commit()
 
         for app_name, entry in app_configs.items():
             if not isinstance(entry, dict) or entry.get("provisioned"):
@@ -674,6 +824,15 @@ class ProvisionMixin:
                 if result.download_dir:
                     entry["download_dir"] = result.download_dir
                 entry["provisioned"] = True
+                automation_field = {
+                    "music-tag-web": "auto_organize",
+                    "reader": "auto_sync",
+                }.get(app_name)
+                if automation_field:
+                    automation = dict(entry.get(automation_field) or {})
+                    automation["enabled"] = True
+                    automation.pop("last_run_at", None)
+                    entry[automation_field] = automation
             else:
                 entry.pop("provisioned", None)
                 entry["provision_error"] = message or "自动配置失败"
@@ -783,6 +942,19 @@ class ProvisionMixin:
             return None
 
         return _lookup()
+
+    def _get_qbittorrent_listen_port(self, project_name: str) -> int | None:
+        """从 qBittorrent 容器环境变量读取 BT 监听端口。"""
+        try:
+            container = self._get_project_container(project_name)
+            env = (container.attrs.get("Config") or {}).get("Env") or []
+            for entry in env:
+                key, separator, value = entry.partition("=")
+                if separator and key in {"QBT_TORRENTING_PORT", "TORRENTING_PORT"}:
+                    return int(value)
+        except Exception:
+            return None
+        return None
 
     def _build_suggested_url(
         self,

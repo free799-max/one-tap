@@ -122,9 +122,7 @@ async def test_qb_inspect_builds_preference_items(monkeypatch):
     assert items["host_header_validation"].status == "warn"
     assert items["host_header_validation"].fixable is True
 
-    assert items["save_path"].status == "error"
-    assert items["save_path"].expected_value == "/downloads"
-    assert items["save_path"].fixable is True
+    assert "save_path" not in items
 
     assert items["listening_port"].status == "warn"
     assert items["listening_port"].current_value == "8999"
@@ -176,14 +174,15 @@ async def test_qb_apply_fix_writes_preferences(monkeypatch):
     )
     by_id = {r.id: r for r in results}
 
-    assert by_id["save_path"].ok is True
+    assert by_id["save_path"].ok is False
+    assert "不支持自动修复" in by_id["save_path"].message
     assert by_id["queueing"].ok is True
     assert by_id["network_discovery"].ok is True
     assert by_id["unknown"].ok is False
     assert "不支持自动修复" in by_id["unknown"].message
 
     assert len(captured) == 1
-    assert captured[0]["default_save_path"] == "/downloads"
+    assert "default_save_path" not in captured[0]
     assert captured[0]["queueing_enabled"] is True
     assert captured[0]["dht"] is True and captured[0]["pex"] is True
 
@@ -197,7 +196,6 @@ def test_single_shared_root_derives_subdirectories():
 
     assert MoviePilotClient._shared_container_path(ctx, "download") == "/data/downloads"
     assert MoviePilotClient._shared_container_path(ctx, "library") == "/data/media"
-    assert QBittorrentClient._expected_download_dir(shared_config) == "/data/downloads"
     assert JellyfinClient._expected_media_dir(shared_config) == "/data/media"
 
 
@@ -216,7 +214,6 @@ _JELLYFIN_CTX = {
 def _jellyfin_handler(
     folders=None,
     plugins=None,
-    plugin_config: str | None = None,
     auth_ok: bool = True,
 ):
     def handler(request: httpx.Request) -> httpx.Response:
@@ -229,10 +226,6 @@ def _jellyfin_handler(
             return httpx.Response(200, json=folders or [])
         if path == "/Plugins":
             return httpx.Response(200, json=plugins or [])
-        if path.endswith("/Configuration"):
-            if plugin_config is None:
-                return httpx.Response(404)
-            return httpx.Response(200, text=plugin_config)
         return httpx.Response(404)
 
     return handler
@@ -250,26 +243,20 @@ async def test_jellyfin_inspect_auth_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_jellyfin_inspect_healthy_with_webhook_configured(monkeypatch):
-    """媒体库命中共享目录且 Webhook 已反配时全部通过。"""
-    plugins = [{"Name": "Webhook", "Id": "abc123", "Version": "16.0.0"}]
-    config = json.dumps({"Destinations": [{"WebhookUri": _WEBHOOK_URL}]})
+async def test_jellyfin_inspect_healthy(monkeypatch):
+    """健康检测只返回认证与媒体库，不检查 Webhook。"""
     _mock_httpx(
         monkeypatch,
         _jellyfin_handler(
-            folders=[{"Name": "movies", "Locations": ["/media/movies"]}],
-            plugins=plugins,
-            plugin_config=config,
+            folders=[{"Name": "movies", "Locations": ["/media/movies"]}]
         ),
     )
     report = await JellyfinClient().inspect(_JELLYFIN_CTX)
     items = {i.id: i for i in report.items}
 
+    assert set(items) == {"auth", "libraries"}
     assert items["auth"].status == "ok"
     assert items["libraries"].status == "ok"
-    assert items["webhook_plugin"].status == "ok"
-    assert items["webhook_configured"].status == "ok"
-    assert items["webhook_configured"].fixable is False
 
 
 @pytest.mark.asyncio
@@ -281,28 +268,8 @@ async def test_jellyfin_inspect_empty_libraries(monkeypatch):
 
     assert items["libraries"].status == "error"
     assert items["libraries"].fixable is False
-    assert items["webhook_plugin"].status == "warn"
-    assert items["webhook_configured"].status == "warn"
-
-
-@pytest.mark.asyncio
-async def test_jellyfin_inspect_webhook_not_configured_gives_guidance(monkeypatch):
-    """插件已装但未反配时给出指引，期望值为装配记录的 webhook_url。"""
-    plugins = [{"Name": "Webhook", "Id": "abc123", "Version": "16.0.0"}]
-    _mock_httpx(
-        monkeypatch,
-        _jellyfin_handler(
-            folders=[{"Name": "movies", "Locations": ["/media/movies"]}],
-            plugins=plugins,
-            plugin_config=json.dumps({"Destinations": []}),
-        ),
-    )
-    report = await JellyfinClient().inspect(_JELLYFIN_CTX)
-    items = {i.id: i for i in report.items}
-
-    assert items["webhook_configured"].status == "warn"
-    assert items["webhook_configured"].expected_value == _WEBHOOK_URL
-    assert items["webhook_configured"].fixable is False
+    assert "webhook_plugin" not in items
+    assert "webhook_configured" not in items
 
 
 @pytest.mark.asyncio
@@ -724,8 +691,8 @@ async def test_mp_inspect_directories_empty_warns(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mp_inspect_optimization_items(monkeypatch):
-    """站点/认证/订阅/通知/代理等优化项按配置状态给出结论。"""
+async def test_mp_inspect_site_items(monkeypatch):
+    """保留站点与用户认证检测，不再返回体验与安全组检测项。"""
     store = {
         "Downloaders": [{"name": "qbittorrent", "enabled": True}],
         "MediaServers": [{"name": "jellyfin", "enabled": True, "sync_libraries": [1, 2]}],
@@ -738,37 +705,62 @@ async def test_mp_inspect_optimization_items(monkeypatch):
                 "transfer_type": "link",
             }
         ],
-        "Notifications": [],
-        "_env": {
-            **_MP_ENV,
-            "AUTH_SITE": "",
-            "SUBSCRIBE_SEARCH": False,
-            "PROXY_HOST": None,
-            "GITHUB_TOKEN": None,
-            "API_TOKEN": "short",
-        },
+        "_env": {**_MP_ENV, "AUTH_SITE": ""},
         "_sites": [],
     }
     _mock_httpx(monkeypatch, _mp_handler(store))
     report = await MoviePilotClient().inspect(_MP_CTX)
     items = {i.id: i for i in report.items}
 
-    assert items["mediaserver_connection"].status == "ok"
-    assert items["mediaserver_library_sync"].status == "ok"
     assert items["sites_configured"].status == "warn"
     assert items["site_auth"].status == "warn"
-    assert items["subscribe_search"].status == "warn"
-    assert items["subscribe_search"].fixable is True
-    assert items["notifications_configured"].status == "warn"
-    assert items["proxy_configured"].status == "warn"
-    assert items["github_token"].status == "warn"
-    assert items["plugins_installed"].status == "ok"
-    assert items["api_token_strength"].status == "warn"
+    assert {
+        "subscribe_search",
+        "notifications_configured",
+        "proxy_configured",
+        "github_token",
+        "plugins_installed",
+        "api_token_strength",
+        "mediaserver_connection",
+        "mediaserver_library_sync",
+    }.isdisjoint(items)
+
+
+@pytest.mark.asyncio
+async def test_mp_site_auth_reads_v2_user_site_auth_params(monkeypatch):
+    """MoviePilot v2 的用户认证保存在 UserSiteAuthParams 中。"""
+    store = {
+        "_env": {**_MP_ENV, "AUTH_SITE": ""},
+        "UserSiteAuthParams": {
+            "site": "hhclub",
+            "params": {"HHCLUB_USERNAME": "user", "HHCLUB_PASSWORD": "secret"},
+        },
+    }
+    _mock_httpx(monkeypatch, _mp_handler(store))
+    report = await MoviePilotClient().inspect(_MP_CTX)
+    items = {i.id: i for i in report.items}
+
+    assert items["site_auth"].status == "ok"
+    assert items["site_auth"].current_value == "hhclub"
+
+
+@pytest.mark.asyncio
+async def test_mp_site_auth_requires_site_and_params(monkeypatch):
+    """仅存在空壳设置时仍视为未完成用户认证。"""
+    store = {
+        "_env": {**_MP_ENV, "AUTH_SITE": ""},
+        "UserSiteAuthParams": {"site": "", "params": {}},
+    }
+    _mock_httpx(monkeypatch, _mp_handler(store))
+    report = await MoviePilotClient().inspect(_MP_CTX)
+    items = {i.id: i for i in report.items}
+
+    assert items["site_auth"].status == "warn"
 
 
 @pytest.mark.asyncio
 async def test_mp_apply_fix_writes_settings(monkeypatch):
-    """目录、硬链接和订阅搜索检测项写入设置后回读验证。"""
+    """目录和硬链接修复正常，已移除的订阅搜索项不支持修复。"""
     store = {"Directories": [], "SUBSCRIBE_SEARCH": False}
     _mock_httpx(monkeypatch, _mp_handler(store))
     results = await MoviePilotClient().apply_fix(
@@ -777,29 +769,16 @@ async def test_mp_apply_fix_writes_settings(monkeypatch):
     )
     by_id = {r.id: r for r in results}
 
-    assert all(result.ok for result in results), by_id
+    assert by_id["directories_configured"].ok is True
+    assert by_id["transfer_mode"].ok is True
+    assert by_id["subscribe_search"].ok is False
     directories = store["Directories"]
     assert directories[0]["download_path"] == "/downloads"
     assert directories[0]["library_path"] == "/media"
     assert directories[0]["transfer_type"] == "link"
-    assert store["SUBSCRIBE_SEARCH"] is True
-
-
-@pytest.mark.asyncio
-async def test_mp_fix_mediaserver_library_sync(monkeypatch):
-    """媒体库同步修复会把全部媒体库 ID 写入 sync_libraries。"""
-    store = {
-        "MediaServers": [
-            {"name": "jellyfin", "enabled": True, "sync_libraries": []}
-        ]
-    }
-    _mock_httpx(monkeypatch, _mp_handler(store))
-    results = await MoviePilotClient().apply_fix(
-        _MP_CTX, ["mediaserver_library_sync"]
-    )
-
-    assert results[0].ok is True
-    assert store["MediaServers"][0]["sync_libraries"] == ["1", "2"]
+    assert directories[0]["media_type"] == ""
+    assert directories[0]["media_category"] == ""
+    assert store["SUBSCRIBE_SEARCH"] is False
 
 
 @pytest.mark.asyncio

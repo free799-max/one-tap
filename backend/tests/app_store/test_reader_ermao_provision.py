@@ -446,7 +446,8 @@ async def test_prepare_reader_credentials_enables_secure_mode():
         assert creds["username"] == "admin"
         assert creds["password"]
         assert _get_env(config, "reader_env", "READER_APP_SECURE") == "true"
-        # Reader 通过登录接口创建用户，不写入用户名/密码环境变量
+        assert _get_env(config, "reader_env", "READER_APP_SECUREKEY") == creds["password"]
+        # Reader 通过登录接口创建用户，不写入用户名环境变量
         assert _get_env(config, "reader_env", "READER_APP_USERNAME") is None
         assert _get_env(config, "reader_env", "TZ") == "Asia/Shanghai"
     finally:

@@ -33,12 +33,14 @@ class DeployedApp:
     has_persisted_url: bool = False
     icon: str | None = None
     project_id: int | None = None
+    group_id: int | None = None
     container_id: str | None = None
     container_name: str | None = None
     username: str | None = None
     password: str | None = None
     api_key: str | None = None
     env_secrets: dict[str, str] = field(default_factory=dict)
+    source_priority: list[str] = field(default_factory=list)
 
     @property
     def has_credentials(self) -> bool:
@@ -174,12 +176,21 @@ def _to_deployed_app(instance: AppInstance, host: str) -> DeployedApp:
         has_persisted_url=has_persisted_url,
         icon=app.icon if app else None,
         project_id=instance.project_id,
+        group_id=instance.orchestration_group_id,
         container_id=_text(config.get("container_id")) or None,
         container_name=_text(config.get("container_name")) or None,
         username=username or None,
         password=password or None,
         api_key=api_key or None,
         env_secrets=env_secrets,
+        source_priority=[
+            str(item)
+            for item in (
+                (group_entry.get("resource_sources") or {})
+                .get("last_result", {})
+                .get("source_ids", [])
+            )
+        ],
     )
 
 

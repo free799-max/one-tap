@@ -965,3 +965,38 @@ async def test_jellyfin_provision_retries_503_login():
         assert instance.post.await_count == 2
     finally:
         patcher.stop()
+
+
+@pytest.mark.asyncio
+async def test_prepare_suwayomi_enables_simple_login():
+    """Suwayomi 默认开启 simple_login，并注入统一管理员账号密码。"""
+    engine, session = await _make_session()
+    try:
+        session.add(
+            SystemConfig(
+                id=1,
+                default_admin_username="nasadmin",
+                default_admin_password="Unified#Pass1",
+            )
+        )
+        await session.commit()
+
+        config = {
+            "suwayomi_env": [
+                {"key": "TZ", "value": "Asia/Shanghai"},
+            ]
+        }
+        creds = await prepare_app_credentials(session, "suwayomi", config)
+
+        assert creds is not None
+        assert creds["username"] == "nasadmin"
+        assert creds["password"] == "Unified#Pass1"
+        assert _get_env(config, "suwayomi_env", "AUTH_MODE") == "simple_login"
+        assert _get_env(config, "suwayomi_env", "AUTH_USERNAME") == "nasadmin"
+        assert (
+            _get_env(config, "suwayomi_env", "AUTH_PASSWORD") == "Unified#Pass1"
+        )
+        assert _get_env(config, "suwayomi_env", "TZ") == "Asia/Shanghai"
+    finally:
+        await session.close()
+        await engine.dispose()

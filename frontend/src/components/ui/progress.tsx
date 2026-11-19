@@ -9,9 +9,10 @@ import { cn } from "@/lib/utils";
 interface ProgressProps {
   value: number;
   className?: string;
+  indicatorClassName?: string;
 }
 
-export function Progress({ value, className }: ProgressProps) {
+export function Progress({ value, className, indicatorClassName }: ProgressProps) {
   const clamped = Math.min(100, Math.max(0, value));
 
   return (
@@ -22,7 +23,10 @@ export function Progress({ value, className }: ProgressProps) {
       )}
     >
       <div
-        className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+        className={cn(
+          "h-full rounded-full bg-primary transition-all duration-300 ease-out",
+          indicatorClassName
+        )}
         style={{ width: `${clamped}%` }}
       />
     </div>

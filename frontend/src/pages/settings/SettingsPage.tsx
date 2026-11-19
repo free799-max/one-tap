@@ -1,18 +1,19 @@
 /**
  * 系统设置页面
  *
- * 使用 Tabs 组织基础、服务端口、存储配置和 MCP 聚合。
+ * 使用 Tabs 组织基础、服务端口、存储配置和 AI 接入。
  */
 
 import { useSearchParams } from "react-router-dom";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { BasicSettingsTab } from "./BasicSettingsTab";
 import { McpSettingsTab } from "./McpSettingsTab";
+import { NotificationSettingsTab } from "./NotificationSettingsTab";
 import { ServicePortsTab } from "./ServicePortsTab";
 import { StorageSettingsTab } from "./StorageSettingsTab";
-import { SlidersHorizontal, HardDrive, Network, Plug } from "lucide-react";
+import { Bell, SlidersHorizontal, HardDrive, Network, Plug } from "lucide-react";
 
-const settingsTabs = new Set(["basic", "ports", "storage", "mcp"]);
+const settingsTabs = new Set(["basic", "ports", "storage", "mcp", "notifications"]);
 
 const TAB_TRIGGER_CLASS =
   "h-12 flex-none gap-2 rounded-none px-0 text-sm text-muted-foreground transition-colors after:hidden hover:text-foreground data-active:bg-transparent data-active:font-semibold data-active:text-primary";
@@ -62,7 +63,14 @@ export function SettingsPage() {
             className={TAB_TRIGGER_CLASS}
           >
             <Network className="h-4 w-4" aria-hidden="true" />
-            MCP 聚合
+            AI接入
+          </TabsTrigger>
+          <TabsTrigger
+            value="notifications"
+            className={TAB_TRIGGER_CLASS}
+          >
+            <Bell className="h-4 w-4" aria-hidden="true" />
+            通知
           </TabsTrigger>
         </TabsList>
 
@@ -80,6 +88,10 @@ export function SettingsPage() {
 
         <TabsContent value="mcp" className="mt-2">
           <McpSettingsTab />
+        </TabsContent>
+
+        <TabsContent value="notifications" className="mt-2">
+          <NotificationSettingsTab />
         </TabsContent>
       </Tabs>
     </div>

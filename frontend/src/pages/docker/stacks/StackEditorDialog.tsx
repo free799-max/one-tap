@@ -29,9 +29,18 @@ import type { ComposeProject } from "@/hooks/useCompose";
 import CodeMirror from "@uiw/react-codemirror";
 import { yaml } from "@codemirror/lang-yaml";
 
+/**
+ * 编辑模式只需要项目标识与名称，调用方（如服务概览）不必持有完整项目数据。
+ * 描述与 YAML 由 useComposeProject 拉取的真实详情回填。
+ */
+export type StackEditorProject = Pick<
+  ComposeProject,
+  "id" | "project_name" | "description"
+>;
+
 interface StackEditorDialogProps {
   mode: "create" | "edit";
-  project: ComposeProject | null;
+  project: StackEditorProject | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onTaskCreated?: (taskId: string) => void;
@@ -61,7 +70,7 @@ export function StackEditorDialog({
 
 interface StackEditorFormProps {
   mode: "create" | "edit";
-  project: ComposeProject | null;
+  project: StackEditorProject | null;
   onOpenChange: (open: boolean) => void;
   onTaskCreated?: (taskId: string) => void;
 }
@@ -143,7 +152,10 @@ function StackEditorForm({
     }
   };
 
-  const title = mode === "create" ? "创建编排项目" : `编辑 ${project?.project_name}`;
+  const title =
+    mode === "create"
+      ? "创建编排项目"
+      : `编辑 ${detail?.project_name ?? project?.project_name ?? ""}`;
   const submitLabel = mode === "create" ? "创建并部署" : "保存并部署";
   const isLoading = isPending || (mode === "edit" && isDetailLoading);
 

@@ -17,13 +17,11 @@ from fastmcp.tools.tool import Tool, ToolResult
 from app.core.exceptions import APIException
 from app.database import async_session
 from app.services.mcp.auth import McpAuthMiddleware, current_mcp_actor
-from app.services.mcp.config import (
-    LOCAL_TOOL_DEFINITIONS,
-    mcp_config_service,
-    public_tool_name,
-)
-from app.services.mcp.local_tools import register_local_tools
+from app.services.mcp.config import mcp_config_service
 from app.services.mcp.policy import McpPolicyMiddleware
+from app.services.mcp.tools_notify import register_notify_tools
+from app.services.mcp.tools_present import register_present_tools
+from app.services.mcp.tools_resource import register_resource_tools
 from app.services.mcp.upstream import UpstreamFastMCPProxy, build_upstream_proxy
 
 
@@ -98,7 +96,9 @@ class MountedUpstream:
 class McpAggregator:
     def __init__(self):
         self.server = AggregatedFastMCP("OneTap MCP")
-        register_local_tools(self.server)
+        register_resource_tools(self.server)
+        register_present_tools(self.server)
+        register_notify_tools(self.server)
         self.server.add_middleware(McpPolicyMiddleware(self))
         self._mounted: dict[int, MountedUpstream] = {}
         self._mount_lock = asyncio.Lock()
@@ -113,9 +113,6 @@ class McpAggregator:
         async with self._mount_lock:
             async with async_session() as db:
                 states = await mcp_config_service.list_upstreams(db, self._host())
-                await mcp_config_service.prune_upstreams(
-                    db, {state.app.instance_id for state in states}
-                )
             current_prefixes = {state.prefix for state in states}
             self.server._mounted_servers = [
                 mounted
@@ -134,7 +131,6 @@ class McpAggregator:
                     state.prefix,
                     state.app.url,
                     state.app.api_key,
-                    state.enabled,
                     state.available,
                 )
                 current = self._mounted.get(instance_id)
@@ -161,27 +157,21 @@ class McpAggregator:
                     fingerprint=fingerprint,
                 )
 
-    async def allowed_tool_names(self) -> set[str]:
+    async def available_instance_ids(self) -> set[int]:
         async with async_session() as db:
             config = await mcp_config_service.get_config(db)
             if not config["enabled"]:
                 return set()
-            names = {
-                name
-                for name in LOCAL_TOOL_DEFINITIONS
-                if name in set(config["local_tools"])
+            return {
+                state.app.instance_id
+                for state in await mcp_config_service.list_upstreams(db, self._host())
+                if state.available
             }
-            for state in await mcp_config_service.list_upstreams(db, self._host()):
-                if not state.enabled or not state.available:
-                    continue
-                names.update(
-                    public_tool_name(state.prefix, native_name)
-                    for native_name in state.allowed_tools
-                    if PUBLIC_TOOL_NAME.fullmatch(
-                        public_tool_name(state.prefix, native_name)
-                    )
-                )
-            return names
+
+    async def mcp_enabled(self) -> bool:
+        async with async_session() as db:
+            config = await mcp_config_service.get_config(db)
+            return bool(config["enabled"])
 
     @asynccontextmanager
     async def lifespan(self):

@@ -1,10 +1,15 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 
+from app.models.mcp import McpAccessToken
 from app.services.mcp.auth import (
     authenticate_access_token,
     create_access_token,
+    decrypt_access_token,
+    get_or_create_access_key,
+    reset_access_key,
     revoke_access_token,
 )
 
@@ -17,12 +22,36 @@ async def test_token_is_hashed_and_authenticates_admin(mcp_env):
         )
         assert raw.startswith("otmcp_")
         assert raw not in (record.token_hash, record.prefix)
+        assert record.token_value and raw not in record.token_value
+        assert decrypt_access_token(record) == raw
         assert len(record.token_hash) == 64
         actor = await authenticate_access_token(db, raw, "nas.local")
         assert actor is not None
         assert actor.user_id == mcp_env["admin"].id
         assert actor.request_host == "nas.local"
         assert await authenticate_access_token(db, "invalid", "test") is None
+
+
+@pytest.mark.asyncio
+async def test_single_access_key_is_created_and_reset(mcp_env):
+    async with mcp_env["session"]() as db:
+        first = await get_or_create_access_key(db, mcp_env["admin"])
+        first_raw = decrypt_access_token(first)
+        assert first_raw is not None
+        assert first.expires_at is None
+
+        same = await get_or_create_access_key(db, mcp_env["admin"])
+        assert same.id == first.id
+
+        reset = await reset_access_key(db, mcp_env["admin"])
+        reset_raw = decrypt_access_token(reset)
+        assert reset_raw is not None
+        assert reset_raw != first_raw
+
+        rows = list((await db.execute(sa.select(McpAccessToken))).scalars().all())
+        assert len(rows) == 1
+        assert await authenticate_access_token(db, first_raw, "test") is None
+        assert await authenticate_access_token(db, reset_raw, "test") is not None
 
 
 @pytest.mark.asyncio

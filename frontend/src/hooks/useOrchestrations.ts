@@ -28,6 +28,14 @@ import type {
   MusicAutoOrganizeConfig,
   ReaderAutoSyncPanel,
   ReaderAutoSyncConfig,
+  ResourceSourcesPanel,
+  ResourceSourcesConfig,
+  StorageMountsPanel,
+  StorageMountResult,
+  AppDirectoryConfigPanel,
+  AppDirectory,
+  AppAutoLibrarySyncConfig,
+  AppAutoLibrarySyncRunResult,
 } from "@/api/orchestrations";
 
 // 保持既有导出，页面侧 import 路径无需变更
@@ -75,6 +83,21 @@ export type {
   ReaderAutoSyncConfig,
   ReaderAutoSyncLastRun,
   ReaderAutoSyncDetected,
+  ResourceSourcesPanel,
+  ResourceSourcesConfig,
+  ResourceSourceOption,
+  StorageMountsPanel,
+  StorageMountResult,
+  ResourceSourceResultItem,
+  ResourceSourcesLastResult,
+  StorageMountSource,
+  AppDirectory,
+  AppMediaLibrary,
+  AppMediaServer,
+  AppDirectoryConfigPanel,
+  AppAutoLibrarySyncConfig,
+  AppAutoLibrarySyncResult,
+  AppAutoLibrarySyncRunResult,
 } from "@/api/orchestrations";
 
 /**
@@ -436,10 +459,16 @@ export function useWireOrchestrationInstance() {
         startTask(data.task_id);
       }
       toast.success("装配已在后台开始，进度可在任务面板查看");
+      qc.invalidateQueries({
+        queryKey: ["orchestration-resource-sources", id],
+      });
       for (const delay of [4000, 10000]) {
         setTimeout(() => {
           qc.invalidateQueries({
             queryKey: ["orchestration-instances", id, "detail"],
+          });
+          qc.invalidateQueries({
+            queryKey: ["orchestration-resource-sources", id],
           });
         }, delay);
       }
@@ -763,6 +792,243 @@ export function useRunAppAutoSync() {
     },
     onError: (error: ApiError) => {
       toast.error(error.displayMessage || "启动自动同步失败");
+    },
+  });
+}
+
+/** 查询应用源配置与可选项 */
+export function useAppResourceSources(
+  instanceId: number | null,
+  appName: string | null
+) {
+  return useQuery<ResourceSourcesPanel>({
+    queryKey: ["orchestration-resource-sources", instanceId, appName],
+    queryFn: () =>
+      orchestrationsApi.getAppResourceSources(instanceId!, appName!),
+    enabled: !!instanceId && !!appName,
+    retry: false,
+  });
+}
+
+/** 查询 OpenList 存储挂载面板 */
+export function useAppStorageMounts(
+  instanceId: number | null,
+  appName: string | null
+) {
+  return useQuery<StorageMountsPanel>({
+    queryKey: ["orchestration-storage-mounts", instanceId, appName],
+    queryFn: () =>
+      orchestrationsApi.getAppStorageMounts(instanceId!, appName!),
+    enabled: !!instanceId && !!appName,
+    retry: false,
+  });
+}
+
+/** 一键挂载巡影网盘到 OpenList */
+export function useMountAppStorage() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation<
+    StorageMountResult,
+    ApiError,
+    { instanceId: number; appName: string; sourceId: string }
+  >({
+    mutationFn: ({ instanceId, appName, sourceId }) =>
+      orchestrationsApi.mountAppStorage(instanceId, appName, sourceId),
+    onSuccess: (data, variables) => {
+      qc.invalidateQueries({
+        queryKey: [
+          "orchestration-storage-mounts",
+          variables.instanceId,
+          variables.appName,
+        ],
+      });
+      const detail = data.contents?.length
+        ? `目录内 ${data.contents.length} 项：${data.contents.join("、")}`
+        : "";
+      toast.success(
+        detail ? `${data.message || "挂载完成"}（${detail}）` : data.message || "挂载完成"
+      );
+    },
+    onError: (error) => {
+      toast.error(error.displayMessage || "挂载失败，请稍后重试");
+    },
+  });
+}
+
+/** 保存应用源配置 */
+export function useSaveAppResourceSources() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: ({
+      instanceId,
+      appName,
+      config,
+    }: {
+      instanceId: number;
+      appName: string;
+      config: ResourceSourcesConfig;
+    }) =>
+      orchestrationsApi.saveAppResourceSources(instanceId, appName, config),
+    onSuccess: (data, variables) => {
+      qc.setQueryData(
+        [
+          "orchestration-resource-sources",
+          variables.instanceId,
+          variables.appName,
+        ],
+        data
+      );
+      qc.setQueryData<OrchestrationInstanceDetail>(
+        ["orchestration-instances", variables.instanceId, "detail"],
+        (previous) =>
+          previous
+            ? {
+                ...previous,
+                app_configs: {
+                  ...previous.app_configs,
+                  [variables.appName]: {
+                    ...(previous.app_configs?.[variables.appName] ?? {}),
+                    resource_sources: {
+                      ...((previous.app_configs?.[variables.appName]
+                        ?.resource_sources ?? {}) as Record<string, unknown>),
+                      ...data.config,
+                    },
+                  },
+                },
+              }
+            : previous
+      );
+      qc.invalidateQueries({
+        queryKey: ["orchestration-instances", variables.instanceId, "detail"],
+      });
+      const sourceLabel = variables.appName === "reader" ? "书源" : "漫源";
+      toast.success(`${sourceLabel}配置已保存`);
+    },
+    onError: (error: ApiError, variables) => {
+      const sourceLabel = variables.appName === "reader" ? "书源" : "漫源";
+      toast.error(error.displayMessage || `保存${sourceLabel}配置失败`);
+    },
+  });
+}
+
+/** 查询 MoviePilot 目录与媒体库配置 */
+export function useAppDirectoryConfig(
+  instanceId: number | null,
+  appName: string | null
+) {
+  return useQuery<AppDirectoryConfigPanel>({
+    queryKey: ["orchestration-app-directories", instanceId, appName],
+    queryFn: () =>
+      orchestrationsApi.getAppDirectoryConfig(instanceId!, appName!),
+    enabled: !!instanceId && !!appName,
+    retry: false,
+  });
+}
+
+/** 保存 MoviePilot 目录配置 */
+export function useSaveAppDirectories() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: ({
+      instanceId,
+      appName,
+      directories,
+    }: {
+      instanceId: number;
+      appName: string;
+      directories: AppDirectory[];
+    }) =>
+      orchestrationsApi.saveAppDirectories(instanceId, appName, directories),
+    onSuccess: (data, variables) => {
+      qc.setQueryData(
+        [
+          "orchestration-app-directories",
+          variables.instanceId,
+          variables.appName,
+        ],
+        data
+      );
+      qc.invalidateQueries({
+        queryKey: [
+          "orchestration-inspect",
+          variables.instanceId,
+          variables.appName,
+        ],
+      });
+      toast.success("目录配置已保存");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "保存目录配置失败");
+    },
+  });
+}
+
+/** 保存自动创建媒体库配置 */
+export function useSaveAppAutoLibrarySync() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation({
+    mutationFn: ({
+      instanceId,
+      appName,
+      config,
+    }: {
+      instanceId: number;
+      appName: string;
+      config: Pick<AppAutoLibrarySyncConfig, "enabled" | "interval_minutes">;
+    }) =>
+      orchestrationsApi.saveAppAutoLibrarySync(
+        instanceId,
+        appName,
+        config
+      ),
+    onSuccess: (data, variables) => {
+      qc.setQueryData(
+        [
+          "orchestration-app-directories",
+          variables.instanceId,
+          variables.appName,
+        ],
+        data
+      );
+      toast.success("自动建库配置已保存");
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "保存自动建库配置失败");
+    },
+  });
+}
+
+/** 立即检测分类目录并创建媒体库 */
+export function useRunAppAutoLibrarySync() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  return useMutation<AppAutoLibrarySyncRunResult, ApiError, {
+    instanceId: number;
+    appName: string;
+  }>({
+    mutationFn: ({ instanceId, appName }) =>
+      orchestrationsApi.runAppAutoLibrarySync(instanceId, appName),
+    onSuccess: (data, variables) => {
+      qc.setQueryData(
+        [
+          "orchestration-app-directories",
+          variables.instanceId,
+          variables.appName,
+        ],
+        data.panel
+      );
+      toast.success(
+        data.created > 0
+          ? `检测完成，新建 ${data.created} 个媒体库`
+          : "检测完成，没有需要新建的媒体库"
+      );
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.displayMessage || "检测媒体库失败");
     },
   });
 }

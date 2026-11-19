@@ -6,7 +6,7 @@
 
 Webhook 插件（jellyfin-plugin-webhook）安装后需重启，其配置为复杂的多类型
 destination 对象，官方仅提供 Web UI 配置路径，没有稳定的纯 API 配置形态，
-因此 Webhook 反配采用降级方案：检测项给出手动配置指引，建议的 webhook URL
+因此 Webhook 反配采用降级方案：装配时给出手动配置指引，建议的 webhook URL
 由装配阶段写入 integrations 供前端展示。
 """
 
@@ -39,7 +39,7 @@ class JellyfinInspectionMixin:
     TIMEOUT = 10.0
 
     async def inspect(self, ctx: dict) -> InspectReport:
-        """检测认证、媒体库与 Webhook 插件状态。"""
+        """检测认证与媒体库状态。"""
         base_url = str(ctx.get("url") or "").rstrip("/")
         if not base_url:
             return InspectReport(
@@ -72,15 +72,6 @@ class JellyfinInspectionMixin:
                 headers = self._token_headers(resolution.token)
                 items.append(
                     await self._inspect_libraries(client, base_url, headers, ctx)
-                )
-                plugin_item, plugin = await self._inspect_webhook_plugin(
-                    client, base_url, headers
-                )
-                items.append(plugin_item)
-                items.append(
-                    await self._inspect_webhook_configured(
-                        client, base_url, headers, ctx, plugin
-                    )
                 )
                 return InspectReport(supported=True, items=items)
         except httpx.HTTPError as exc:
@@ -654,85 +645,6 @@ class JellyfinInspectionMixin:
             expected_value=expected_dir,
         )
 
-    async def _inspect_webhook_plugin(
-        self,
-        client: httpx.AsyncClient,
-        base_url: str,
-        headers: dict,
-    ) -> tuple[InspectItem, dict | None]:
-        """检测 Webhook 插件是否安装，返回检测项与插件信息。"""
-        plugin = await self._find_webhook_plugin(client, base_url, headers)
-        if plugin is None:
-            return InspectItem(
-                id="webhook_plugin",
-                title="Webhook 插件",
-                status="warn",
-                message="未安装 Webhook 插件（Emby 可使用内置通知）；"
-                "如需联动 MoviePilot 请在插件目录安装 Webhook 并重启",
-            ), None
-        return InspectItem(
-            id="webhook_plugin",
-            title="Webhook 插件",
-            status="ok",
-            message="已安装",
-            current_value=plugin.get("Version"),
-        ), plugin
-
-    async def _inspect_webhook_configured(
-        self,
-        client: httpx.AsyncClient,
-        base_url: str,
-        headers: dict,
-        ctx: dict,
-        plugin: dict | None,
-    ) -> InspectItem:
-        """检测 Webhook 是否已指向 MoviePilot。
-
-        纯 API 无法可靠写入插件配置（降级方案），该项始终不 fixable；
-        通过只读接口检查插件配置中是否已出现 MoviePilot 回调地址。
-        """
-        wiring = ctx.get("mediaserver_wiring") or {}
-        webhook_url = wiring.get("webhook_url")
-        if plugin is None:
-            return InspectItem(
-                id="webhook_configured",
-                title="Webhook 反配 MoviePilot",
-                status="warn",
-                message="安装 Webhook 插件后再检测",
-                expected_value=webhook_url,
-            )
-        try:
-            config_text = await self._read_plugin_configuration(
-                client, base_url, headers, plugin
-            )
-        except httpx.HTTPError:
-            config_text = None
-        if config_text is None:
-            return InspectItem(
-                id="webhook_configured",
-                title="Webhook 反配 MoviePilot",
-                status="warn",
-                message="无法读取插件配置，请在 Webhook 插件中确认已添加 MoviePilot 回调地址",
-                expected_value=webhook_url,
-            )
-        configured = (
-            webhook_url in config_text
-            if webhook_url
-            else "/api/v1/webhook" in config_text
-        )
-        return InspectItem(
-            id="webhook_configured",
-            title="Webhook 反配 MoviePilot",
-            status="ok" if configured else "warn",
-            message=(
-                "已配置 MoviePilot 回调"
-                if configured
-                else "请在 Webhook 插件中添加 Generic 目标，地址填期望值"
-            ),
-            current_value=webhook_url if configured else None,
-            expected_value=webhook_url,
-        )
-
     async def setup_webhook(
         self,
         ctx: dict,
@@ -781,23 +693,6 @@ class JellyfinInspectionMixin:
             if "webhook" in str(plugin.get("Name") or "").lower():
                 return plugin
         return None
-
-    @staticmethod
-    async def _read_plugin_configuration(
-        client: httpx.AsyncClient,
-        base_url: str,
-        headers: dict,
-        plugin: dict,
-    ) -> str | None:
-        """只读获取插件配置原文（用于检查是否已配置回调地址）。"""
-        plugin_id = plugin.get("Id")
-        if not plugin_id:
-            return None
-        resp = await client.get(
-            f"{base_url}/Plugins/{plugin_id}/Configuration", headers=headers
-        )
-        resp.raise_for_status()
-        return resp.text
 
     @staticmethod
     def _expected_media_dir(shared_config: dict | None) -> str | None:

@@ -28,6 +28,7 @@ import { useContainerAction } from "@/hooks/useDocker";
 import { StackDetailDialog } from "@/pages/docker/stacks/StackDetailDialog";
 import { StackLogsDialog } from "@/pages/docker/stacks/StackLogsDialog";
 import { StackVersionDialog } from "@/pages/docker/stacks/StackVersionDialog";
+import { StackEditorDialog } from "@/pages/docker/stacks/StackEditorDialog";
 import {
   ArrowUpCircle,
   ExternalLink,
@@ -38,6 +39,7 @@ import {
   ScrollText,
   RefreshCw,
   Square,
+  SquarePen,
 } from "lucide-react";
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
@@ -141,6 +143,7 @@ export function AppDetailDialog({
   const [logsOpen, setLogsOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [stackDetailOpen, setStackDetailOpen] = useState(false);
+  const [composeEditorOpen, setComposeEditorOpen] = useState(false);
 
   const app = data?.app;
   const status = app
@@ -149,6 +152,25 @@ export function AppDetailDialog({
         className: "border-border bg-muted text-muted-foreground",
       }
     : null;
+  // 镜像 EXPOSE 的端口没有宿主机映射，不应混在「端口映射」里展示
+  const mappedPorts = (data?.ports ?? []).filter(
+    (port) => port.host_port != null && port.host_port !== ""
+  );
+  const exposedOnlyPorts = (data?.ports ?? [])
+    .filter((port) => port.host_port == null || port.host_port === "")
+    .map((port) => port.container_port);
+  const exposedOnlyCount = exposedOnlyPorts.length;
+  // 端口直连链接使用应用访问地址的主机名，避免 localhost / 反代域名不可达
+  const portLinkHost = (() => {
+    if (app?.url) {
+      try {
+        return new URL(app.url).hostname;
+      } catch {
+        return window.location.hostname;
+      }
+    }
+    return window.location.hostname;
+  })();
   const isRunning = app?.status === "running";
   const {
     data: metrics,
@@ -385,7 +407,7 @@ export function AppDetailDialog({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8"
+                    className="h-8 leading-none"
                     disabled={actionPending}
                     onClick={() =>
                       runLifecycleAction(isRunning ? "down" : "up")
@@ -397,7 +419,7 @@ export function AppDetailDialog({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8"
+                    className="h-8 leading-none"
                     disabled={actionPending || !isRunning}
                     onClick={() => runLifecycleAction("restart")}
                   >
@@ -407,7 +429,7 @@ export function AppDetailDialog({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8"
+                    className="h-8 leading-none"
                     onClick={() => setLogsOpen(true)}
                   >
                     <ScrollText />
@@ -418,7 +440,7 @@ export function AppDetailDialog({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-8 leading-none"
                         onClick={() => setVersionsOpen(true)}
                       >
                         <History />
@@ -427,7 +449,16 @@ export function AppDetailDialog({
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8"
+                        className="h-8 leading-none"
+                        onClick={() => setComposeEditorOpen(true)}
+                      >
+                        <SquarePen />
+                        编辑
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 leading-none"
                         onClick={() => setStackDetailOpen(true)}
                       >
                         <Info />
@@ -509,27 +540,53 @@ export function AppDetailDialog({
                 </div>
               </section>
 
-              {data.ports.length > 0 && (
+              {(mappedPorts.length > 0 || exposedOnlyCount > 0) && (
                 <section className="space-y-2.5">
                   <h3 className="text-sm font-semibold text-foreground">
                     端口映射
                   </h3>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {data.ports.map((port, index) => (
-                      <div
-                        key={`${port.container_port}-${port.host_port}-${index}`}
-                        className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs"
-                      >
-                        <span className="text-muted-foreground">
-                          {port.container_port}
-                        </span>
-                        <span className="font-mono text-foreground">
-                          {port.host_ip || "0.0.0.0"}:
-                          {port.host_port || "—"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                  {mappedPorts.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {mappedPorts.map((port, index) => {
+                        const host =
+                          port.host_ip &&
+                          port.host_ip !== "0.0.0.0" &&
+                          port.host_ip !== "::"
+                            ? port.host_ip
+                            : portLinkHost;
+                        const url = `http://${host}:${port.host_port}`;
+                        return (
+                          <a
+                            key={`${port.container_port}-${port.host_port}-${index}`}
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={`打开 ${url}`}
+                            className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs transition-colors hover:border-primary/40 hover:bg-primary/5"
+                          >
+                            <span className="text-muted-foreground">
+                              {port.container_port}
+                            </span>
+                            <span className="font-mono text-foreground">
+                              {host}:{port.host_port}
+                            </span>
+                          </a>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      未映射到宿主机
+                    </p>
+                  )}
+                  {exposedOnlyCount > 0 && (
+                    <p
+                      className="text-xs text-muted-foreground/80"
+                      title={`未映射端口：${exposedOnlyPorts.join("、")}`}
+                    >
+                      镜像另有 {exposedOnlyCount} 个暴露端口未映射到宿主机
+                    </p>
+                  )}
                 </section>
               )}
             </div>
@@ -557,6 +614,29 @@ export function AppDetailDialog({
       projectId={data?.project_id ?? null}
       open={stackDetailOpen}
       onOpenChange={setStackDetailOpen}
+    />
+    <StackEditorDialog
+      mode="edit"
+      project={
+        data?.project_id != null
+          ? {
+              id: data.project_id,
+              project_name: data.project_name ?? "",
+              description: null,
+            }
+          : null
+      }
+      open={composeEditorOpen}
+      onOpenChange={(next) => {
+        setComposeEditorOpen(next);
+        if (!next) {
+          queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        }
+      }}
+      onTaskCreated={(taskId) => {
+        startTask(taskId);
+        toast.success("Compose 已保存，正在重新部署");
+      }}
     />
     </>
   );

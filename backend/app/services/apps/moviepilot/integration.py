@@ -8,10 +8,17 @@ MoviePilot 的结构化系统配置通过 ``GET/POST /api/v1/system/setting/{key
 
 import json
 import logging
+import posixpath
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import ValidationError
+
+from app.schemas.orchestration.moviepilot import (
+    DirectoriesUpdateRequest,
+    MediaLibrariesUpdateRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,84 @@ class MoviePilotIntegrationMixin:
         if isinstance(data, dict) and "value" in data:
             return True, data["value"], None
         return True, data, None
+
+    async def get_classification_policy(
+        self,
+        base_url: str,
+        api_key: str,
+    ) -> tuple[bool, dict | None, str | None]:
+        """读取 MoviePilot 当前媒体分类策略。"""
+        ok, data, err = await self._api_get(
+            base_url,
+            api_key,
+            "/api/v1/media/classification/policy",
+        )
+        if not ok:
+            return False, None, f"读取分类策略失败: {err}"
+        if not isinstance(data, dict):
+            return False, None, "分类策略接口返回异常"
+        return True, data, None
+
+    async def list_storage_files(
+        self,
+        base_url: str,
+        api_key: str,
+        path: str,
+    ) -> tuple[bool, list[dict], str | None]:
+        """列出 MoviePilot 本地存储目录内容。"""
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.TIMEOUT, follow_redirects=True
+            ) as client:
+                resp = await client.post(
+                    f"{base_url}/api/v1/storage/list",
+                    headers={"X-API-KEY": api_key},
+                    json={"storage": "local", "path": path},
+                )
+        except httpx.RequestError as exc:
+            return False, [], f"无法连接到应用: {exc}"
+        ok, data, err = self._parse_response(resp)
+        if not ok:
+            return False, [], err
+        if not isinstance(data, list):
+            return False, [], "目录列表接口返回异常"
+        return True, [item for item in data if isinstance(item, dict)], None
+
+    async def storage_dir_exists(
+        self,
+        base_url: str,
+        api_key: str,
+        path: str,
+        cache: dict[str, tuple[bool, list[dict], str | None]] | None = None,
+    ) -> tuple[bool, bool, str | None]:
+        """检测本地目录是否存在；不存在的路径不会被空列表误判为存在。"""
+        target = posixpath.normpath(str(path or "").strip())
+        if not target.startswith("/"):
+            return False, False, "目录路径必须是绝对路径"
+        if target == "/":
+            return True, True, None
+
+        parent = posixpath.dirname(target)
+        name = posixpath.basename(target)
+        if cache is not None and parent in cache:
+            ok, entries, err = cache[parent]
+        else:
+            ok, entries, err = await self.list_storage_files(
+                base_url, api_key, parent
+            )
+            if cache is not None:
+                cache[parent] = (ok, entries, err)
+        if not ok:
+            return False, False, err
+        exists = any(
+            str(item.get("type") or "") == "dir"
+            and (
+                str(item.get("name") or "") == name
+                or posixpath.normpath(str(item.get("path") or "")) == target
+            )
+            for item in entries
+        )
+        return True, exists, None
 
     async def set_setting(
         self,
@@ -177,6 +262,271 @@ class MoviePilotIntegrationMixin:
             "sync_libraries": [],
         }
         return await self._upsert_setting_entry(base_url, api_key, "MediaServers", entry)
+
+    async def get_directory_panel(
+        self,
+        base_url: str,
+        api_key: str,
+        shared_config: dict | None = None,
+    ) -> tuple[bool, dict | None, str | None]:
+        """读取目录、默认目录模板及媒体服务器媒体库详情。"""
+        ok, directory_value, err = await self.get_setting(
+            base_url, api_key, "Directories"
+        )
+        if not ok:
+            return False, None, f"读取目录配置失败: {err}"
+
+        ok, server_value, err = await self.get_setting(
+            base_url, api_key, "MediaServers"
+        )
+        if not ok:
+            return False, None, f"读取媒体服务器配置失败: {err}"
+
+        ctx = {"shared_config": shared_config or {}}
+        detected = {
+            "download_path": self._shared_container_path(ctx, "download"),
+            "library_path": self._shared_container_path(ctx, "library"),
+        }
+        media_servers = []
+        for entry in server_value if isinstance(server_value, list) else []:
+            if not isinstance(entry, dict) or not entry.get("name"):
+                continue
+            name = str(entry["name"])
+            libs_ok, libraries, libs_err = await self._fetch_library_details(
+                base_url, api_key, name
+            )
+            media_servers.append(
+                {
+                    "name": name,
+                    "type": str(entry.get("type") or ""),
+                    "enabled": bool(entry.get("enabled")),
+                    "sync_libraries": self._normalize_sync_libraries(
+                        entry.get("sync_libraries")
+                    ),
+                    "libraries": libraries,
+                    "error": None if libs_ok else libs_err or "读取媒体库失败",
+                }
+            )
+
+        return True, {
+            "supported": True,
+            "directories": self._normalize_directories(directory_value),
+            "detected": detected,
+            "directory_template": self._default_directory(**detected),
+            "media_servers": media_servers,
+        }, None
+
+    async def save_directories(
+        self,
+        base_url: str,
+        api_key: str,
+        directories: list[dict],
+        shared_config: dict | None = None,
+    ) -> tuple[bool, dict | None, str | None]:
+        """校验并整体保存 Directories，随后回读完整面板。"""
+        try:
+            request = DirectoriesUpdateRequest.model_validate(
+                {"directories": directories}
+            )
+        except ValidationError as exc:
+            return False, None, f"目录配置校验失败: {exc}"
+
+        submitted = request.model_dump()["directories"]
+        ok, err = await self.set_setting(
+            base_url, api_key, "Directories", submitted
+        )
+        if not ok:
+            return False, None, err or "写入目录配置失败"
+        ok, panel, err = await self.get_directory_panel(
+            base_url, api_key, shared_config
+        )
+        if not ok:
+            return False, None, f"写入后回读失败: {err}"
+
+        readback = {item["name"]: item for item in panel["directories"]}
+        for expected in submitted:
+            actual = readback.get(expected["name"])
+            if actual is None:
+                return False, None, (
+                    f"写入后回读验证失败: 目录 {expected['name']} 不存在"
+                )
+            for key, value in expected.items():
+                if key not in actual or actual[key] != value:
+                    return False, None, (
+                        f"写入后回读验证失败: 目录 {expected['name']} "
+                        f"字段 {key} 不一致"
+                    )
+        return True, panel, None
+
+    async def save_media_libraries(
+        self,
+        base_url: str,
+        api_key: str,
+        media_servers: list[dict],
+        shared_config: dict | None = None,
+    ) -> tuple[bool, dict | None, str | None]:
+        """保存媒体库同步范围，随后回读完整面板。"""
+        try:
+            request = MediaLibrariesUpdateRequest.model_validate(
+                {"media_servers": media_servers}
+            )
+        except ValidationError as exc:
+            return False, None, f"媒体库同步配置校验失败: {exc}"
+
+        submitted = request.model_dump()["media_servers"]
+        ok, err = await self._update_media_library_sync(
+            base_url, api_key, submitted
+        )
+        if not ok:
+            return False, None, err
+        ok, panel, err = await self.get_directory_panel(
+            base_url, api_key, shared_config
+        )
+        if not ok:
+            return False, None, f"写入后回读失败: {err}"
+
+        readback = {item["name"]: item for item in panel["media_servers"]}
+        for expected in submitted:
+            actual = readback.get(expected["name"])
+            if actual is None:
+                return False, None, (
+                    f"写入后回读验证失败: 媒体服务器 {expected['name']} 不存在"
+                )
+            expected_sync = self._normalize_sync_libraries(
+                expected["sync_libraries"]
+            )
+            actual_sync = self._normalize_sync_libraries(
+                actual.get("sync_libraries")
+            )
+            if actual_sync != expected_sync:
+                return False, None, (
+                    f"写入后回读验证失败: 媒体服务器 {expected['name']} "
+                    "sync_libraries 不一致"
+                )
+        return True, panel, None
+
+    async def _update_media_library_sync(
+        self,
+        base_url: str,
+        api_key: str,
+        media_servers: list[dict],
+    ) -> tuple[bool, str | None]:
+        """仅更新目标服务器的 sync_libraries，保留其他配置与服务器。"""
+        try:
+            request = MediaLibrariesUpdateRequest.model_validate(
+                {"media_servers": media_servers}
+            )
+        except ValidationError as exc:
+            return False, f"媒体库同步配置校验失败: {exc}"
+
+        ok, value, err = await self.get_setting(base_url, api_key, "MediaServers")
+        if not ok:
+            return False, f"读取媒体服务器配置失败: {err}"
+        servers = [
+            dict(entry)
+            for entry in (value if isinstance(value, list) else [])
+            if isinstance(entry, dict)
+        ]
+        indexes_by_name: dict[str, list[int]] = {}
+        for index, server in enumerate(servers):
+            if server.get("name"):
+                indexes_by_name.setdefault(str(server["name"]), []).append(index)
+
+        updates = request.model_dump()["media_servers"]
+        for update in updates:
+            if update["name"] not in indexes_by_name:
+                return False, f"媒体服务器不存在: {update['name']}"
+            sync_libraries = update["sync_libraries"]
+            if not sync_libraries or sync_libraries == ["all"]:
+                continue
+            libs_ok, libraries, libs_err = await self._fetch_library_details(
+                base_url, api_key, update["name"]
+            )
+            if not libs_ok:
+                return False, f"读取媒体服务器 {update['name']} 的媒体库失败: {libs_err}"
+            valid_ids = {library["id"] for library in libraries}
+            invalid_ids = [item for item in sync_libraries if item not in valid_ids]
+            if invalid_ids:
+                return False, (
+                    f"媒体服务器 {update['name']} 的媒体库 ID 不存在: "
+                    + ", ".join(invalid_ids)
+                )
+
+        for update in updates:
+            for index in indexes_by_name[update["name"]]:
+                servers[index]["sync_libraries"] = update["sync_libraries"]
+        if not updates:
+            return True, None
+        ok, err = await self.set_setting(base_url, api_key, "MediaServers", servers)
+        if not ok:
+            return False, err or "写入媒体库同步配置失败"
+        return True, None
+
+    async def _fetch_library_details(
+        self, base_url: str, api_key: str, server_name: str
+    ) -> tuple[bool, list[dict], str | None]:
+        """读取并归一化指定媒体服务器的媒体库详情。"""
+        from urllib.parse import quote
+
+        ok, data, err = await self._api_get(
+            base_url,
+            api_key,
+            f"/api/v1/mediaserver/library?server={quote(server_name)}",
+        )
+        if not ok:
+            return False, [], err
+        if not isinstance(data, list):
+            return False, [], "媒体库接口返回异常"
+
+        libraries = []
+        for item in data:
+            if not isinstance(item, dict) or item.get("id") is None:
+                continue
+            path = item.get("path")
+            if isinstance(path, str):
+                paths = [path]
+            elif isinstance(path, list):
+                paths = [str(value) for value in path if value is not None]
+            else:
+                paths = []
+            libraries.append(
+                {
+                    "id": str(item["id"]),
+                    "name": str(item.get("name") or ""),
+                    "path": paths,
+                    "type": (
+                        None if item.get("type") is None else str(item.get("type"))
+                    ),
+                }
+            )
+        return True, libraries, None
+
+    @staticmethod
+    def _normalize_sync_libraries(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value if item is not None]
+        if isinstance(value, str):
+            return [value]
+        return []
+
+    @staticmethod
+    def _normalize_directories(value: Any) -> list[dict]:
+        directories = []
+        for entry in value if isinstance(value, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            normalized = dict(entry)
+            for key in (
+                "name",
+                "download_path",
+                "library_path",
+                "transfer_type",
+                "media_type",
+                "media_category",
+            ):
+                normalized[key] = str(normalized.get(key) or "")
+            directories.append(normalized)
+        return directories
 
     async def list_plugins(
         self,

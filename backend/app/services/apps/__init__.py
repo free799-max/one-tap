@@ -20,12 +20,15 @@ from app.services.apps.fnos_media import FnosMediaClient
 from app.services.apps.jellyfin import JellyfinClient
 from app.services.apps.kavita import KavitaClient
 from app.services.apps.komga import KomgaClient
+from app.services.apps.mediary_scout import MediaryScoutClient
 from app.services.apps.moviepilot import MoviePilotClient
 from app.services.apps.music_dl import MusicDLClient
 from app.services.apps.music_tag_web import MusicTagWebClient
 from app.services.apps.navidrome import NavidromeClient
+from app.services.apps.openlist import OpenListClient
 from app.services.apps.qbittorrent import QBittorrentClient
 from app.services.apps.reader import ReaderAppClient
+from app.services.apps.suwayomi import SuwayomiAppClient
 
 __all__ = [
     "AppClient",
@@ -45,11 +48,14 @@ __all__ = [
     "JellyfinClient",
     "KavitaClient",
     "KomgaClient",
+    "MediaryScoutClient",
     "MoviePilotClient",
     "MusicDLClient",
     "MusicTagWebClient",
     "NavidromeClient",
+    "OpenListClient",
     "QBittorrentClient",
     "ReaderAppClient",
+    "SuwayomiAppClient",
     "register_client",
 ]

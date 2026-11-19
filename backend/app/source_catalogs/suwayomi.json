@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "keiyoushi",
+      "name": "Keiyoushi 扩展仓库",
+      "url": "https://github.com/keiyoushi/extensions/raw/repo/index.pb",
+      "mirror_urls": [
+        "https://cdn.jsdelivr.net/gh/keiyoushi/extensions@repo/index.json"
+      ],
+      "default_selected": true
+    },
+    {
+      "id": "copymanga-copy20",
+      "name": "LittleSurvival 中文扩展仓库",
+      "url": "https://raw.githubusercontent.com/LittleSurvival/copymanga-copy20/repo/index.min.json",
+      "mirror_urls": [
+        "https://cdn.jsdelivr.net/gh/LittleSurvival/copymanga-copy20@repo/index.min.json"
+      ],
+      "default_selected": false
+    }
+  ]
+}

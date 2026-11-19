@@ -32,12 +32,23 @@ from app.schemas.orchestration.instance import (
     OrchestrationInstanceUpdateRequest,
     OrchestrationRestoreRequest,
     PluginInstallRequest,
+    StorageMountRequest,
+)
+from app.schemas.orchestration.moviepilot import (
+    DirectoriesUpdateRequest,
+    Directory,
+    MediaLibrariesUpdateRequest,
+    MediaLibrary,
+    MediaLibraryAutoSyncUpdate,
+    MediaServer,
+    MediaServerSyncUpdate,
 )
 from app.schemas.orchestration.music_auto import (
     MusicAutoDirItem,
     MusicAutoOrganizeConfigIn,
 )
 from app.schemas.orchestration.reader_auto import ReaderAutoSyncConfigIn
+from app.schemas.orchestration.resource_sources import ResourceSourceConfigIn
 from app.schemas.orchestration.orchestration import (
     OrchestrationDeployRequest,
     OrchestrationDeployResponse,
@@ -55,11 +66,19 @@ __all__ = [
     "DeployTaskStage",
     "DeployTaskStatus",
     "DeployTaskType",
+    "DirectoriesUpdateRequest",
+    "Directory",
     "ImportCandidateApp",
     "InspectFixRequest",
+    "MediaLibrariesUpdateRequest",
+    "MediaLibrary",
+    "MediaLibraryAutoSyncUpdate",
+    "MediaServer",
+    "MediaServerSyncUpdate",
     "MusicAutoDirItem",
     "MusicAutoOrganizeConfigIn",
     "ReaderAutoSyncConfigIn",
+    "ResourceSourceConfigIn",
     "OrchestrationDeployRequest",
     "OrchestrationDeployResponse",
     "OrchestrationDetailOut",
@@ -77,4 +96,5 @@ __all__ = [
     "OrchestrationBackupOut",
     "OrchestrationDeleteResponse",
     "PluginInstallRequest",
+    "StorageMountRequest",
 ]

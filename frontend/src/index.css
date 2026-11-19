@@ -133,13 +133,32 @@
   * {
     @apply border-border outline-ring/50;
     }
+  html,
+  body,
+  #root {
+    height: 100%;
+    }
   body {
     @apply bg-background text-foreground;
     }
+  /* 原生下拉弹层跟随主题配色，否则系统深色模式下选项文字会不可见 */
+  select {
+    color-scheme: light;
+  }
+  .dark select {
+    color-scheme: dark;
+  }
   html {
     @apply font-sans;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+    }
+
+  /* 文档层永不滚动：滚动只发生在页面自己的容器里（AppLayout 的 main），
+     避免「外层滚动条 + 内容区滚动条」同时出现 */
+  html,
+  body {
+    overflow: hidden;
     }
 
   /* 全局滚动条：极细、半透明、无上下箭头、风格一致 */

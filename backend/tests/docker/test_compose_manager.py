@@ -308,6 +308,26 @@ async def test_ensure_host_directories_chowns_new_dirs_for_puid_pgid(
     mock_chown.assert_called_once_with(new_dir, 1000, 1000)
 
 
+@pytest.mark.asyncio
+async def test_ensure_host_directories_restores_owner_write_bit(
+    compose_manager, tmp_path
+):
+    """目录缺少属主写位时补回，避免只看 mode 位的镜像（SeaweedFS 4.x）报不可写。"""
+    broken_dir = tmp_path / "broken-data"
+    broken_dir.mkdir()
+    broken_dir.chmod(0o007)
+    content = f"""services:
+  seaweedfs:
+    image: chrislusf/seaweedfs
+    command: ["mini", "-dir=/data"]
+    volumes:
+      - {broken_dir}:/data:rw
+"""
+    await compose_manager._ensure_host_directories(content)
+
+    assert broken_dir.stat().st_mode & 0o200
+
+
 def test_parse_puid_pgid():
     """PUID/PGID 支持列表与字典两种环境变量形式，缺一或非法时不生效。"""
     assert parse_puid_pgid(["PUID=1000", "PGID=100"]) == (1000, 100)

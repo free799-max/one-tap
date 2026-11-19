@@ -36,7 +36,22 @@ _ENV_CREDENTIAL_SPECS: dict[str, dict[str, object]] = {
     },
     "reader": {
         "env_key": "reader_env",
+        "password_key": "READER_APP_SECUREKEY",
         "extra_env": {"READER_APP_SECURE": "true"},
+    },
+    "suwayomi": {
+        "env_key": "suwayomi_env",
+        "username_key": "AUTH_USERNAME",
+        "password_key": "AUTH_PASSWORD",
+        # 默认开启简单登录：WebUI 走登录页，客户端（Mihon / Tsumiru）
+        # 用同一套账号密码换取 Cookie 会话。
+        "extra_env": {"AUTH_MODE": "simple_login"},
+    },
+    # 巡影的账号密码走运行时注册，只有 Agent API Token 需要 env 注入，
+    # 供 OneTap MCP 以 Bearer Token 读取媒体库与发起获取。
+    "mediary-scout": {
+        "env_key": "env",
+        "api_token_key": "MEDIA_TRACK_AGENT_TOKEN",
     },
 }
 
@@ -52,6 +67,7 @@ _PROVISION_ONLY_APPS = {
     "music-tag-web",
     "navidrome",
     "ermao-library",
+    "openlist",
 }
 
 
@@ -75,6 +91,47 @@ def _set_env(config: dict, env_key: str, key: str, value: str) -> None:
             row["value"] = value
             return
     rows.append({"key": key, "value": value})
+
+
+def has_credential_env(app_name: str) -> bool:
+    """应用是否通过环境变量注入账号密码。"""
+    return app_name in _ENV_CREDENTIAL_SPECS
+
+
+def resolve_credential_env(
+    app_name: str, config: dict
+) -> tuple[str, dict[str, str]] | None:
+    """返回应用的凭据 env 键与当前需要同步的认证变量。
+
+    env 注入类应用（MoviePilot / Reader / Suwayomi）的登录信息只存在于
+    部署配置的环境变量里，升级时据此把账号、密码与认证开关补进现有
+    Compose，否则模板新增的认证配置不会生效。
+    """
+    spec = _ENV_CREDENTIAL_SPECS.get(app_name)
+    if spec is None:
+        return None
+    env_key = str(spec["env_key"])
+    keys: set[str] = {
+        str(key)
+        for key in (
+            spec.get("username_key"),
+            spec.get("password_key"),
+            spec.get("api_token_key"),
+        )
+        if key
+    }
+    extra_env = spec.get("extra_env")
+    if isinstance(extra_env, dict):
+        keys.update(str(key) for key in extra_env)
+    values: dict[str, str] = {}
+    for row in config.get(env_key) or []:
+        if not isinstance(row, dict):
+            continue
+        key = row.get("key")
+        value = row.get("value")
+        if key in keys and value not in (None, ""):
+            values[str(key)] = str(value)
+    return env_key, values
 
 
 def inherit_stored_secrets(stored_config: dict | None, config: dict) -> None:
@@ -152,7 +209,7 @@ async def prepare_app_credentials(
             # 未设置统一密码时保留用户已填/前端随机生成的密码
             password = previous_password
         if not password:
-            # 未写入 env 的应用（如 Reader）从上次配置继承密码
+            # 未配置密码 env 的应用从上次配置继承密码
             password = fallback_password
         if not password:
             password = generate_password()
