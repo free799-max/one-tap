@@ -532,6 +532,18 @@ async def list_storage_directories(
     return [storage_directory_service.to_dict(d) for d in directories]
 
 
+@router.get("/storage-directories/container-directories", response_model=DirectoryList)
+async def list_storage_container_directories(
+    path: str = "/",
+    current_user: User = Depends(require_admin),
+):
+    """列出后端容器内指定路径下的目录，供存储目录表单选择容器内路径。
+
+    从「/」开始浏览容器文件系统，只返回目录。
+    """
+    return await storage_directory_service.list_container_directories(path)
+
+
 @router.post("/storage-directories", response_model=StorageDirectoryOut)
 async def create_storage_directory(
     data: StorageDirectoryCreate,

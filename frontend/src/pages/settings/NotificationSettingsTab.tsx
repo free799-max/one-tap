@@ -72,8 +72,8 @@ const RECEIVE_PLACEHOLDER: Record<string, string> = {
 
 const TYPE_LABELS: Record<string, string> = {
   feishu: "飞书",
-  dingtalk: "钉钉",
-  dingtalk_app: "钉钉应用机器人",
+  dingtalk: "钉钉 Webhook",
+  dingtalk_app: "钉钉应用",
   wechatclawbot: "微信 Bot",
   qqbot: "QQ Bot",
 };
@@ -484,8 +484,8 @@ function ChannelDialog({
                 className={SELECT_CLASS}
               >
                 <option value="feishu">飞书</option>
-                <option value="dingtalk">钉钉（Webhook 机器人）</option>
-                <option value="dingtalk_app">钉钉应用机器人（互动卡片）</option>
+                <option value="dingtalk">钉钉 Webhook</option>
+                <option value="dingtalk_app">钉钉应用</option>
                 <option value="wechatclawbot">微信 Bot</option>
                 <option value="qqbot">QQ Bot</option>
               </select>

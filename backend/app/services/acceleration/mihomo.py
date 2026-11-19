@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import socket
@@ -460,6 +461,47 @@ async def apply_subscription_async(
         last_sync_at=datetime.now().isoformat(timespec="seconds"),
     )
     return await status_async(db)
+
+
+async def clear_subscription(db: AsyncSession) -> bool:
+    """清除已应用的订阅配置，让 Mihomo 回到直连模式。
+
+    返回是否实际重置了运行中的 Mihomo；未部署时只清理状态文件。
+    """
+    status = await status_async(db)
+    installed = bool(status.get("installed"))
+    if installed:
+        content = yaml.safe_dump(
+            minimal_config(), allow_unicode=True, sort_keys=False
+        )
+        await apply_subscription_async(
+            db,
+            content,
+            subscription_name="",
+            revision=0,
+            content_sha=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            subscription_url="",
+        )
+    else:
+        await _write_state(
+            db,
+            subscription_name="",
+            revision=0,
+            subscription_id=0,
+            content_sha="",
+            subscription_url="",
+            last_error=None,
+        )
+    await record_sync_result(
+        db,
+        status="cleared",
+        message="授权失效，已清理加速规则",
+        trigger="license",
+        changed=installed,
+        rules=0,
+        revision=0,
+    )
+    return installed
 
 
 async def remove_legacy_container() -> bool:

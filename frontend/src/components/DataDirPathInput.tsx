@@ -237,6 +237,21 @@ export function DataDirPathInput({
           subPath.replace(/^\/+/, "")
         }`;
 
+  // 目录浏览只能落在已配置且可见的目录内，否则设置端点会拒绝访问；
+  // 未选目录来源时回退到应用数据目录或第一个存储目录
+  const pickerRoot =
+    currentDir?.mount_path ||
+    appDataDir?.mount_path ||
+    storageDirectories[0]?.mount_path ||
+    "/";
+  const pickerRootPrefix = `${trimTrailingSlash(pickerRoot)}/`;
+  const pickerInitialPath =
+    value.startsWith("/") &&
+    (trimTrailingSlash(value) === trimTrailingSlash(pickerRoot) ||
+      value.startsWith(pickerRootPrefix))
+      ? value
+      : pickerRoot;
+
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
@@ -293,11 +308,11 @@ export function DataDirPathInput({
       <DirectoryPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
-        rootPath={currentDir ? currentDir.mount_path : "/"}
-        initialPath={
-          value.startsWith("/") ? value : currentDir?.mount_path
-        }
+        rootPath={pickerRoot}
+        initialPath={pickerInitialPath}
+        rootLabel={pickerRoot === "/" ? "根目录" : "存储根目录"}
         returnRelative={false}
+        inputMode="search"
         onSelect={(path) => onChange(path)}
         useDirectoriesQuery={useSettingsDirectories}
         createDirectory={settingsCreateDirectory}

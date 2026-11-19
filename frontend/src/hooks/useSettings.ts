@@ -26,6 +26,7 @@ import {
   createStorageDirectory,
   updateStorageDirectory,
   deleteStorageDirectory,
+  listStorageContainerDirectories,
   getHostsOptimizerConfig,
   updateHostsOptimizerConfig,
   getHostsOptimizerStatus,
@@ -239,6 +240,18 @@ export function useDeleteStorageDirectory() {
     onError: (error: ApiError) => {
       toast.error(error.displayMessage || "删除失败");
     },
+  });
+}
+
+/**
+ * 查询后端容器内可浏览的目录（存储目录表单的容器内路径选择器）
+ */
+export function useStorageContainerDirectories(path: string, enabled = true) {
+  return useQuery<DirectoryList>({
+    queryKey: ["settings", "storage-directories", "container-directories", path],
+    queryFn: () => listStorageContainerDirectories(path),
+    enabled: enabled && !!path,
+    staleTime: 0,
   });
 }
 

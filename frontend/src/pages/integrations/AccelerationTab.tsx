@@ -368,9 +368,11 @@ export function AccelerationTab() {
                     ? "已更新"
                     : lastResult.status === "unchanged"
                       ? "无变化"
-                      : lastResult.status === "error"
-                        ? "失败"
-                        : "已完成"}
+                      : lastResult.status === "cleared"
+                        ? "已清理"
+                        : lastResult.status === "error"
+                          ? "失败"
+                          : "已完成"}
                 </Badge>
               ) : null}
             </div>
@@ -388,7 +390,13 @@ export function AccelerationTab() {
                     ? formatRelativeTime(lastResult.synced_at)
                     : "时间未知"}
                 </span>
-                <span>{lastResult.trigger === "auto" ? "自动同步" : "手动同步"}</span>
+                <span>
+                  {lastResult.trigger === "auto"
+                    ? "自动同步"
+                    : lastResult.trigger === "license"
+                      ? "授权失效清理"
+                      : "手动同步"}
+                </span>
                 {lastResult.changed !== null ? (
                   <span>{lastResult.changed ? "已应用新配置" : "未重启 Mihomo"}</span>
                 ) : null}

@@ -12,6 +12,7 @@ import logging
 from app.database import async_session
 from app.services.acceleration import managed
 from app.services.acceleration import mihomo
+from app.services.licensing import licensing_service
 from app.services.system.config_service import system_config_service
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,17 @@ class AccelSyncService:
         async with async_session() as db:
             config = await system_config_service.get_or_create(db)
             interval = int(config.acceleration_sync_interval_minutes)
+            if not await licensing_service.acceleration_allowed(db):
+                try:
+                    if await managed.stop_and_clear(db):
+                        logger.info("授权无效，已停止网络加速并清理加速规则")
+                except Exception:  # noqa: BLE001 - 清理失败下次继续重试
+                    logger.warning(
+                        "清理网络加速规则失败，将在下次检查时重试", exc_info=True
+                    )
+                    return interval
+                await db.commit()
+                return interval
             if not config.acceleration_auto_sync_enabled:
                 return interval
             if not config.acceleration_subscription_url:

@@ -1,7 +1,10 @@
 """网络加速：订阅地址、订阅同步与规则解析测试。"""
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
+import yaml
 
 from app.config import settings
 from app.core.exceptions import APIException
@@ -283,6 +286,118 @@ async def test_sync_rejects_invalid_payload(client, monkeypatch, tmp_path):
     assert "代理节点" in result.json()["message"]
     assert errors["trigger"] == "manual"
     assert "代理节点" in errors["message"]
+
+
+@pytest.mark.asyncio
+async def test_sync_rejected_when_license_invalid(client, monkeypatch, tmp_path):
+    """授权无效时手动同步返回 403，并清理已下发的规则。"""
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path))
+    token = await _admin_token(client, "accel_nolicense")
+    cleared: list[bool] = []
+
+    async def _allowed(db):
+        return False
+
+    async def _stop_and_clear(db):
+        cleared.append(True)
+        return True
+
+    async def _fetch(url):  # pragma: no cover - 不应触发
+        raise AssertionError("授权无效时不应拉取订阅")
+
+    monkeypatch.setattr(managed.licensing_service, "acceleration_allowed", _allowed)
+    monkeypatch.setattr(managed, "stop_and_clear", _stop_and_clear)
+    monkeypatch.setattr(managed, "_fetch", _fetch)
+
+    result = await client.post("/api/acceleration/managed/sync", headers=_auth(token))
+    assert result.status_code == 403, result.text
+    assert "授权无效" in result.json()["message"]
+    assert cleared == [True]
+
+
+@pytest.mark.asyncio
+async def test_stop_and_clear_clears_subscription_and_rules(monkeypatch):
+    """清理动作清空订阅地址、规则快照，并重置本机 Mihomo。"""
+    config = SimpleNamespace(
+        acceleration_subscription_url="https://manage.example.com/sub/abc",
+        acceleration_managed_rules=[{"kind": "DOMAIN", "value": "api.github.com"}],
+        acceleration_rules_synced_at="2026-01-01T00:00:00Z",
+    )
+    calls: list[bool] = []
+    flushed: list[bool] = []
+
+    async def _get_config(db):
+        return config
+
+    async def _clear_subscription(db):
+        calls.append(True)
+
+    db = SimpleNamespace()
+
+    async def _flush():
+        flushed.append(True)
+
+    db.flush = _flush
+
+    monkeypatch.setattr(managed.system_config_service, "get_or_create", _get_config)
+    monkeypatch.setattr(managed.mihomo, "clear_subscription", _clear_subscription)
+
+    assert await managed.stop_and_clear(db) is True
+    assert calls == [True]
+    assert flushed == [True]
+    assert config.acceleration_subscription_url == ""
+    assert config.acceleration_managed_rules == []
+    assert config.acceleration_rules_synced_at is None
+
+
+@pytest.mark.asyncio
+async def test_stop_and_clear_skips_without_applied_subscription(monkeypatch):
+    """没有已应用的订阅时不触碰 Mihomo。"""
+    config = SimpleNamespace(
+        acceleration_subscription_url="",
+        acceleration_managed_rules=[],
+        acceleration_rules_synced_at=None,
+    )
+
+    async def _get_config(db):
+        return config
+
+    async def _clear_subscription(db):  # pragma: no cover - 不应触发
+        raise AssertionError("没有订阅时不应重置 Mihomo")
+
+    monkeypatch.setattr(managed.system_config_service, "get_or_create", _get_config)
+    monkeypatch.setattr(managed.mihomo, "clear_subscription", _clear_subscription)
+
+    assert await managed.stop_and_clear(object()) is False
+
+
+@pytest.mark.asyncio
+async def test_clear_subscription_resets_mihomo_to_direct(monkeypatch):
+    """清理时把运行中的 Mihomo 配置替换为直连最小配置。"""
+    applied: dict = {}
+
+    async def _status(db):
+        return {"installed": True}
+
+    async def _apply(db, content, **kwargs):
+        applied["content"] = content
+        applied["kwargs"] = kwargs
+
+    async def _record(db, **kwargs):
+        applied["record"] = kwargs
+
+    monkeypatch.setattr(mihomo, "status_async", _status)
+    monkeypatch.setattr(mihomo, "apply_subscription_async", _apply)
+    monkeypatch.setattr(mihomo, "record_sync_result", _record)
+
+    assert await mihomo.clear_subscription(object()) is True
+    config = yaml.safe_load(applied["content"])
+    assert config["rules"] == ["MATCH,DIRECT"]
+    assert config["proxies"] == []
+    assert applied["kwargs"]["subscription_url"] == ""
+    assert applied["kwargs"]["subscription_name"] == ""
+    assert applied["record"]["status"] == "cleared"
+    assert applied["record"]["trigger"] == "license"
 
 
 @pytest.mark.asyncio

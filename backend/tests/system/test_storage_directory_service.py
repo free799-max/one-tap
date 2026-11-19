@@ -65,6 +65,26 @@ class TestStorageDirectoryService:
             storage_directory_service.to_dict(d)["visible"] for d in directories
         )
 
+    async def test_list_container_directories(self, tmp_path):
+        """容器内路径浏览：从根目录开始直接浏览文件系统，只返回目录。"""
+        target = tmp_path / "media"
+        (target / "movies").mkdir(parents=True)
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+
+        listing = await storage_directory_service.list_container_directories(
+            str(tmp_path)
+        )
+        assert listing["path"] == str(tmp_path)
+        assert [entry["name"] for entry in listing["entries"]] == ["media"]
+
+        root = await storage_directory_service.list_container_directories("/")
+        assert root["path"] == "/"
+        assert root["entries"]
+
+        with pytest.raises(APIException) as exc_info:
+            await storage_directory_service.list_container_directories("relative/path")
+        assert exc_info.value.status_code == 400
+
     async def test_get_not_found(self, db):
         """获取不存在的数据目录抛 404。"""
         with pytest.raises(APIException) as exc_info:

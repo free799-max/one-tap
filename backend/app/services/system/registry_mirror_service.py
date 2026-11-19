@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -94,6 +95,17 @@ def _leased_items(payload: Any) -> list[dict[str, Any]] | None:
     if not isinstance(items, list):
         return None
     return [item for item in items if isinstance(item, dict)]
+
+
+def _parse_expires_at(value: Any) -> datetime | None:
+    """解析管理端返回的到期时间；无法解析时返回 None。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 class RegistryMirrorService:
@@ -183,6 +195,22 @@ class RegistryMirrorService:
         ):
             return _leased_cache[2]
 
+        # 刷新令牌可能还在，但证书已过期或设备指纹不匹配时必须停用：
+        # 只有本地授权校验通过才继续向管理端换取专属域名。
+        try:
+            status = await licensing_service.get_status(db)
+        except Exception:
+            logger.info("校验授权状态失败，本次不使用专属加速域名", exc_info=True)
+            status = None
+        if not status or not status.get("valid"):
+            logger.info(
+                "本机授权无效（%s），不使用专属加速域名",
+                (status or {}).get("status") or "unknown",
+            )
+            result = {"licensed": False, "mirrors": []}
+            _leased_cache = (now, token, result)
+            return result
+
         device = await get_device_fingerprint(state.installation_id)
         body = {
             "installation_id": state.installation_id,
@@ -223,10 +251,15 @@ class RegistryMirrorService:
             return {"licensed": False, "mirrors": []}
 
         mirrors = []
+        now_utc = datetime.now(timezone.utc)
         for item in items:
             url = str(item.get("url") or "").strip()
             source = str(item.get("source") or "").strip().lower()
             if not url or not source:
+                continue
+            expires_at = _parse_expires_at(item.get("expires_at"))
+            if expires_at is not None and expires_at <= now_utc:
+                logger.info("专属加速域名已过期，跳过：%s", source)
                 continue
             mirrors.append(
                 {
@@ -242,7 +275,7 @@ class RegistryMirrorService:
                     "last_check_ok": None,
                     "last_latency_ms": None,
                     "last_checked_at": None,
-                    "expires_at": item.get("expires_at"),
+                    "expires_at": expires_at or item.get("expires_at"),
                 }
             )
 

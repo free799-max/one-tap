@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -383,6 +384,9 @@ async def test_leased_domains_refetched_after_invalidation(monkeypatch):
     async def _state(db):
         return state
 
+    async def _status(db):
+        return {"valid": True, "status": "active"}
+
     async def _fingerprint(installation_id):
         return {"hardware_fingerprint": "fp"}
 
@@ -417,6 +421,7 @@ async def test_leased_domains_refetched_after_invalidation(monkeypatch):
             )
 
     monkeypatch.setattr(module.licensing_service, "get_state", _state)
+    monkeypatch.setattr(module.licensing_service, "get_status", _status)
     monkeypatch.setattr(module, "get_device_fingerprint", _fingerprint)
     monkeypatch.setattr(module, "with_manage_fallback", _fallback)
     monkeypatch.setattr(
@@ -437,6 +442,110 @@ async def test_leased_domains_refetched_after_invalidation(monkeypatch):
     refreshed = await service.fetch_leased(object())
     assert [m["url"] for m in refreshed["mirrors"]] == ["https://b.example.com"]
     assert len(requests) == 2
+    module.invalidate_acceleration_cache()
+
+
+@pytest.mark.asyncio
+async def test_leased_domains_require_valid_license(monkeypatch):
+    """本机证书无效时即使还有刷新令牌，也不再使用专属域名。"""
+    module = registry_mirror_module
+    service = module.registry_mirror_service
+    module.invalidate_acceleration_cache()
+    monkeypatch.setattr(settings, "MANAGE_BASE_URL", "http://manage.test")
+    state = SimpleNamespace(refresh_token="stale-token", installation_id="install-1")
+
+    async def _state(db):
+        return state
+
+    async def _status(db):
+        return {"valid": False, "status": "expired"}
+
+    def _unexpected_client(*args, **kwargs):
+        raise AssertionError("授权无效时不应再请求管理端")
+
+    monkeypatch.setattr(module.licensing_service, "get_state", _state)
+    monkeypatch.setattr(module.licensing_service, "get_status", _status)
+    monkeypatch.setattr(
+        module,
+        "httpx",
+        SimpleNamespace(
+            AsyncClient=_unexpected_client, HTTPError=httpx.HTTPError
+        ),
+    )
+
+    result = await service.fetch_leased(object())
+    assert result == {"licensed": False, "mirrors": []}
+    module.invalidate_acceleration_cache()
+
+
+@pytest.mark.asyncio
+async def test_leased_domains_skip_expired_entries(monkeypatch):
+    """管理端返回的专属域名已过期时直接跳过。"""
+    module = registry_mirror_module
+    service = module.registry_mirror_service
+    module.invalidate_acceleration_cache()
+    monkeypatch.setattr(settings, "MANAGE_BASE_URL", "http://manage.test")
+    state = SimpleNamespace(refresh_token="token-1", installation_id="install-1")
+
+    async def _state(db):
+        return state
+
+    async def _status(db):
+        return {"valid": True, "status": "active"}
+
+    async def _fingerprint(installation_id):
+        return {"hardware_fingerprint": "fp"}
+
+    async def _fallback(fetch):
+        return await fetch("http://manage.test"), "http://manage.test"
+
+    expired = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    alive = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            return SimpleNamespace(
+                status_code=200,
+                is_error=False,
+                json=lambda: {
+                    "data": {
+                        "mirrors": [
+                            {
+                                "url": "https://expired.example.com",
+                                "source": "ghcr.io",
+                                "expires_at": expired,
+                            },
+                            {
+                                "url": "https://alive.example.com",
+                                "source": "docker.io",
+                                "expires_at": alive,
+                            },
+                        ]
+                    }
+                },
+            )
+
+    monkeypatch.setattr(module.licensing_service, "get_state", _state)
+    monkeypatch.setattr(module.licensing_service, "get_status", _status)
+    monkeypatch.setattr(module, "get_device_fingerprint", _fingerprint)
+    monkeypatch.setattr(module, "with_manage_fallback", _fallback)
+    monkeypatch.setattr(
+        module,
+        "httpx",
+        SimpleNamespace(
+            AsyncClient=lambda *a, **kw: _Client(), HTTPError=httpx.HTTPError
+        ),
+    )
+
+    result = await service.fetch_leased(object())
+    assert result["licensed"] is True
+    assert [m["url"] for m in result["mirrors"]] == ["https://alive.example.com"]
     module.invalidate_acceleration_cache()
 
 

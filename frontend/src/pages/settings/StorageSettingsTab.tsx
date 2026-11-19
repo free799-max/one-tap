@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DirectoryPicker } from "@/components/DirectoryPicker";
 import {
   Dialog,
   DialogContent,
@@ -32,9 +33,10 @@ import {
   useCreateStorageDirectory,
   useUpdateStorageDirectory,
   useDeleteStorageDirectory,
+  useStorageContainerDirectories,
   type StorageDirectory,
 } from "@/hooks/useSettings";
-import { FolderTree, Plus, Pencil, Trash2 } from "lucide-react";
+import { FolderOpen, FolderTree, Plus, Pencil, Trash2 } from "lucide-react";
 
 const INPUT_CLASS =
   "h-8 rounded-md border-input bg-white px-2 text-sm shadow-none";
@@ -68,6 +70,8 @@ function StorageDirectoriesCard() {
   const [editing, setEditing] = useState<StorageDirectory | null>(null);
   const [form, setForm] = useState<DirFormState>(EMPTY_DIR_FORM);
   const [deleting, setDeleting] = useState<StorageDirectory | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const containerDirectoriesQuery = useStorageContainerDirectories;
 
   const openCreate = () => {
     setEditing(null);
@@ -287,18 +291,31 @@ function StorageDirectoriesCard() {
               <Label htmlFor="sd-mount-path" className="text-xs font-medium">
                 容器内路径
               </Label>
-              <Input
-                id="sd-mount-path"
-                value={form.mount_path}
-                onChange={(e) =>
-                  setForm((prev) => ({ ...prev, mount_path: e.target.value }))
-                }
-                placeholder="如 /media"
-                required
-                className={INPUT_CLASS}
-              />
+              <div className="flex items-center gap-2">
+                <Input
+                  id="sd-mount-path"
+                  value={form.mount_path}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, mount_path: e.target.value }))
+                  }
+                  placeholder="如 /appdata"
+                  required
+                  className={INPUT_CLASS}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 rounded-md"
+                  onClick={() => setPickerOpen(true)}
+                  title="选择目录"
+                >
+                  <FolderOpen className="h-4 w-4" />
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">
-                应用容器内看到的路径，需已挂载进 backend 容器。
+                在应用容器内看到的路径，需已在后端容器中可见，且不能是根目录
+                /。
               </p>
             </div>
             <div className="space-y-1.5">
@@ -380,6 +397,20 @@ function StorageDirectoriesCard() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* 容器内路径目录选择 */}
+      <DirectoryPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        rootPath="/"
+        rootLabel="根目录"
+        initialPath={form.mount_path.startsWith("/") ? form.mount_path : "/"}
+        returnRelative={false}
+        selectableRoot={false}
+        inputMode="search"
+        onSelect={(path) => setForm((prev) => ({ ...prev, mount_path: path }))}
+        useDirectoriesQuery={containerDirectoriesQuery}
+      />
 
       {/* 删除确认 */}
       <ConfirmDialog

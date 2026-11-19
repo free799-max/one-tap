@@ -481,6 +481,56 @@ async def test_activate_refresh_failure_and_deactivate(client, monkeypatch):
     assert state.license_key is None
 
 
+@pytest.mark.asyncio
+async def test_refresh_terminal_failure_clears_acceleration(
+    client, monkeypatch, tmp_path
+):
+    """刷新令牌和授权码都失效时，停用网络加速并清空订阅与规则。"""
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path))
+
+    async def fake_status(db):
+        return {"installed": False}
+
+    monkeypatch.setattr(
+        "app.services.acceleration.mihomo.status_async", fake_status
+    )
+    token = await register(client, "admin")
+    await client.get("/api/license/status", headers=auth(token))
+    state = await get_state(client)
+    signed_certificate = certificate(
+        state.installation_id, license_id=101, activation_id=202
+    )
+    post = AsyncMock(
+        return_value={
+            "certificate": signed_certificate,
+            "refresh_token": "refresh-token",
+            "license_id": 101,
+            "activation_id": 202,
+            "acceleration_subscription_url": (
+                "https://m.one-tab.vip/api/public/acceleration/subscription/token"
+            ),
+        }
+    )
+    monkeypatch.setattr(licensing_service, "_post", post)
+    activated = await client.post(
+        "/api/license/activate",
+        headers=auth(token),
+        json={"license_key": "license-key"},
+    )
+    assert activated.status_code == 200, activated.text
+
+    post.side_effect = APIException("授权已过期", 403)
+    failed = await client.post("/api/license/refresh", headers=auth(token))
+    assert failed.status_code == 403, failed.text
+
+    async for db in _test_db(client):
+        config = await system_config_service.get_or_create(db)
+        assert config.acceleration_subscription_url == ""
+        assert config.acceleration_managed_rules == []
+        assert config.acceleration_rules_synced_at is None
+        break
+
+
 @pytest.mark.parametrize("status_code", [401, 403])
 async def test_refresh_auth_failure_reactivates_with_stored_key(
     client, monkeypatch, status_code
@@ -742,7 +792,17 @@ async def test_refresh_tick_and_scheduler_shutdown(monkeypatch):
     assert licensing_service._scheduler_task is None
 
 
-async def test_activation_response_stores_hidden_acceleration_url(client):
+async def test_activation_response_stores_hidden_acceleration_url(
+    client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "DATA_ROOT", str(tmp_path))
+
+    async def fake_status(db):
+        return {"installed": False}
+
+    monkeypatch.setattr(
+        "app.services.acceleration.mihomo.status_async", fake_status
+    )
     url = (
         "https://m.one-tab.vip/api/public/acceleration/subscription/"
         "subscription-token"
@@ -766,9 +826,14 @@ async def test_activation_response_stores_hidden_acceleration_url(client):
         await db.refresh(config)
         assert config.acceleration_subscription_url == url
 
-        await licensing_service._clear_acceleration_url(db)
+        config.acceleration_managed_rules = [
+            {"kind": "DOMAIN", "value": "api.github.com"}
+        ]
+        await db.flush()
+        await licensing_service._disable_acceleration(db)
         await db.refresh(config)
         assert config.acceleration_subscription_url == ""
+        assert config.acceleration_managed_rules == []
         await db.commit()
         break
 

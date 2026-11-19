@@ -67,6 +67,18 @@ class StorageDirectoryService:
         )
         return list(result.scalars().all())
 
+    async def list_container_directories(self, path: str) -> dict:
+        """列出后端容器内指定路径下的子目录，供存储目录表单选择容器内路径。
+
+        直接浏览容器文件系统，从「/」开始；只返回目录，路径非法时抛异常。
+        """
+        from app.services.host.filesystem_service import filesystem_service
+
+        target = _normalize_path(path)
+        if not target.startswith("/"):
+            raise APIException("仅支持绝对路径", 400)
+        return filesystem_service.list_directories(target)
+
     async def list_enabled_pairs(self, db: AsyncSession) -> list[tuple[str, str]]:
         """列出启用的普通数据目录（不含应用数据目录）的 (host_path, mount_path) 列表。"""
         result = await db.execute(

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import APIException
 from app.models.system_config import SystemConfig
 from app.services.acceleration import mihomo
+from app.services.licensing import licensing_service
 from app.services.system.config_service import system_config_service
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,28 @@ async def _fill_system_proxy(db: AsyncSession, config: SystemConfig) -> str:
     return url
 
 
+async def stop_and_clear(db: AsyncSession) -> bool:
+    """授权失效后停止使用加速：清空订阅与规则，并让 Mihomo 回到直连。
+
+    返回是否有需要清理的配置；没有已应用的订阅时直接返回 False。
+    清理失败会向上抛出，调用方自行决定是否提交并等待下次重试。
+    """
+    config = await system_config_service.get_or_create(db)
+    has_applied = bool(
+        config.acceleration_subscription_url
+        or config.acceleration_managed_rules
+        or config.acceleration_rules_synced_at
+    )
+    if not has_applied:
+        return False
+    await mihomo.clear_subscription(db)
+    config.acceleration_subscription_url = ""
+    config.acceleration_managed_rules = []
+    config.acceleration_rules_synced_at = None
+    await db.flush()
+    return True
+
+
 async def sync(
     db: AsyncSession,
     url: str | None = None,
@@ -184,6 +207,14 @@ async def sync(
 ) -> dict:
     """拉取订阅并写入本机 Mihomo。"""
     config = await system_config_service.get_or_create(db)
+
+    if not await licensing_service.acceleration_allowed(db):
+        try:
+            await stop_and_clear(db)
+            await db.commit()
+        except Exception:  # noqa: BLE001 - 清理失败不掩盖授权错误
+            logger.warning("授权失效后清理加速规则失败", exc_info=True)
+        raise APIException("授权无效，网络加速已停止并清理加速规则", 403)
     target = normalize_url(url or config.acceleration_subscription_url)
     try:
         content = await _fetch(target)

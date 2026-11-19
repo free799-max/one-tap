@@ -3,6 +3,7 @@
  */
 
 import api from "@/lib/api";
+import type { DirectoryList } from "@/api/directories";
 
 /** 系统全局配置（前端使用空字符串代替 null） */
 export interface SystemConfig {
@@ -269,6 +270,17 @@ export type StorageDirectoryUpdate = Partial<StorageDirectoryCreate>;
 /** 查询存储目录列表 */
 export function listStorageDirectories(): Promise<StorageDirectory[]> {
   return api.get("/settings/storage-directories").then((r) => r.data);
+}
+
+/** 查询后端容器内可浏览的目录（存储目录表单的容器内路径选择器） */
+export function listStorageContainerDirectories(
+  path: string
+): Promise<DirectoryList> {
+  return api
+    .get("/settings/storage-directories/container-directories", {
+      params: { path },
+    })
+    .then((r) => r.data);
 }
 
 /** 新建存储目录 */

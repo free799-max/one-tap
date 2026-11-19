@@ -313,11 +313,16 @@ class LicensingService:
         config.acceleration_subscription_url = value
         await db.flush()
 
-    async def _clear_acceleration_url(self, db: AsyncSession) -> None:
-        config = await system_config_service.get_or_create(db)
-        if config.acceleration_subscription_url:
-            config.acceleration_subscription_url = ""
-            await db.flush()
+    async def _disable_acceleration(self, db: AsyncSession) -> None:
+        """授权失效后停止使用网络加速：清空订阅与规则并让 Mihomo 回到直连。"""
+        from app.services.acceleration import managed
+
+        try:
+            await managed.stop_and_clear(db)
+        except Exception:  # noqa: BLE001 - 清理失败不应阻止授权状态更新
+            logger.warning(
+                "清理网络加速规则失败，将在下次同步检查时重试", exc_info=True
+            )
 
     async def activate(
         self, db: AsyncSession, license_key: str, device_name: str | None = None
@@ -377,7 +382,14 @@ class LicensingService:
             # 只丢了刷新令牌但还留着授权码（例如旧版本刷新失败时被清空）时，
             # 直接用授权码重新激活，用户不需要重新输入。
             if state.license_key:
-                return await self.activate(db, state.license_key, state.device_name)
+                try:
+                    return await self.activate(
+                        db, state.license_key, state.device_name
+                    )
+                except APIException:
+                    await self._disable_acceleration(db)
+                    await db.commit()
+                    raise
             raise APIException("本机尚未激活授权", 409)
         device = await get_device_fingerprint(state.installation_id)
         try:
@@ -410,7 +422,17 @@ class LicensingService:
             # 用本机保存的授权码自动重新激活，而不是清空本地授权。
             if exc.status_code in {401, 403} and state.license_key:
                 logger.info("刷新令牌失效，使用本机授权码重新激活：%s", exc.message)
-                return await self.activate(db, state.license_key, state.device_name)
+                try:
+                    return await self.activate(
+                        db, state.license_key, state.device_name
+                    )
+                except APIException:
+                    await self._disable_acceleration(db)
+                    await db.commit()
+                    raise
+            if exc.status_code in {401, 403}:
+                # 授权明确失效：停用网络加速并清理已下发的规则。
+                await self._disable_acceleration(db)
             state.last_error = exc.message
             await db.commit()
             raise
@@ -435,12 +457,12 @@ class LicensingService:
                     await db.commit()
                     raise
                 self._clear_authorization(state, exc.message)
-                await self._clear_acceleration_url(db)
+                await self._disable_acceleration(db)
                 _reset_acceleration_cache()
                 await db.commit()
                 return await self.get_status(db)
         self._clear_authorization(state, None)
-        await self._clear_acceleration_url(db)
+        await self._disable_acceleration(db)
         _reset_acceleration_cache()
         await db.commit()
         return await self.get_status(db)
@@ -497,6 +519,14 @@ class LicensingService:
         if not status["valid"]:
             raise APIException("需要有效授权", 403)
         return status
+
+    async def acceleration_allowed(self, db: AsyncSession) -> bool:
+        """网络加速是否可用；授权无效时返回 False。"""
+        try:
+            await self.require_valid(db)
+        except APIException:
+            return False
+        return True
 
     def start_scheduler(self) -> None:
         if self._scheduler_task is not None and not self._scheduler_task.done():

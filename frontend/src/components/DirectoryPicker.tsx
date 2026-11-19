@@ -23,8 +23,10 @@ import {
   Plus,
   Edit3,
   Trash2,
+  Search,
 } from "lucide-react";
 import { toAbsolutePath, toRelativePath } from "@/lib/utils";
+import type { ApiError } from "@/api/types";
 
 /** 目录列表查询 hook 类型 */
 type UseDirectoriesHook = (
@@ -57,10 +59,20 @@ interface DirectoryPickerProps {
   onOpenChange: (open: boolean) => void;
   /** 浏览根目录（绝对路径） */
   rootPath: string;
+  /** 面包屑首项的显示名称 */
+  rootLabel?: string;
   /** 初始路径，可为绝对路径或相对 rootPath 的路径 */
   initialPath?: string;
   /** 选择后返回相对路径，否则返回绝对路径 */
   returnRelative?: boolean;
+  /** 是否允许选择根目录本身（默认 true） */
+  selectableRoot?: boolean;
+  /**
+   * 输入框用途：
+   * - path（默认）：输入相对/绝对路径后回车跳转；
+   * - search：只作为当前目录的搜索过滤框，不跳转、不预填路径。
+   */
+  inputMode?: "path" | "search";
   onSelect: (path: string) => void;
   /** 自定义目录查询 hook */
   useDirectoriesQuery?: UseDirectoriesHook;
@@ -76,8 +88,11 @@ export function DirectoryPicker({
   open,
   onOpenChange,
   rootPath,
+  rootLabel = "存储根目录",
   initialPath,
   returnRelative = false,
+  selectableRoot = true,
+  inputMode = "path",
   onSelect,
   useDirectoriesQuery,
   createDirectory,
@@ -85,6 +100,7 @@ export function DirectoryPicker({
   deleteDirectory,
 }: DirectoryPickerProps) {
   const normalizedRoot = rootPath.replace(/\/+$/, "") || "/";
+  const isSearchMode = inputMode === "search";
 
   const [currentAbsolutePath, setCurrentAbsolutePath] = useState(normalizedRoot);
   const [inputValue, setInputValue] = useState("");
@@ -114,24 +130,26 @@ export function DirectoryPicker({
       ? toAbsolutePath(initialPath, normalizedRoot)
       : normalizedRoot;
     setCurrentAbsolutePath(abs);
-    setInputValue(toRelativePath(abs, normalizedRoot));
+    setInputValue(isSearchMode ? "" : toRelativePath(abs, normalizedRoot));
     setSelectedEntry(null);
     setIsCreating(false);
     setIsRenaming(false);
     setIsDeleteConfirming(false);
-  }, [open, initialPath, normalizedRoot]);
+  }, [open, initialPath, normalizedRoot, isSearchMode]);
 
-  // 当前路径变化时同步输入框
+  // 当前路径变化时：路径模式同步输入框，搜索模式清空过滤词
   useEffect(() => {
-    setInputValue(toRelativePath(currentAbsolutePath, normalizedRoot));
+    setInputValue(
+      isSearchMode ? "" : toRelativePath(currentAbsolutePath, normalizedRoot)
+    );
     setSelectedEntry(null);
-  }, [currentAbsolutePath, normalizedRoot]);
+  }, [currentAbsolutePath, normalizedRoot, isSearchMode]);
 
   const breadcrumbs = useMemo(() => {
     const relative = toRelativePath(currentAbsolutePath, normalizedRoot);
     const parts = relative.split("/").filter(Boolean);
     const crumbs: { name: string; path: string }[] = [
-      { name: "存储根目录", path: normalizedRoot },
+      { name: rootLabel, path: normalizedRoot },
     ];
     let acc = normalizedRoot;
     for (const part of parts) {
@@ -139,14 +157,29 @@ export function DirectoryPicker({
       crumbs.push({ name: part, path: acc });
     }
     return crumbs;
-  }, [currentAbsolutePath, normalizedRoot]);
+  }, [currentAbsolutePath, normalizedRoot, rootLabel]);
 
   const navigateTo = (absPath: string) => {
     setCurrentAbsolutePath(absPath);
   };
 
+  // 上级导航不能越过浏览根目录（设置端点只允许根目录及其子目录）
+  const navigateUp = () => {
+    const parent =
+      currentAbsolutePath.replace(/\/[^/]*\/?$/, "") || normalizedRoot;
+    const rootPrefix = `${normalizedRoot.replace(/\/+$/, "")}/`;
+    if (
+      parent === normalizedRoot ||
+      (normalizedRoot !== "/" && parent.startsWith(rootPrefix))
+    ) {
+      navigateTo(parent);
+    } else {
+      navigateTo(normalizedRoot);
+    }
+  };
+
   const handleInputSubmit = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== "Enter") return;
+    if (isSearchMode || e.key !== "Enter") return;
     const trimmed = inputValue.trim();
     if (!trimmed) {
       navigateTo(normalizedRoot);
@@ -160,6 +193,16 @@ export function DirectoryPicker({
     }
     navigateTo(target);
   };
+
+  const visibleEntries = useMemo(() => {
+    const entries = data?.entries ?? [];
+    if (!isSearchMode) return entries;
+    const keyword = inputValue.trim().toLowerCase();
+    if (!keyword) return entries;
+    return entries.filter((entry) =>
+      entry.name.toLowerCase().includes(keyword)
+    );
+  }, [data, isSearchMode, inputValue]);
 
   const handleSelect = () => {
     const result = returnRelative
@@ -405,18 +448,25 @@ export function DirectoryPicker({
             ))}
           </div>
 
-          {/* 路径输入 */}
-          <Input
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleInputSubmit}
-            placeholder="输入相对路径或绝对路径后回车跳转"
-            className="h-8 text-sm"
-          />
+          {/* 路径跳转 / 本目录搜索 */}
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleInputSubmit}
+              placeholder={
+                isSearchMode
+                  ? "搜索当前目录"
+                  : "输入相对路径或绝对路径后回车跳转"
+              }
+              className="h-8 pl-7 text-sm"
+            />
+          </div>
         </div>
 
         {/* 目录列表 */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-1">
+        <div className="h-[280px] overflow-y-auto px-4 py-1">
           {isLoading && (
             <div className="flex items-center justify-center py-8 text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -426,7 +476,10 @@ export function DirectoryPicker({
 
           {error && !isLoading && (
             <div className="py-6 text-center text-sm text-destructive">
-              无法读取该路径：{(error as Error)?.message || "未知错误"}
+              无法读取该路径：
+              {(error as ApiError)?.displayMessage ||
+                (error as Error)?.message ||
+                "未知错误"}
             </div>
           )}
 
@@ -435,11 +488,7 @@ export function DirectoryPicker({
               {currentAbsolutePath !== normalizedRoot && (
                 <button
                   type="button"
-                  onClick={() => {
-                    const parent =
-                      currentAbsolutePath.replace(/\/[^/]*\/?$/, "") || normalizedRoot;
-                    navigateTo(parent);
-                  }}
+                  onClick={navigateUp}
                   className="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-left hover:bg-muted"
                 >
                   <Folder className="h-4 w-4 text-muted-foreground" />
@@ -451,12 +500,14 @@ export function DirectoryPicker({
                 <div className="py-6 text-center text-xs text-muted-foreground">
                   该目录不存在
                 </div>
-              ) : data.entries.length === 0 ? (
+              ) : visibleEntries.length === 0 ? (
                 <div className="py-6 text-center text-xs text-muted-foreground">
-                  该目录下没有子目录
+                  {isSearchMode && inputValue.trim()
+                    ? "没有匹配的目录"
+                    : "该目录下没有子目录"}
                 </div>
               ) : (
-                data.entries.map((entry) => {
+                visibleEntries.map((entry) => {
                   const isSelected = selectedEntry?.path === entry.path;
                   return (
                     <div
@@ -490,7 +541,11 @@ export function DirectoryPicker({
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button size="sm" onClick={handleSelect}>
+          <Button
+            size="sm"
+            onClick={handleSelect}
+            disabled={!selectableRoot && currentAbsolutePath === normalizedRoot}
+          >
             选择当前目录
           </Button>
         </div>
