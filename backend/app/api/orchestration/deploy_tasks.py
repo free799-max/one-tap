@@ -81,19 +81,53 @@ async def deploy_task_events(
     )
 
 
+# 停止任务的提示语：按任务类型区分，说明被中断后留下什么
+_CANCEL_MESSAGES = {
+    "app_deploy": "已停止部署，未完成的项目可在应用或容器列表中清理",
+    "compose_deploy": "已停止部署，未完成的项目可在容器列表中清理",
+    "compose_action": "已停止操作，服务状态可能未完全同步",
+}
+
+
 @router.post("/deploy-tasks/{task_id}/cancel", response_model=DeployTaskStatus)
 async def cancel_deploy_task(
     task_id: str,
     current_user: User = Depends(get_current_user),
 ):
-    """停止支持取消的部署任务。"""
+    """停止进行中的部署任务。
+
+    升级与自动装配任务由各自的执行登记表管理；部署、Compose 操作等任务
+    通过登记的执行协程取消，可中断仍在下载的镜像拉取。
+    """
     from app.services.orchestration import orchestration_service
 
     task = deploy_task_manager.get_task(task_id)
-    if task and task.get("type") == "app_upgrade":
+    if not task:
+        raise APIException("任务不存在", 404)
+    if task.get("status") != "deploying":
+        raise APIException("任务已结束", 409)
+
+    task_type = task.get("type")
+    if task_type == "app_upgrade":
         await orchestration_service.cancel_upgrade(task_id)
-    else:
+        return deploy_task_manager.get_task(task_id)
+    if task_type == "orchestration_provision":
         await orchestration_service.cancel_provisioning(task_id)
+        return deploy_task_manager.get_task(task_id)
+
+    job = deploy_task_manager.get_job(task_id)
+    if job is None:
+        raise APIException("当前任务不支持停止", 400)
+
+    deploy_task_manager.cancel_task(
+        task_id, _CANCEL_MESSAGES.get(task_type, "任务已停止")
+    )
+    job.cancel()
+    try:
+        # 镜像下载中断需要等待下载线程收尾，设上限避免停止接口本身卡住
+        await asyncio.wait_for(asyncio.shield(job), timeout=10)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
     return deploy_task_manager.get_task(task_id)
 
 

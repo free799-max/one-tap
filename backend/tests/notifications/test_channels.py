@@ -6,7 +6,6 @@ import httpx
 import pytest
 
 from app.services.notifications.channels.base import ChannelError, ChannelMessage
-from app.services.notifications.channels.dingtalk import DingTalkChannel
 from app.services.notifications.channels.dingtalk_app import DingTalkAppChannel
 from app.services.notifications.channels.feishu import FeishuChannel
 from app.services.notifications.channels.qqbot import QQBotChannel
@@ -405,31 +404,6 @@ def test_feishu_card_video_download_shows_progress_field():
     assert len(card["elements"]) == 1
 
 
-async def test_dingtalk_markdown_and_sign(monkeypatch):
-    import app.services.notifications.channels.dingtalk as dingtalk_module
-
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = request.url
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
-
-    _mock_client(handler, monkeypatch, dingtalk_module)
-    channel = DingTalkChannel(
-        "钉钉",
-        {"webhook": "https://oapi.dingtalk.com/robot/send?access_token=abc"},
-        {"secret": "SECtest"},
-    )
-    await channel.send(_message())
-    body = captured["body"]
-    assert body["msgtype"] == "markdown"
-    assert "![封面]" not in body["markdown"]["text"]
-    assert "[查看详情](https://onetap.local/item)" in body["markdown"]["text"]
-    assert captured["url"].params["timestamp"]
-    assert captured["url"].params["sign"]
-
-
 async def test_qqbot_markdown_message(monkeypatch):
     import app.services.notifications.channels.qqbot as qqbot_module
 
@@ -457,7 +431,62 @@ async def test_qqbot_markdown_message(monkeypatch):
     assert send_request.headers["Authorization"] == "QQBot qq-token"
     body = json.loads(send_request.content)
     assert body["msg_type"] == 2
-    assert "![封面](https://img.example/a.jpg)" in body["markdown"]["content"]
+    content = body["markdown"]["content"]
+    assert content.startswith("### 测试标题\n\n**正文**")
+    assert "[查看详情](https://onetap.local/item)" in content
+    assert "![封面]" not in content
+
+
+async def test_qqbot_comic_uses_dingtalk_markdown(monkeypatch):
+    import app.services.notifications.channels.qqbot as qqbot_module
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/app/getAppAccessToken"):
+            return httpx.Response(
+                200, json={"access_token": "qq-token", "expires_in": 7200}
+            )
+        return httpx.Response(200, json={"id": "qq-msg-2"})
+
+    _mock_client(handler, monkeypatch, qqbot_module)
+    channel = QQBotChannel(
+        "QQ",
+        {"app_id": "app1", "target": "group:g1"},
+        {"app_secret": "secret"},
+    )
+    message_id = await channel.send(
+        ChannelMessage(
+            title="新增漫画订阅：重生西游之最强白骨大圣",
+            markdown="喵喵动漫\n\n后续会自动下载并整理入库。",
+            text="喵喵动漫\n后续会自动下载并整理入库。",
+            event_type="subscription.added",
+            domain="comic",
+            payload={
+                "options": {
+                    "author": "喵喵动漫",
+                    "category": "comic",
+                    "comic_status": "ONGOING",
+                    "total_chapters": 32,
+                    "latest_chapter": "更新至32话",
+                }
+            },
+        )
+    )
+
+    assert message_id == "qq-msg-2"
+    body = json.loads(calls[-1].content)
+    assert body["msg_type"] == 2
+    content = body["markdown"]["content"]
+    assert content.startswith("### 新增漫画订阅：重生西游之最强白骨大圣")
+    assert "**资源类型：** 漫画" in content
+    assert "**作者：** 喵喵动漫" in content
+    assert "**状态：** 连载中" in content
+    assert "**话数：** 共 32 话" in content
+    assert "**更新：** 更新至32话" in content
+    assert content.endswith("后续会自动下载并整理入库。")
+    assert "![封面]" not in content
 
 
 async def test_wechatclawbot_text_and_image(monkeypatch):

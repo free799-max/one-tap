@@ -62,6 +62,9 @@ fi
 # 只监听 app/ 与 alembic/：data/ 下有 Mihomo 等容器持续写入，tests/ 会被 pytest
 # 改写。监听整个目录时，跑测试会触发 reload，多次 reload 叠加在启动阶段
 # （alembic 迁移）会让 reloader 卡死，后端停止监听、所有请求超时。
+# 部署进度页会占用 SSE 长连接，优雅关闭若一直等它断开，reload 会永远卡在
+# 旧进程上；限制关闭等待时间，超时由 uvicorn 强制收尾。
 exec "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --reload \
   --reload-dir app --reload-dir alembic \
-  --host 0.0.0.0 --port 5001
+  --host 0.0.0.0 --port 5001 \
+  --timeout-graceful-shutdown 5

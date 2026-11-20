@@ -259,7 +259,8 @@ async def create_compose_project(
                 logger.exception("Compose 创建项目失败")
                 deploy_task_manager.fail_task(task_id, f"创建项目失败: {e}")
 
-    create_background_task(_task(task_id))
+    job = create_background_task(_task(task_id))
+    deploy_task_manager.track_job(task_id, job)
 
     return ComposeDeployResponse(
         task_id=task_id,
@@ -358,7 +359,8 @@ async def edit_compose_project(
                 logger.exception("Compose 编辑部署失败")
                 deploy_task_manager.fail_task(task_id, str(e))
 
-    create_background_task(_task(task_id))
+    job = create_background_task(_task(task_id))
+    deploy_task_manager.track_job(task_id, job)
 
     return ComposeDeployResponse(
         task_id=task_id,
@@ -488,7 +490,8 @@ async def compose_action(
                 logger.exception("Compose 操作失败")
                 deploy_task_manager.fail_task(task_id, str(e))
 
-    create_background_task(_task(task_id))
+    job = create_background_task(_task(task_id))
+    deploy_task_manager.track_job(task_id, job)
 
     return ComposeDeployResponse(
         task_id=task_id,

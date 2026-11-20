@@ -32,7 +32,7 @@ class NotificationChannel(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
-    # feishu / dingtalk / dingtalk_app / wechatclawbot / qqbot
+    # feishu / dingtalk_app / wechatclawbot / qqbot
     type: Mapped[str] = mapped_column(String(20), nullable=False)
     enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("true"), nullable=False

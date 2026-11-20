@@ -4,6 +4,7 @@
 进度状态维护与 SSE 推送能力。
 """
 
+import asyncio
 import logging
 import uuid
 
@@ -65,6 +66,38 @@ class DeployTaskManager(BaseTaskManager):
             task_timeout_seconds=task_timeout_seconds,
         )
         self._max_history_size = max_history_size
+        # 任务执行协程：停止按钮通过它中断镜像拉取等阻塞操作
+        self._jobs: dict[str, asyncio.Task] = {}
+
+    def track_job(self, task_id: str, job: asyncio.Task) -> None:
+        """登记任务的执行协程，供停止按钮中断；协程结束后自动清理。"""
+        if job is None:  # 测试或降级环境下可能没有真实协程
+            return
+        self._jobs[task_id] = job
+
+        def _cleanup(done: asyncio.Task) -> None:
+            if self._jobs.get(task_id) is done:
+                self._jobs.pop(task_id, None)
+
+        job.add_done_callback(_cleanup)
+
+    def get_job(self, task_id: str) -> asyncio.Task | None:
+        """获取仍在执行的协程，任务已结束或未登记时返回 None。"""
+        job = self._jobs.get(task_id)
+        if job is None or job.done():
+            return None
+        return job
+
+    def can_stop(self, task: dict) -> bool:
+        """判断任务当前是否支持停止。
+
+        升级/装配任务由各自的执行登记表管理，其余任务以执行协程是否在跑为准。
+        """
+        if task.get("status") != self._active_status:
+            return False
+        if task.get("type") in ("app_upgrade", "orchestration_provision"):
+            return True
+        return self.get_job(task["task_id"]) is not None
 
     def _concurrency_limit_error(self) -> str:
         return (
@@ -130,6 +163,7 @@ class DeployTaskManager(BaseTaskManager):
         notify = task["progress"].copy()
         notify["_task_status"] = task["status"]
         notify["_meta"] = sanitize_meta(task.get("meta"))
+        notify["_can_stop"] = self.can_stop(task)
         notify.update(extra)
         return notify
 

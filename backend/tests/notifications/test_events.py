@@ -61,9 +61,9 @@ async def test_event_type_filter(notification_db):
         db.add(
             NotificationChannel(
                 name="只收整理",
-                type="dingtalk",
+                type="feishu",
                 enabled=True,
-                config={"webhook": "https://example.com/robot"},
+                config={"app_id": "cli", "receive_id": "chat"},
             )
         )
         setting = await events.get_setting(db)

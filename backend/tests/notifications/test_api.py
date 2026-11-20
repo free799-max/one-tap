@@ -107,9 +107,9 @@ async def test_notification_settings_and_inbox(client):
     assert any(item["value"] == "subscription.added" for item in events.json()["data"])
 
 
-async def test_dingtalk_channel_config(client):
+async def test_dingtalk_webhook_channel_is_rejected(client):
     headers = await _auth_headers(client, "notify-admin-ding")
-    created = await client.post(
+    response = await client.post(
         "/api/notifications/channels",
         headers=headers,
         json={
@@ -119,10 +119,7 @@ async def test_dingtalk_channel_config(client):
             "secret": "SECtest",
         },
     )
-    assert created.status_code == 200, created.text
-    data = created.json()["data"]
-    assert data["config"]["webhook"].endswith("access_token=abc")
-    assert data["secret_set"] is True
+    assert response.status_code == 422
 
 
 async def test_dingtalk_app_channel_config(client):

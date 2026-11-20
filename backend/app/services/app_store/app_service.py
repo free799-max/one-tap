@@ -768,7 +768,8 @@ class AppService:
             release_ports(allocated_ports)
             raise
 
-        create_background_task(self._do_deploy(task_id, instance.id))
+        job = create_background_task(self._do_deploy(task_id, instance.id))
+        deploy_task_manager.track_job(task_id, job)
 
         return instance, task_id
 
@@ -819,6 +820,19 @@ class AppService:
                     )
                 except Exception:
                     logger.exception("恢复应用加速失败: instance=%s", instance_id)
+            except asyncio.CancelledError:
+                # 用户停止部署：实例转为 error，避免一直停留在 deploying
+                logger.warning("应用部署已停止: task=%s instance=%s", task_id, instance_id)
+                try:
+                    instance = await self.get_instance(db, instance_id)
+                    instance.status = "error"
+                    # 若项目已创建则关联 project_id，便于用户清理残留项目
+                    if "project" in locals() and project:
+                        instance.project_id = project.id
+                    await db.commit()
+                except Exception:
+                    logger.exception("更新实例停止状态失败")
+                raise
             except Exception as e:
                 logger.exception("应用部署失败: %s", e)
                 error_msg = str(e)

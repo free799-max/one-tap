@@ -122,11 +122,6 @@ def _build_config(data: ChannelUpsert) -> tuple[dict, dict]:
         secrets = {"app_secret": (data.app_secret or "").strip()}
         if not config["app_id"] or not config["receive_id"]:
             raise APIException("飞书渠道需要 app_id 和 receive_id", 400)
-    elif data.type == "dingtalk":
-        config = {"webhook": (data.webhook or "").strip()}
-        secrets = {"secret": (data.secret or "").strip()}
-        if not config["webhook"].startswith(("http://", "https://")):
-            raise APIException("钉钉渠道需要有效的 Webhook 地址", 400)
     elif data.type == "dingtalk_app":
         config = {
             "app_key": (data.app_key or "").strip(),

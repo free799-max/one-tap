@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -371,6 +373,7 @@ async def test_pull_tries_next_mirror_without_pulling_source(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pull_never_falls_back_to_source_when_direct_is_disabled(monkeypatch):
+    monkeypatch.setattr(mirror_pull, "MIRROR_RETRY_DELAY", 0)
     pulled = []
 
     async def inspect_image(*args, **kwargs):
@@ -388,10 +391,208 @@ async def test_pull_never_falls_back_to_source_when_direct_is_disabled(monkeypat
         {"docker.io": ["https://dedicated.example", "https://free.example"]},
         allow_direct=False,
     )
+    # 第一轮失败后延时重试一轮，仍失败才放弃；不回退直连
     assert pulled == [
         "dedicated.example/metacubex/mihomo:v1.19.33",
         "free.example/metacubex/mihomo:v1.19.33",
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+        "free.example/metacubex/mihomo:v1.19.33",
     ]
+
+
+@pytest.mark.asyncio
+async def test_mirror_pull_retries_once_after_all_mirrors_fail(monkeypatch):
+    """新 tag 的缓存延迟：全部加速地址失败后，延时重试一轮。"""
+    monkeypatch.setattr(mirror_pull, "MIRROR_RETRY_DELAY", 0)
+    pulled = []
+
+    async def docker(*args, **kwargs):
+        if args[:2] == ("image", "inspect"):
+            return 1, ""
+        return 0, ""
+
+    async def pull(image, **kwargs):
+        pulled.append(image)
+        if len(pulled) < 3:
+            return 1, "404 Not Found"
+        return 0, ""
+
+    monkeypatch.setattr(mirror_pull, "_docker", docker)
+    monkeypatch.setattr(mirror_pull, "_docker_pull", pull)
+
+    assert await mirror_pull.pull_with_mirror(
+        "metacubex/mihomo:v1.19.33",
+        {"docker.io": ["https://dedicated.example", "https://free.example"]},
+        allow_direct=False,
+    )
+    assert pulled == [
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+        "free.example/metacubex/mihomo:v1.19.33",
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+    ]
+
+
+def test_pull_watcher_detects_stall(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(mirror_pull.time, "monotonic", lambda: now[0])
+    watcher = mirror_pull._PullWatcher(timeout=1800)
+
+    now[0] += mirror_pull.PULL_STALL_TIMEOUT + 0.1
+
+    assert watcher.check() == "镜像下载停滞超过 60 秒，已切换镜像源"
+
+
+def test_pull_watcher_detects_low_speed(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(mirror_pull.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(mirror_pull, "PULL_SPEED_WINDOW", 10.0)
+    watcher = mirror_pull._PullWatcher(timeout=1800)
+    layers = [{"status": "Downloading", "current": 0, "total": 100 * 1024 * 1024}]
+
+    # 10 KB/s，远低于 50 KB/s 阈值
+    for second in range(12):
+        watcher.observe(
+            {
+                "downloaded_size": second * 10 * 1024,
+                "layers": layers,
+            }
+        )
+        now[0] += 1
+
+    reason = watcher.check()
+    assert reason is not None
+    assert "速度过低" in reason
+
+
+def test_pull_watcher_allows_healthy_speed(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(mirror_pull.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(mirror_pull, "PULL_SPEED_WINDOW", 10.0)
+    watcher = mirror_pull._PullWatcher(timeout=1800)
+    layers = [{"status": "Downloading", "current": 0, "total": 100 * 1024 * 1024}]
+
+    # 100 KB/s，高于阈值
+    for second in range(12):
+        watcher.observe(
+            {
+                "downloaded_size": second * 100 * 1024,
+                "layers": layers,
+            }
+        )
+        now[0] += 1
+
+    assert watcher.check() is None
+
+
+def test_pull_watcher_ignores_extraction_phase(monkeypatch):
+    """解压阶段没有下载速度，不能误判为低速。"""
+    now = [100.0]
+    monkeypatch.setattr(mirror_pull.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(mirror_pull, "PULL_SPEED_WINDOW", 10.0)
+    watcher = mirror_pull._PullWatcher(timeout=1800)
+    layers = [{"status": "Extracting", "current": 800, "total": 800}]
+
+    for _ in range(12):
+        watcher.observe({"downloaded_size": 100, "layers": layers})
+        now[0] += 1
+
+    assert watcher.check() is None
+
+
+@pytest.mark.asyncio
+async def test_pull_aborts_stalled_mirror_and_tries_next(monkeypatch):
+    monkeypatch.setattr(mirror_pull, "PULL_STALL_TIMEOUT", 0.2)
+    monkeypatch.setattr(mirror_pull, "PULL_WATCH_INTERVAL", 0.02)
+    closed = threading.Event()
+    first_response = MagicMock()
+    first_response.close.side_effect = closed.set
+    pulls = []
+
+    def stalled_stream():
+        # 真实场景由 socket 读超时唤醒读线程；这里用短暂 sleep 模拟
+        time.sleep(0.5)
+        raise TimeoutError("read timed out")
+        yield {}
+
+    def open_stream(client, image):
+        pulls.append(image)
+        if image.startswith("dedicated.example/"):
+            return first_response, stalled_stream()
+        return MagicMock(), iter([
+            {
+                "id": "layer",
+                "status": "Download complete",
+                "progressDetail": {"current": 1, "total": 1},
+            }
+        ])
+
+    async def docker(*args, **kwargs):
+        if args[:2] == ("image", "inspect"):
+            return 1, ""
+        return 0, ""
+
+    monkeypatch.setattr(mirror_pull, "_docker", docker)
+    monkeypatch.setattr(mirror_pull, "_open_pull_stream", open_stream)
+
+    assert await mirror_pull.pull_with_mirror(
+        "metacubex/mihomo:v1.19.33",
+        {"docker.io": ["https://dedicated.example", "https://free.example"]},
+        progress=lambda data: None,
+    )
+
+    assert pulls == [
+        "dedicated.example/metacubex/mihomo:v1.19.33",
+        "free.example/metacubex/mihomo:v1.19.33",
+    ]
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stalled_pull_does_not_block_event_loop(monkeypatch):
+    """读线程卡在 recv 时，事件循环必须继续处理其它协程。"""
+    monkeypatch.setattr(mirror_pull, "PULL_STALL_TIMEOUT", 0.2)
+    monkeypatch.setattr(mirror_pull, "PULL_WATCH_INTERVAL", 0.02)
+    monkeypatch.setattr(mirror_pull, "MIRROR_RETRY_DELAY", 0)
+
+    def stalled_stream():
+        time.sleep(0.5)
+        raise TimeoutError("read timed out")
+        yield {}
+
+    def open_stream(client, image):
+        return MagicMock(), stalled_stream()
+
+    async def docker(*args, **kwargs):
+        if args[:2] == ("image", "inspect"):
+            return 1, ""
+        return 0, ""
+
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    monkeypatch.setattr(mirror_pull, "_docker", docker)
+    monkeypatch.setattr(mirror_pull, "_open_pull_stream", open_stream)
+
+    tick_task = asyncio.create_task(ticker())
+    try:
+        assert not await mirror_pull.pull_with_mirror(
+            "metacubex/mihomo:v1.19.33",
+            {"docker.io": ["https://dedicated.example"]},
+            progress=lambda data: None,
+            allow_direct=False,
+        )
+    finally:
+        tick_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tick_task
+
+    # 两轮各阻塞 0.5 秒，事件循环仍应持续运行
+    assert ticks > 10
 
 
 @pytest.mark.parametrize(

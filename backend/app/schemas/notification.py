@@ -40,7 +40,6 @@ class ChannelConfigOut(BaseModel):
     app_id: Optional[str] = None
     receive_id: Optional[str] = None
     receive_id_type: Optional[str] = None
-    webhook: Optional[str] = None
     base_url: Optional[str] = None
     account_id: Optional[str] = None
     target: Optional[str] = None
@@ -60,7 +59,7 @@ class ChannelOut(BaseModel):
 
 class ChannelUpsert(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    type: Literal["feishu", "dingtalk", "dingtalk_app", "wechatclawbot", "qqbot"]
+    type: Literal["feishu", "dingtalk_app", "wechatclawbot", "qqbot"]
     enabled: bool = True
     app_id: Optional[str] = Field(None, max_length=200)
     app_key: Optional[str] = Field(None, max_length=200)
@@ -69,8 +68,6 @@ class ChannelUpsert(BaseModel):
     card_template_id: Optional[str] = Field(None, max_length=200)
     receive_id: Optional[str] = Field(None, max_length=200)
     receive_id_type: Optional[str] = Field(None, max_length=32)
-    webhook: Optional[str] = Field(None, max_length=1000)
-    secret: Optional[str] = Field(None, max_length=500)
     base_url: Optional[str] = Field(None, max_length=500)
     bot_token: Optional[str] = Field(None, max_length=1000)
     account_id: Optional[str] = Field(None, max_length=200)

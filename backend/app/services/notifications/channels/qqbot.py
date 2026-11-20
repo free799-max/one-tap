@@ -1,7 +1,7 @@
 """QQ Bot 渠道。
 
-通过 QQ 开放平台主动消息接口发送 Markdown 图文；
-Markdown 权限不足时回退为纯文本。
+通过 QQ 开放平台主动消息接口发送 Markdown；
+正文排版与钉钉渠道一致，Markdown 权限不足时回退为纯文本。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import time
 import httpx
 
 from app.services.notifications.channels.base import BaseChannel, ChannelError, ChannelMessage
+from app.services.notifications.details import render_markdown
 
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 API_BASE = "https://api.sgroup.qq.com"
@@ -93,15 +94,24 @@ class QQBotChannel(BaseChannel):
             )
         return str(payload.get("id") or "") or None
 
+    def _contents(self, message: ChannelMessage) -> tuple[str, str]:
+        """生成与钉钉渠道一致的 Markdown 和纯文本正文。"""
+        title, body = render_markdown(message)
+        parts = [f"### {title}", body]
+        if message.link:
+            parts.append(f"[查看详情]({message.link})")
+        content = "\n\n".join(part for part in parts if part)
+
+        plain_parts = [title, body]
+        if message.link:
+            plain_parts.append(message.link)
+        plain = "\n".join(part for part in plain_parts if part)
+        return content, plain
+
     async def send(self, message: ChannelMessage) -> str | None:
         token = await self._access_token()
         target, is_group = self._resolve_target()
-        markdown = message.markdown or message.text
-        content = f"**{message.title}**\n\n{markdown}"
-        if message.image_url:
-            content += f"\n\n![封面]({message.image_url})"
-        if message.link:
-            content += f"\n\n[查看详情]({message.link})"
+        content, plain = self._contents(message)
 
         try:
             return await self._send(
@@ -112,11 +122,6 @@ class QQBotChannel(BaseChannel):
             )
         except ChannelError as exc:
             # Markdown 需要平台授权；未授权时退回纯文本。
-            plain = f"{message.title}\n{markdown}"
-            if message.image_url:
-                plain += f"\n{message.image_url}"
-            if message.link:
-                plain += f"\n{message.link}"
             try:
                 return await self._send(
                     token,

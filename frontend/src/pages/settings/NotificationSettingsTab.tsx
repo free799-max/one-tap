@@ -72,7 +72,6 @@ const RECEIVE_PLACEHOLDER: Record<string, string> = {
 
 const TYPE_LABELS: Record<string, string> = {
   feishu: "飞书",
-  dingtalk: "钉钉 Webhook",
   dingtalk_app: "钉钉应用",
   wechatclawbot: "微信 Bot",
   qqbot: "QQ Bot",
@@ -86,11 +85,6 @@ const TYPE_META: Record<
     icon: MessagesSquare,
     chip: "bg-sky-50 text-sky-600 dark:bg-sky-500/10 dark:text-sky-400",
     dot: "bg-sky-500",
-  },
-  dingtalk: {
-    icon: Bird,
-    chip: "bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400",
-    dot: "bg-blue-500",
   },
   dingtalk_app: {
     icon: Bird,
@@ -115,12 +109,7 @@ const FALLBACK_META: { icon: LucideIcon; chip: string; dot: string } = {
   dot: "bg-muted-foreground",
 };
 
-type ChannelType =
-  | "feishu"
-  | "dingtalk"
-  | "dingtalk_app"
-  | "wechatclawbot"
-  | "qqbot";
+type ChannelType = "feishu" | "dingtalk_app" | "wechatclawbot" | "qqbot";
 
 interface FormState {
   name: string;
@@ -133,8 +122,6 @@ interface FormState {
   card_template_id: string;
   receive_id: string;
   receive_id_type: string;
-  webhook: string;
-  secret: string;
   base_url: string;
   bot_token: string;
   account_id: string;
@@ -154,8 +141,6 @@ const EMPTY_FORM: FormState = {
   card_template_id: "",
   receive_id: "",
   receive_id_type: "chat_id",
-  webhook: "",
-  secret: "",
   base_url: "https://ilinkai.weixin.qq.com",
   bot_token: "",
   account_id: "",
@@ -175,9 +160,6 @@ function buildPayload(form: FormState): ChannelUpsert {
     payload.receive_id = form.receive_id.trim();
     payload.receive_id_type = form.receive_id_type || "chat_id";
     if (form.app_secret.trim()) payload.app_secret = form.app_secret.trim();
-  } else if (form.type === "dingtalk") {
-    payload.webhook = form.webhook.trim();
-    if (form.secret.trim()) payload.secret = form.secret.trim();
   } else if (form.type === "dingtalk_app") {
     payload.app_key = form.app_key.trim();
     payload.robot_code = form.robot_code.trim();
@@ -213,8 +195,6 @@ function channelPayload(
     base.app_id = String(config.app_id ?? "");
     base.receive_id = String(config.receive_id ?? "");
     base.receive_id_type = String(config.receive_id_type ?? "chat_id");
-  } else if (channel.type === "dingtalk") {
-    base.webhook = String(config.webhook ?? "");
   } else if (channel.type === "dingtalk_app") {
     base.app_key = String(config.app_key ?? "");
     base.robot_code = String(config.robot_code ?? "");
@@ -414,8 +394,6 @@ function ChannelDialog({
       receive_id_type: String(
         config.receive_id_type ?? (channel.type === "dingtalk_app" ? "user_id" : "chat_id")
       ),
-      webhook: String(config.webhook ?? ""),
-      secret: "",
       base_url: String(config.base_url ?? "https://ilinkai.weixin.qq.com"),
       bot_token: "",
       account_id: String(config.account_id ?? ""),
@@ -455,7 +433,7 @@ function ChannelDialog({
             )}
           </div>
           <DialogDescription>
-            支持飞书、钉钉（Webhook / 应用机器人）、微信 Bot、QQ Bot；有封面时尽量随消息发送。
+            支持飞书、钉钉应用机器人、微信 Bot、QQ Bot；有封面时尽量随消息发送。
           </DialogDescription>
         </DialogHeader>
 
@@ -484,7 +462,6 @@ function ChannelDialog({
                 className={SELECT_CLASS}
               >
                 <option value="feishu">飞书</option>
-                <option value="dingtalk">钉钉 Webhook</option>
                 <option value="dingtalk_app">钉钉应用</option>
                 <option value="wechatclawbot">微信 Bot</option>
                 <option value="qqbot">QQ Bot</option>
@@ -555,36 +532,6 @@ function ChannelDialog({
               <p className="col-span-2 text-[11px] text-muted-foreground">
                 发到群里选 chat_id（oc_ 开头）；私聊发给个人选 open_id（ou_ 开头）。
               </p>
-            </div>
-          )}
-
-          {form.type === "dingtalk" && (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="dingtalk-webhook">Webhook 地址</Label>
-                <Input
-                  id="dingtalk-webhook"
-                  value={form.webhook}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, webhook: e.target.value }))
-                  }
-                  className={INPUT_CLASS}
-                  placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
-                />
-              </div>
-              <div className="col-span-2 space-y-1.5">
-                <Label htmlFor="dingtalk-secret">加签密钥（可选）</Label>
-                <Input
-                  id="dingtalk-secret"
-                  type="password"
-                  value={form.secret}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, secret: e.target.value }))
-                  }
-                  className={INPUT_CLASS}
-                  placeholder={channel?.secret_set ? "留空表示不修改" : "SEC..."}
-                />
-              </div>
             </div>
           )}
 

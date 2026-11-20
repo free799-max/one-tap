@@ -8,7 +8,6 @@ from app.services.notifications.channels.base import (
     ChannelError,
     ChannelMessage,
 )
-from app.services.notifications.channels.dingtalk import DingTalkChannel
 from app.services.notifications.channels.dingtalk_app import DingTalkAppChannel
 from app.services.notifications.channels.feishu import FeishuChannel
 from app.services.notifications.channels.qqbot import QQBotChannel
@@ -17,7 +16,6 @@ from app.services.notifications.crypto import decrypt_secrets
 
 CHANNEL_TYPES = {
     "feishu": FeishuChannel,
-    "dingtalk": DingTalkChannel,
     "dingtalk_app": DingTalkAppChannel,
     "wechatclawbot": WeChatClawBotChannel,
     "qqbot": QQBotChannel,
@@ -25,7 +23,6 @@ CHANNEL_TYPES = {
 
 CHANNEL_LABELS = {
     "feishu": "飞书",
-    "dingtalk": "钉钉",
     "dingtalk_app": "钉钉应用机器人",
     "wechatclawbot": "微信 ClawBot",
     "qqbot": "QQ Bot",

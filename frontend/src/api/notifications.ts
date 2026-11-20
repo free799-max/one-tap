@@ -31,7 +31,7 @@ export interface NotificationList {
 export interface NotificationChannel {
   id: number;
   name: string;
-  type: "feishu" | "dingtalk" | "dingtalk_app" | "wechatclawbot" | "qqbot";
+  type: "feishu" | "dingtalk_app" | "wechatclawbot" | "qqbot";
   enabled: boolean;
   config: Record<string, unknown>;
   secret_set: boolean;
@@ -41,7 +41,7 @@ export interface NotificationChannel {
 
 export interface ChannelUpsert {
   name: string;
-  type: "feishu" | "dingtalk" | "dingtalk_app" | "wechatclawbot" | "qqbot";
+  type: "feishu" | "dingtalk_app" | "wechatclawbot" | "qqbot";
   enabled: boolean;
   app_id?: string;
   app_key?: string;
@@ -50,8 +50,6 @@ export interface ChannelUpsert {
   card_template_id?: string;
   receive_id?: string;
   receive_id_type?: string;
-  webhook?: string;
-  secret?: string;
   base_url?: string;
   bot_token?: string;
   account_id?: string;

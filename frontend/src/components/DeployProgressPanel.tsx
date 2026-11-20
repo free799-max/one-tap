@@ -236,7 +236,15 @@ function DeployTaskCard({
   const isUpgrade = meta.operation === "upgrade";
   const canStop =
     state.status === "deploying" &&
-    (isProvisioning || (isUpgrade && !meta.orchestration_group_id));
+    state.canStop === true &&
+    !(isUpgrade && meta.orchestration_group_id);
+  const stopLabel = isUpgrade
+    ? "停止升级"
+    : isProvisioning
+      ? "停止装配"
+      : meta.operation === "compose_action"
+        ? "停止操作"
+        : "停止部署";
   const stageLabel =
     state.stage === "completed"
       ? finishedLabel(meta, false)
@@ -283,7 +291,7 @@ function DeployTaskCard({
               ) : (
                 <Square className="h-3 w-3" aria-hidden="true" />
               )}
-              {isStopping ? "停止中" : isUpgrade ? "停止升级" : "停止装配"}
+              {isStopping ? "停止中" : stopLabel}
             </Button>
           )}
           <Badge variant={statusConfig.variant} className="text-[10px] h-5 px-1.5 gap-1">
@@ -320,7 +328,9 @@ function DeployTaskCard({
             <p className="mt-1 text-[11px] text-muted-foreground">
               {isUpgrade
                 ? "已下载的镜像层会保留，可稍后重新升级"
-                : "需要时可在应用详情中重新装配"}
+                : isProvisioning
+                  ? "需要时可在应用详情中重新装配"
+                  : "未完成的项目可在应用或容器列表中清理后重试"}
             </p>
           </div>
         </div>
@@ -393,14 +403,18 @@ export function DeployProgressPanel({
   );
 
   const handleStop = async (taskId: string) => {
-    const isUpgrade = states[taskId]?.meta?.operation === "upgrade";
+    const meta = states[taskId]?.meta || {};
+    const isUpgrade = meta.operation === "upgrade";
+    const isProvisioning = meta.operation === "provision";
     setStoppingTaskId(taskId);
     try {
       await api.post(`/deploy-tasks/${taskId}/cancel`);
       toast.success(
         isUpgrade
           ? "已停止升级，镜像下载已中断"
-          : "已停止自动配置与装配，应用容器保持运行"
+          : isProvisioning
+            ? "已停止自动配置与装配，应用容器保持运行"
+            : "已停止任务，未完成的项目可稍后清理后重试"
       );
     } catch (error) {
       const message = (error as { displayMessage?: string }).displayMessage;

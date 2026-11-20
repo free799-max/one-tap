@@ -33,6 +33,8 @@ interface DeployTaskEvent extends DeployTaskProgress {
   _error?: string;
   _warning?: string | null;
   _meta?: Record<string, unknown> | null;
+  /** 后端是否支持停止该任务（有正在执行的协程可中断） */
+  _can_stop?: boolean;
 }
 
 /** 部署任务状态 */
@@ -49,6 +51,8 @@ export interface DeployTaskState {
   projectId?: number | null;
   instanceId?: number | null;
   meta?: Record<string, unknown> | null;
+  /** 后端是否支持停止当前任务 */
+  canStop?: boolean;
   logs?: string[];
 }
 
@@ -74,6 +78,7 @@ function parseDeployEvent(taskId: string, eventData: string): DeployTaskState | 
       error: data._error || null,
       warning: data._warning || null,
       meta: data._meta,
+      canStop: data._can_stop === true,
     };
   } catch {
     return null;
