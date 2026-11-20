@@ -107,6 +107,21 @@ async def test_connect_info_builds_prompt_and_client_config(mcp_client):
 
 
 @pytest.mark.asyncio
+async def test_connect_info_uses_browser_origin_with_port(mcp_client):
+    response = await mcp_client.get(
+        "/api/settings/mcp/connect",
+        params={"base_url": "http://192.168.1.20:6782"},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    assert data["endpoint"] == "http://192.168.1.20:6782/mcp"
+    assert "http://192.168.1.20:6782/mcp" in data["config_json"]
+    assert "http://192.168.1.20:6782/mcp" in data["prompt"]
+    assert "http://192.168.1.20:6782/api/mcp/skills" in data["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_connect_prompt_covers_all_resource_workflows(mcp_client):
     response = await mcp_client.get("/api/settings/mcp/connect")
     prompt = response.json()["data"]["prompt"]

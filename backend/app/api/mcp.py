@@ -63,6 +63,21 @@ def _request_base_url(request: Request) -> str:
     return f"{proto or 'http'}://{host or '127.0.0.1'}"
 
 
+def _public_base_url(request: Request, base_url: str) -> str:
+    if not base_url:
+        return _request_base_url(request)
+    parsed = urlsplit(base_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise APIException("浏览器访问地址格式不正确", 400)
+    return base_url.rstrip("/")
+
+
 def _masked_key(key: str) -> str:
     return f"{key[:12]}••••••{key[-8:]}"
 
@@ -176,6 +191,7 @@ async def reset_mcp_access_key(
 @router.get("/connect", response_model=McpConnectOut)
 async def get_mcp_connect_info(
     request: Request,
+    base_url: str = Query(default="", max_length=2048),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
@@ -183,8 +199,9 @@ async def get_mcp_connect_info(
     key = decrypt_access_token(record)
     if not key:
         raise APIException("密钥读取失败，请重置密钥", 500)
-    endpoint = f"{_request_base_url(request)}/mcp"
-    skills_url = f"{_request_base_url(request)}/api/mcp/skills"
+    public_base_url = _public_base_url(request, base_url)
+    endpoint = f"{public_base_url}/mcp"
+    skills_url = f"{public_base_url}/api/mcp/skills"
     return McpConnectOut(
         endpoint=endpoint,
         masked_key=_masked_key(key),

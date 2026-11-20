@@ -142,7 +142,11 @@ export function resetMcpKey(): Promise<McpKey> {
 }
 
 export function getMcpConnect(): Promise<McpConnectInfo> {
-  return api.get(`${MCP_BASE}/connect`).then((r) => r.data as McpConnectInfo);
+  return api
+    .get(`${MCP_BASE}/connect`, {
+      params: { base_url: window.location.origin },
+    })
+    .then((r) => r.data as McpConnectInfo);
 }
 
 export function listMcpAudit(limit = 100): Promise<McpAuditRecord[]> {
