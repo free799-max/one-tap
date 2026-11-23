@@ -9,13 +9,11 @@ from httpx import ASGITransport
 
 from app.main import app
 from app.services.mcp.auth import create_access_token
-from app.services.mcp.config import mcp_config_service
 from app.services.mcp.server import mcp_aggregator
 
 
 async def _raw_token(mcp_env):
     async with mcp_env["session"]() as db:
-        await mcp_config_service.set_enabled(db, True)
         _, raw = await create_access_token(
             db, user=mcp_env["admin"], name="protocol", expires_at=None
         )
@@ -63,7 +61,7 @@ async def test_real_streamable_http_protocol_without_standard_response(mcp_env):
 
 
 @pytest.mark.asyncio
-async def test_protocol_requires_valid_bearer_and_enabled_server(mcp_env):
+async def test_protocol_requires_valid_bearer(mcp_env):
     raw = await _raw_token(mcp_env)
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -76,16 +74,6 @@ async def test_protocol_requires_valid_bearer_and_enabled_server(mcp_env):
             "/mcp", headers={"Authorization": "Bearer invalid"}, json={}
         )
         assert response.status_code == 401
-
-    async with mcp_env["session"]() as db:
-        await mcp_config_service.set_enabled(db, False)
-    async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/mcp", headers={"Authorization": f"Bearer {raw}"}, json={}
-        )
-        assert response.status_code == 404
 
 
 @pytest.mark.asyncio

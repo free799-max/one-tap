@@ -17,7 +17,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.config import settings
 from app.core.exceptions import APIException
 from app.database import async_session
-from app.models.integration import IntegrationConfig
 from app.models.mcp import McpAccessToken, McpToolCallLog
 from app.models.user import User
 
@@ -238,7 +237,7 @@ async def authenticate_access_token(
 
 
 class McpAuthMiddleware:
-    """在 MCP 子应用边界完成全局开关和逐请求管理员令牌校验。"""
+    """在 MCP 子应用边界逐请求校验管理员令牌。"""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -249,18 +248,6 @@ class McpAuthMiddleware:
             return
 
         async with async_session() as db:
-            result = await db.execute(
-                sa.select(IntegrationConfig).where(IntegrationConfig.kind == "mcp")
-            )
-            enabled = result.scalar_one_or_none()
-            if enabled is None or not enabled.enabled:
-                response = JSONResponse(
-                    status_code=404,
-                    content={"error": "mcp_disabled", "message": "AI 接入未启用"},
-                )
-                await response(scope, receive, send)
-                return
-
             headers = {key.lower(): value for key, value in scope.get("headers", [])}
             authorization = headers.get(b"authorization", b"").decode("latin-1")
             scheme, _, raw_token = authorization.partition(" ")

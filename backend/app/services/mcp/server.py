@@ -159,19 +159,11 @@ class McpAggregator:
 
     async def available_instance_ids(self) -> set[int]:
         async with async_session() as db:
-            config = await mcp_config_service.get_config(db)
-            if not config["enabled"]:
-                return set()
             return {
                 state.app.instance_id
                 for state in await mcp_config_service.list_upstreams(db, self._host())
                 if state.available
             }
-
-    async def mcp_enabled(self) -> bool:
-        async with async_session() as db:
-            config = await mcp_config_service.get_config(db)
-            return bool(config["enabled"])
 
     @asynccontextmanager
     async def lifespan(self):

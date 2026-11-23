@@ -2,11 +2,6 @@ import api from "@/lib/api";
 
 const MCP_BASE = "/settings/mcp";
 
-export interface McpConfig {
-  enabled: boolean;
-  endpoint: string;
-}
-
 export interface McpUpstream {
   instance_id: number;
   app_name: string;
@@ -54,16 +49,6 @@ export interface McpAuditRecord {
   error_message: string | null;
   duration_ms: number;
   created_at: string;
-}
-
-export function getMcpConfig(): Promise<McpConfig> {
-  return api.get(MCP_BASE).then((r) => r.data as McpConfig);
-}
-
-export function updateMcpConfig(data: {
-  enabled: boolean;
-}): Promise<McpConfig> {
-  return api.put(MCP_BASE, data).then((r) => r.data as McpConfig);
 }
 
 export function listMcpUpstreams(): Promise<McpUpstream[]> {

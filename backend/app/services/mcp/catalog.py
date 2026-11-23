@@ -8,8 +8,6 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.mcp.config import mcp_config_service
-
 LOCAL_SOURCE_ID = "local"
 
 _LOCAL_RISK = {
@@ -52,7 +50,7 @@ def _annotations(tool: Any) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _local_entry(tool: Any, available: bool) -> dict[str, Any]:
+def _local_entry(tool: Any) -> dict[str, Any]:
     name = str(tool.name)
     return {
         "kind": "local_tool",
@@ -70,8 +68,8 @@ def _local_entry(tool: Any, available: bool) -> dict[str, Any]:
         "risk": _LOCAL_RISK.get(name, "write"),
         "transport": "mcp",
         "required_role": "admin",
-        "invocable": available,
-        "blocked_reason": "" if available else "AI 接入未启用",
+        "invocable": True,
+        "blocked_reason": "",
         "upstream_instance_id": None,
         "input_schema": tool.parameters or {},
         "output_schema": getattr(tool, "output_schema", None),
@@ -82,11 +80,9 @@ def _local_entry(tool: Any, available: bool) -> dict[str, Any]:
 async def build_mcp_catalog(db: AsyncSession, host: str) -> dict[str, Any]:
     from app.services.mcp.server import mcp_aggregator
 
-    config = await mcp_config_service.get_config(db)
-    enabled = bool(config["enabled"])
     tools = await mcp_aggregator.server._tool_manager.get_tools()
     entries = [
-        _local_entry(tool, enabled)
+        _local_entry(tool)
         for name, tool in sorted(tools.items())
         if name.startswith("onetap_")
     ]
@@ -95,8 +91,8 @@ async def build_mcp_catalog(db: AsyncSession, host: str) -> dict[str, Any]:
         "instance_id": 0,
         "kind": "local_tool",
         "name": "OneTap",
-        "available": enabled,
-        "error": "" if enabled else "AI 接入未启用",
+        "available": True,
+        "error": "",
         "count": len(entries),
     }
     return {

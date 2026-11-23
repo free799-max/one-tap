@@ -1,23 +1,16 @@
-"""MCP 聚合配置与原生上游实例发现。
+"""MCP 原生上游实例发现。
 
-聚合端只做原生 MCP 的透传：配置只有全局开关，已部署且可读的实例
-会自动注册，其全部原生工具都会透传。不同应用的 MCP 端点路径各异
+聚合端只做原生 MCP 的透传：已部署且可读的实例会自动注册，其全部
+原生工具都会透传。不同应用的 MCP 端点路径各异
 （MoviePilot 是 ``/api/v1/mcp``，Comic Auto 是 ``/api/mcp``）。
 """
 
-import asyncio
 from dataclasses import dataclass
-from typing import Any
 
-import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import APIException
-from app.models.integration import IntegrationConfig
 from app.services.integrations.discovery import DeployedApp, list_deployed_apps
-
-
-MCP_CONFIG_KIND = "mcp"
 
 # 原生 MCP 应用 → Streamable HTTP 端点路径
 NATIVE_MCP_PATHS: dict[str, str] = {
@@ -85,39 +78,6 @@ def _deduplicate(apps: list[DeployedApp]) -> list[DeployedApp]:
 
 
 class McpConfigService:
-    def __init__(self):
-        self._config_lock = asyncio.Lock()
-
-    async def _record(
-        self, db: AsyncSession, create: bool = True
-    ) -> IntegrationConfig | None:
-        query = sa.select(IntegrationConfig).where(
-            IntegrationConfig.kind == MCP_CONFIG_KIND
-        )
-        if create:
-            query = query.with_for_update()
-        result = await db.execute(query)
-        record = result.scalar_one_or_none()
-        if record is None and create:
-            record = IntegrationConfig(kind=MCP_CONFIG_KIND, enabled=True, config={})
-            db.add(record)
-            await db.flush()
-        return record
-
-    async def get_config(self, db: AsyncSession) -> dict[str, Any]:
-        record = await self._record(db, create=False)
-        return {"enabled": bool(record.enabled) if record is not None else True}
-
-    async def set_enabled(self, db: AsyncSession, enabled: bool) -> dict[str, Any]:
-        async with self._config_lock:
-            record = await self._record(db)
-            assert record is not None
-            record.enabled = enabled
-            if record.config:
-                record.config = {}
-            await db.commit()
-            return await self.get_config(db)
-
     async def _apps(
         self, db: AsyncSession, host: str, app_names: set[str] | None = None
     ) -> list[DeployedApp]:

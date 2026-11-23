@@ -42,12 +42,10 @@ class McpPolicyMiddleware(Middleware):
         await self.aggregator.ensure_upstreams()
         tools = await call_next(context)
         available_ids = await self._available_instance_ids()
-        local_enabled = await self.aggregator.mcp_enabled()
         return [
             tool
             for tool in tools
             if self._is_allowed(tool.key, available_ids)
-            and (local_enabled or not tool.key.startswith("onetap_"))
         ]
 
     async def on_call_tool(
@@ -67,10 +65,7 @@ class McpPolicyMiddleware(Middleware):
             instance_id = int(remote[0])
         try:
             await self.aggregator.ensure_upstreams()
-            if is_local:
-                if not await self.aggregator.mcp_enabled():
-                    raise ToolError("AI 接入未启用")
-            else:
+            if not is_local:
                 available_ids = await self._available_instance_ids()
                 if instance_id is None or instance_id not in available_ids:
                     raise ToolError("工具来源不可用")

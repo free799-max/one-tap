@@ -2,14 +2,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_management_config_and_access_key(mcp_client):
-    response = await mcp_client.get("/api/settings/mcp")
-    assert response.status_code == 200
-    assert response.json()["data"] == {"enabled": True, "endpoint": "/mcp"}
-
-    response = await mcp_client.put("/api/settings/mcp", json={"enabled": True})
-    assert response.json()["data"]["enabled"] is True
-
+async def test_management_access_key(mcp_client):
     response = await mcp_client.get("/api/settings/mcp/key")
     assert response.status_code == 200
     key_data = response.json()["data"]

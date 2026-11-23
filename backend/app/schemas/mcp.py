@@ -13,15 +13,6 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-class McpConfigOut(BaseModel):
-    enabled: bool
-    endpoint: str = "/mcp"
-
-
-class McpConfigUpdate(BaseModel):
-    enabled: bool
-
-
 class McpUpstreamOut(BaseModel):
     instance_id: int
     app_name: str

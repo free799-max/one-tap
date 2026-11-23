@@ -1,21 +1,14 @@
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type QueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/api/types";
 import {
   getMcpCatalogDetail,
-  getMcpConfig,
   getMcpConnect,
   getMcpKey,
   listMcpAudit,
   listMcpCatalog,
   resetMcpKey,
   testMcpUpstreamTools,
-  updateMcpConfig,
 } from "@/api/mcp";
 
 export type {
@@ -24,7 +17,6 @@ export type {
   McpCatalogDetail,
   McpCatalogEntry,
   McpCatalogSource,
-  McpConfig,
   McpConnectInfo,
   McpKey,
   McpTool,
@@ -33,14 +25,6 @@ export type {
 } from "@/api/mcp";
 
 const MCP_KEY = ["settings", "mcp"] as const;
-
-async function invalidateMcpConfiguration(queryClient: QueryClient) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "catalog"] }),
-    queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "config"] }),
-    queryClient.invalidateQueries({ queryKey: [...MCP_KEY, "upstreams"] }),
-  ]);
-}
 
 export function useMcpCatalog() {
   return useQuery({
@@ -64,29 +48,6 @@ export function useMcpCatalogDetail(
     },
     enabled: enabled && entryId !== null,
     retry: false,
-  });
-}
-
-export function useMcpConfig() {
-  return useQuery({
-    queryKey: [...MCP_KEY, "config"],
-    queryFn: getMcpConfig,
-  });
-}
-
-export function useUpdateMcpConfig() {
-  const queryClient = useQueryClient();
-  const toast = useToast();
-
-  return useMutation({
-    mutationFn: (data: { enabled: boolean }) => updateMcpConfig(data),
-    onSuccess: async () => {
-      await invalidateMcpConfiguration(queryClient);
-      toast.success("MCP 聚合设置已保存");
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.displayMessage || "保存 MCP 聚合设置失败");
-    },
   });
 }
 

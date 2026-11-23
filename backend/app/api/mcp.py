@@ -15,8 +15,6 @@ from app.schemas.mcp import (
     McpAuditOut,
     McpCatalogDetailOut,
     McpCatalogOut,
-    McpConfigOut,
-    McpConfigUpdate,
     McpConnectOut,
     McpKeyOut,
     McpUpstreamOut,
@@ -105,25 +103,6 @@ def _key_out(record: McpAccessToken) -> McpKeyOut:
         created_at=record.created_at,
         last_used_at=record.last_used_at,
     )
-
-
-@router.get("", response_model=McpConfigOut)
-async def get_mcp_config(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    config = await mcp_config_service.get_config(db)
-    return McpConfigOut(enabled=config["enabled"])
-
-
-@router.put("", response_model=McpConfigOut)
-async def update_mcp_config(
-    data: McpConfigUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
-):
-    config = await mcp_config_service.set_enabled(db, data.enabled)
-    return McpConfigOut(enabled=config["enabled"])
 
 
 @router.get("/upstreams", response_model=list[McpUpstreamOut])
