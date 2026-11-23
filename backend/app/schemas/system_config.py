@@ -1,6 +1,5 @@
 """系统全局配置相关 Pydantic Schema。"""
 
-from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -45,10 +44,6 @@ class SystemConfigBase(BaseModel):
     auto_update_targets: list[str] = Field(
         default_factory=list,
         description="允许自动更新的服务标识列表（group:<id> / app:<id>）",
-    )
-    docker_registry_mirrors: list[str] = Field(
-        default_factory=list,
-        description="Docker 镜像加速地址列表，按优先级排序",
     )
 
 
@@ -95,7 +90,6 @@ class SystemConfigUpdate(BaseModel):
         None,
         description="允许自动更新的服务标识列表（group:<id> / app:<id>）",
     )
-    docker_registry_mirrors: Optional[list[str]] = None
 
 
 class ProxyTestRequest(BaseModel):
@@ -123,69 +117,6 @@ class ProxyTestResult(BaseModel):
     ok_count: int
     total: int
     results: list[ProxyTestSite]
-
-
-class RemoteDockerMirror(BaseModel):
-    """管理端下发的 Docker 镜像加速源。"""
-
-    name: str
-    url: str
-    priority: int = 100
-    tier: str = "free"
-    source: str = "docker.io"
-    auth_type: str = "none"
-    region: Optional[str] = None
-    description: Optional[str] = None
-    doc_url: Optional[str] = None
-    last_check_ok: Optional[bool] = None
-    last_latency_ms: Optional[int] = None
-    last_checked_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
-
-
-class RemoteDockerMirrorsOut(BaseModel):
-    """管理端镜像加速源拉取结果。
-
-    免费线路来自公开列表；授权专属域名由本机凭刷新令牌单独获取，
-    只有已激活设备才会出现。
-    """
-
-    configured: bool = Field(description="是否配置了管理端地址")
-    licensed: bool = False
-    mirrors: list[RemoteDockerMirror] = Field(default_factory=list)
-
-
-class DockerMirrorEffectivenessOut(BaseModel):
-    """授权专属镜像源的实际可用状态。"""
-
-    effective: bool
-    available_count: int = 0
-    total_count: int = 0
-    message: str = ""
-
-
-class DockerMirrorTestRequest(BaseModel):
-    """镜像加速地址检测请求。"""
-
-    urls: list[str] = Field(default_factory=list, max_length=20)
-
-
-class DockerMirrorTestItem(BaseModel):
-    """单个镜像加速地址的检测结果。"""
-
-    url: str
-    ok: bool
-    status_code: Optional[int] = None
-    latency_ms: int
-    error: Optional[str] = None
-
-
-class DockerMirrorTestResult(BaseModel):
-    """一次镜像加速地址检测的完整结果。"""
-
-    ok_count: int
-    total: int
-    results: list[DockerMirrorTestItem]
 
 
 class AutoUpdateTargetOut(BaseModel):

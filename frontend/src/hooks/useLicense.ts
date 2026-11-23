@@ -10,7 +10,6 @@ import type { ApiError } from "@/api/types";
 import { useToast } from "@/components/ui/toast";
 
 export const licenseStatusQueryKey = ["license", "status"] as const;
-const mirrorStatusQueryKey = ["settings", "docker-mirrors"] as const;
 
 export function useLicenseStatus() {
   return useQuery({
@@ -27,7 +26,6 @@ export function useActivateLicense() {
     mutationFn: (data: ActivateLicenseRequest) => activateLicense(data),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: licenseStatusQueryKey });
-      await queryClient.invalidateQueries({ queryKey: mirrorStatusQueryKey });
       toast.success("授权激活成功");
     },
     onError: (error: ApiError) => {
@@ -44,7 +42,6 @@ export function useRefreshLicense() {
     mutationFn: refreshLicense,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: licenseStatusQueryKey });
-      await queryClient.invalidateQueries({ queryKey: mirrorStatusQueryKey });
       toast.success("授权刷新成功");
     },
     onError: (error: ApiError) => {
@@ -61,7 +58,6 @@ export function useDeactivateLicense() {
     mutationFn: deactivateLicense,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: licenseStatusQueryKey });
-      await queryClient.invalidateQueries({ queryKey: mirrorStatusQueryKey });
       toast.success("授权已解绑");
     },
     onError: (error: ApiError) => {

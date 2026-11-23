@@ -2,8 +2,6 @@ import { useState } from "react";
 import {
   AlertCircle,
   BadgeCheck,
-  CheckCircle2,
-  Circle,
   Clock3,
   Crown,
   ExternalLink,
@@ -37,7 +35,6 @@ import {
   useLicenseStatus,
   useRefreshLicense,
 } from "@/hooks/useLicense";
-import { useDockerMirrorStatus } from "@/hooks/useSettings";
 import type { LicenseStatus } from "@/api/license";
 
 const INPUT_CLASS =
@@ -96,51 +93,6 @@ function AccelerationStatusBadge({ status }: { status: LicenseStatus }) {
   );
 }
 
-function FeatureStatusBadge({
-  label,
-  enabled,
-  loading = false,
-  title,
-}: {
-  label: string;
-  enabled: boolean | null;
-  loading?: boolean;
-  title?: string;
-}) {
-  const Icon = loading
-    ? Loader2
-    : enabled === null
-      ? AlertCircle
-      : enabled
-        ? CheckCircle2
-        : Circle;
-  const stateLabel = loading
-    ? "核验中"
-    : enabled === null
-      ? "状态未知"
-      : enabled
-        ? "已生效"
-        : "未生效";
-  const className = loading
-    ? "border-border bg-muted text-muted-foreground"
-    : enabled === null
-      ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-      : enabled
-        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-        : "border-border bg-muted text-muted-foreground";
-
-  return (
-    <Badge variant="outline" className={className} title={title}>
-      <Icon
-        className={loading ? "animate-spin" : undefined}
-        aria-hidden="true"
-      />
-      {label}
-      <span className="font-normal">{stateLabel}</span>
-    </Badge>
-  );
-}
-
 function StatusItem({
   label,
   value,
@@ -165,8 +117,6 @@ export function LicenseTab() {
     error,
     refetch,
   } = useLicenseStatus();
-  const hasValidLicense = Boolean(license?.valid);
-  const mirrorQuery = useDockerMirrorStatus(hasValidLicense);
   const activate = useActivateLicense();
   const refresh = useRefreshLicense();
   const deactivate = useDeactivateLicense();
@@ -228,7 +178,6 @@ export function LicenseTab() {
     remainingDays !== null &&
     remainingDays <= 7;
   const purchaseUrl = license.purchase_url;
-  const mirrorEnabled = mirrorQuery.data?.effective ?? null;
 
   return (
     <Card className="rounded-xl">
@@ -239,17 +188,6 @@ export function LicenseTab() {
             专属加速
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
-            {license.valid && (
-              <FeatureStatusBadge
-                label="镜像加速"
-                enabled={mirrorEnabled}
-                loading={mirrorQuery.isPending}
-                title={
-                  mirrorQuery.data?.message ||
-                  "镜像加速状态获取失败，请稍后重试"
-                }
-              />
-            )}
             <AccelerationStatusBadge status={license} />
             {!license.valid && (
               <a
@@ -282,8 +220,8 @@ export function LicenseTab() {
         </div>
         <CardDescription>
           {license.valid
-            ? "专属加速已开启，镜像下载走专属加速源，其余功能始终免费开放。"
-            : "OneTap 全部功能免费开放。专属加速为可选增值服务，包含镜像下载加速。作用于 OneTap 拉取镜像，不改宿主机配置。"}
+            ? "专属加速已开启，应用域名解析走专属加速，其余功能始终免费开放。"
+            : "OneTap 全部功能免费开放。专属加速为可选增值服务，包含应用域名解析加速。"}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

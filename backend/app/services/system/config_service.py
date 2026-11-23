@@ -218,11 +218,6 @@ class SystemConfigService:
                 data.auto_update_targets
             )
 
-        if data.docker_registry_mirrors is not None:
-            config.docker_registry_mirrors = normalize_docker_registry_mirrors(
-                data.docker_registry_mirrors
-            )
-
         await db.flush()
         await db.refresh(config)
         return config
@@ -256,7 +251,6 @@ class SystemConfigService:
             "auto_backup_keep": config.auto_backup_keep,
             "auto_update_targets": config.auto_update_targets or [],
             "email_username_apps": list(EMAIL_USERNAME_APPS),
-            "docker_registry_mirrors": config.docker_registry_mirrors or [],
         }
 
 

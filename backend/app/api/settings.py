@@ -31,12 +31,8 @@ from app.schemas.hosts_optimizer import (
 )
 from app.schemas.system_config import (
     AutoUpdateTargetsOut,
-    DockerMirrorEffectivenessOut,
-    DockerMirrorTestRequest,
-    DockerMirrorTestResult,
     ProxyTestRequest,
     ProxyTestResult,
-    RemoteDockerMirrorsOut,
     SystemConfigOut,
     SystemConfigUpdate,
 )
@@ -63,7 +59,6 @@ from app.services.system import (
     hosts_acceleration_service,
     hosts_optimizer_service,
     proxy_test_service,
-    registry_mirror_service,
     storage_directory_service,
     system_config_service,
 )
@@ -156,36 +151,6 @@ async def test_proxy(
         http_proxy=http_proxy,
         https_proxy=https_proxy,
     )
-
-
-# ---------- 镜像加速 ----------
-
-
-@router.get("/docker-mirrors/remote", response_model=RemoteDockerMirrorsOut)
-async def list_remote_docker_mirrors(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """获取免费镜像加速地址与本机授权专属域名。"""
-    return await registry_mirror_service.fetch_all(db)
-
-
-@router.get("/docker-mirrors/effectiveness", response_model=DockerMirrorEffectivenessOut)
-async def get_docker_mirror_effectiveness(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """实际探测授权专属镜像源，返回加速是否可用。"""
-    return await registry_mirror_service.effectiveness(db)
-
-
-@router.post("/docker-mirrors/test", response_model=DockerMirrorTestResult)
-async def test_docker_mirrors(
-    data: DockerMirrorTestRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """并发检测镜像加速地址的连通性与响应耗时。"""
-    return await registry_mirror_service.test(data.urls)
 
 
 # ---------- Hosts 优选 ----------

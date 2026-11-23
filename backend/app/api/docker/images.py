@@ -17,7 +17,6 @@ from app.core.exceptions import APIException
 from app.core.security import get_current_user, get_current_user_sse, require_admin
 from app.database import get_db
 from app.models.docker import DockerMirrorConfig
-from app.models.system_config import SystemConfig
 from app.models.user import User
 from app.schemas.docker import (
     BatchImageDeleteRequest,
@@ -122,17 +121,7 @@ async def _acceleration_map(db: AsyncSession) -> dict[str, list[str]]:
 
 
 async def _tag_mirrors(db: AsyncSession) -> list[str]:
-    """标签获取的备用源：优先用设置里的镜像加速地址，未配置时用管理端推荐。"""
-    try:
-        result = await db.execute(select(SystemConfig).where(SystemConfig.id == 1))
-        config = result.scalar_one_or_none()
-    except Exception:
-        logger.warning("读取镜像加速配置失败", exc_info=True)
-        config = None
-
-    configured = list(config.docker_registry_mirrors or []) if config else []
-    if configured:
-        return configured
+    """标签获取的备用源：使用管理端推荐的 Docker Hub 加速地址。"""
     return (await _acceleration_map(db)).get("docker.io", [])
 
 

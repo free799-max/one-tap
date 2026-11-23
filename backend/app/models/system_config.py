@@ -31,7 +31,6 @@ class SystemConfig(Base):
         auto_backup_enabled: 自动升级前是否备份应用数据目录
         auto_backup_keep: 自动备份保留份数
         auto_update_targets: 允许自动更新的服务标识列表（group:<id> / app:<id>）
-        docker_registry_mirrors: Docker 镜像加速地址列表，按优先级排序
         hosts_optimizer_enabled: 是否启用 Hosts 优选
         hosts_optimizer_mode: 运行模式，manual（仅手动）/ auto（定时）
         hosts_optimizer_interval_minutes: 自动模式下的运行间隔（分钟）
@@ -93,12 +92,6 @@ class SystemConfig(Base):
         Integer, default=3, server_default="3", nullable=False
     )
     auto_update_targets: Mapped[list[str]] = mapped_column(
-        JSON,
-        default=list,
-        server_default=text("'[]'"),
-        nullable=False,
-    )
-    docker_registry_mirrors: Mapped[list[str]] = mapped_column(
         JSON,
         default=list,
         server_default=text("'[]'"),

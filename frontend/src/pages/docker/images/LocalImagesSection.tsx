@@ -4,7 +4,7 @@
  * 表格展示本地镜像列表（名称/标签分开），支持搜索、Shift 多选、详情、删除、移除未使用镜像。
  */
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,8 +30,6 @@ import {
   usePruneImages,
   type ImageInfo,
 } from "@/hooks/useDocker";
-import { useSystemConfig } from "@/hooks/useSettings";
-import { RegistryMirrorsDialog } from "@/components/RegistryMirrorsDialog";
 import { ImageDetailDialog } from "./ImageDetailDialog";
 import { formatBytes, formatDate } from "@/lib/utils";
 import {
@@ -43,14 +41,12 @@ import {
   Info,
   X,
   ScanLine,
-  Gauge,
 } from "lucide-react";
 
 export function LocalImagesSection() {
   const { data: images = [], isLoading: imagesLoading } = useImages();
   const batchRemoveImages = useBatchRemoveImages();
   const pruneImages = usePruneImages();
-  const { data: config } = useSystemConfig();
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -64,13 +60,6 @@ export function LocalImagesSection() {
   const [showPruneDialog, setShowPruneDialog] = useState(false);
   const [detailImageId, setDetailImageId] = useState<string | null>(null);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
-  const [showMirrorDialog, setShowMirrorDialog] = useState(false);
-  const [mirrors, setMirrors] = useState<string[]>([]);
-
-  const configMirrors = config?.docker_registry_mirrors;
-  useEffect(() => {
-    setMirrors(configMirrors ?? []);
-  }, [configMirrors]);
 
   // 搜索过滤
   const filteredImages = useMemo(() => {
@@ -221,15 +210,6 @@ export function LocalImagesSection() {
 
             {/* 批量操作栏 */}
             <div className="flex items-center gap-2 ml-auto">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-                onClick={() => setShowMirrorDialog(true)}
-              >
-                <Gauge className="h-3.5 w-3.5 mr-1" />
-                镜像加速
-              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -439,14 +419,6 @@ export function LocalImagesSection() {
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* 镜像加速维护弹窗 */}
-      <RegistryMirrorsDialog
-        open={showMirrorDialog}
-        onOpenChange={setShowMirrorDialog}
-        mirrors={mirrors}
-        onSaved={setMirrors}
-      />
 
       {/* 镜像详情弹窗 */}
       <ImageDetailDialog

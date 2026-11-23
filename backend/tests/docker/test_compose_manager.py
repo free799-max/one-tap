@@ -617,7 +617,7 @@ async def test_prepull_forwards_download_progress(compose_manager):
     events = []
 
     async def fake_pull(image, acceleration, *, progress=None, allow_direct=True):
-        assert allow_direct is False
+        assert allow_direct is True
         assert progress is not None
         progress({
             "percentage": 50,
@@ -688,7 +688,11 @@ async def test_prepull_forwards_download_progress(compose_manager):
 
 
 @pytest.mark.asyncio
-async def test_prepull_failure_does_not_fall_back_to_compose(compose_manager):
+async def test_prepull_failure_after_direct_fallback_raises(compose_manager):
+    async def fake_pull(image, acceleration, *, progress=None, allow_direct=True):
+        assert allow_direct is True
+        return False
+
     with (
         patch(
             "app.services.compose.compose_service.manage_base_urls",
@@ -705,10 +709,10 @@ async def test_prepull_failure_does_not_fall_back_to_compose(compose_manager):
         ),
         patch(
             "app.services.compose.compose_service.pull_with_mirror",
-            AsyncMock(return_value=False),
+            side_effect=fake_pull,
         ),
     ):
-        with pytest.raises(RuntimeError, match="未继续回退源站"):
+        with pytest.raises(RuntimeError, match="加速地址与直连源站均不可用"):
             await compose_manager._prepull_images(MagicMock(), None)
 
 

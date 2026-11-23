@@ -86,7 +86,7 @@ async def test_email_domain_not_cleared_by_partial_update(client):
 
 @pytest.mark.asyncio
 async def test_partial_update_keeps_unrelated_fields(client):
-    """仅提交镜像地址时，用户名、密码、端口和邮箱后缀保持不变。"""
+    """仅提交备份保留份数时，用户名、密码、端口和邮箱后缀保持不变。"""
     token = await _register_and_login(client, "emaildomainpartialall")
 
     await client.put(
@@ -96,13 +96,13 @@ async def test_partial_update_keeps_unrelated_fields(client):
             "default_admin_password": "Secret123",
             "service_port_start": 20000,
             "default_email_domain": "example.com",
-            "docker_registry_mirrors": ["https://mirror.example.com"],
+            "auto_backup_keep": 5,
         },
         headers=_auth(token),
     )
     resp = await client.put(
         "/api/settings",
-        json={"docker_registry_mirrors": ["https://mirror2.example.com"]},
+        json={"auto_backup_keep": 4},
         headers=_auth(token),
     )
     assert resp.status_code == 200, resp.text
@@ -112,7 +112,7 @@ async def test_partial_update_keeps_unrelated_fields(client):
     assert data["default_admin_password_set"] is True
     assert data["service_port_start"] == 20000
     assert data["default_email_domain"] == "example.com"
-    assert data["docker_registry_mirrors"] == ["https://mirror2.example.com"]
+    assert data["auto_backup_keep"] == 4
 
     wrong = await client.post(
         "/api/settings/secret",

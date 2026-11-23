@@ -19,9 +19,6 @@ import {
   getPortSuggestions,
   listStorageDirectories,
   testProxy,
-  listRemoteDockerMirrors,
-  getDockerMirrorEffectiveness,
-  testDockerMirrors,
   listAutoUpdateTargets,
   createStorageDirectory,
   updateStorageDirectory,
@@ -66,12 +63,8 @@ export type {
   HostsOptimizerConfig,
   HostsOptimizerStatus,
   ProxyTestResult,
-  RemoteDockerMirror,
-  RemoteDockerMirrors,
   AutoUpdateTarget,
   AutoUpdateTargets,
-  DockerMirrorTestItem,
-  DockerMirrorTestResult,
   AccelerationOverview,
   AccelerationApp,
   AccelerationAdguard,
@@ -349,34 +342,6 @@ export function useTestProxy() {
     onError: (error: ApiError) => {
       toast.error(error.displayMessage || "检测失败");
     },
-  });
-}
-
-/**
- * 从管理端获取启用中的镜像加速地址
- */
-export function useRemoteDockerMirrors() {
-  return useMutation({
-    mutationFn: listRemoteDockerMirrors,
-  });
-}
-
-/** 实际核验授权专属镜像源是否可用 */
-export function useDockerMirrorStatus(enabled = true) {
-  return useQuery({
-    queryKey: ["settings", "docker-mirrors", "effectiveness"],
-    queryFn: getDockerMirrorEffectiveness,
-    enabled,
-    refetchInterval: 60000,
-  });
-}
-
-/**
- * 检测镜像加速地址的连通性
- */
-export function useTestDockerMirrors() {
-  return useMutation({
-    mutationFn: testDockerMirrors,
   });
 }
 

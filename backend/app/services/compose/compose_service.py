@@ -389,13 +389,13 @@ class ComposeService:
                     image,
                     acceleration,
                     progress=pull_progress,
-                    allow_direct=False,
+                    allow_direct=True,
                 )
             except Exception as exc:
-                raise RuntimeError(f"镜像加速拉取失败，已停止部署：{image}") from exc
+                raise RuntimeError(f"镜像拉取失败：{image}") from exc
             if not pulled:
                 raise RuntimeError(
-                    f"镜像加速拉取失败，已停止部署，未继续回退源站：{image}"
+                    f"镜像拉取失败，加速地址与直连源站均不可用：{image}"
                 )
 
     async def _ensure_images_present(

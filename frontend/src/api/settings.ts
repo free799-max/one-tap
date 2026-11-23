@@ -32,8 +32,6 @@ export interface SystemConfig {
   auto_update_targets: string[];
   /** 使用邮箱作为登录账号的应用标识 */
   email_username_apps: string[];
-  /** Docker 镜像加速地址列表，顺序即优先级 */
-  docker_registry_mirrors: string[];
 }
 
 /** 系统配置更新请求 */
@@ -51,7 +49,6 @@ export interface SystemConfigUpdate {
   auto_backup_enabled?: boolean;
   auto_backup_keep?: number;
   auto_update_targets?: string[];
-  docker_registry_mirrors?: string[];
 }
 
 /** 查询系统全局配置（后端字段可能为 null，统一转为空字符串） */
@@ -74,7 +71,6 @@ export function getSystemConfig(): Promise<SystemConfig> {
       auto_backup_keep: data.auto_backup_keep ?? 3,
       auto_update_targets: data.auto_update_targets ?? [],
       email_username_apps: data.email_username_apps ?? [],
-      docker_registry_mirrors: data.docker_registry_mirrors ?? [],
     };
   });
 }
@@ -122,82 +118,6 @@ export function listAutoUpdateTargets(): Promise<AutoUpdateTargets> {
   return api
     .get("/settings/auto-update/targets")
     .then((r) => r.data as AutoUpdateTargets);
-}
-
-/** 管理端下发的 Docker 镜像加速源 */
-export interface RemoteDockerMirror {
-  name: string;
-  url: string;
-  priority: number;
-  /** free 免费线路 / subscription 授权专属域名 */
-  tier: string;
-  /** 上游源站：docker.io、ghcr.io 等 */
-  source: string;
-  auth_type: string;
-  region: string | null;
-  description: string | null;
-  doc_url: string | null;
-  last_check_ok: boolean | null;
-  last_latency_ms: number | null;
-  last_checked_at: string | null;
-  /** 专属域名的到期时间 */
-  expires_at: string | null;
-}
-
-/** 从管理端获取镜像加速源的结果 */
-export interface RemoteDockerMirrors {
-  /** 是否配置了管理端地址 */
-  configured: boolean;
-  /** 本机是否已激活授权并拿到专属域名 */
-  licensed: boolean;
-  mirrors: RemoteDockerMirror[];
-}
-
-/** 从配套管理端获取启用中的 Docker 镜像加速地址 */
-export function listRemoteDockerMirrors(): Promise<RemoteDockerMirrors> {
-  return api
-    .get("/settings/docker-mirrors/remote")
-    .then((r) => r.data as RemoteDockerMirrors);
-}
-
-/** 授权专属镜像源的实际可用状态 */
-export interface DockerMirrorEffectiveness {
-  effective: boolean;
-  available_count: number;
-  total_count: number;
-  message: string;
-}
-
-/** 实际探测授权专属镜像源是否可用 */
-export function getDockerMirrorEffectiveness(): Promise<DockerMirrorEffectiveness> {
-  return api
-    .get("/settings/docker-mirrors/effectiveness")
-    .then((r) => r.data as DockerMirrorEffectiveness);
-}
-
-/** 单个镜像加速地址的检测结果 */
-export interface DockerMirrorTestItem {
-  url: string;
-  ok: boolean;
-  status_code: number | null;
-  latency_ms: number;
-  error: string | null;
-}
-
-/** 一次镜像加速地址检测的结果 */
-export interface DockerMirrorTestResult {
-  ok_count: number;
-  total: number;
-  results: DockerMirrorTestItem[];
-}
-
-/** 并发检测镜像加速地址的连通性 */
-export function testDockerMirrors(
-  urls: string[]
-): Promise<DockerMirrorTestResult> {
-  return api
-    .post("/settings/docker-mirrors/test", { urls }, { timeout: 30000 })
-    .then((r) => r.data as DockerMirrorTestResult);
 }
 
 /** 单个站点的代理检测结果 */
