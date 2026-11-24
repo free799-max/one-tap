@@ -7,8 +7,18 @@
  *
  * 当 Docker 不可用或未连接时显示提示信息。
  */
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useMemo, useState } from "react";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Table,
   TableBody,
@@ -17,8 +27,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useDockerHostInfo, useDockerStatus } from "@/hooks/useDocker";
+import {
+  useDeleteDockerNetwork,
+  useDockerHostInfo,
+  useDockerStatus,
+} from "@/hooks/useDocker";
+import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/hooks/useAuth";
 import { formatBytes } from "@/lib/utils";
+import type { NetworkInfo } from "@/api/docker";
 import {
   Cpu,
   MemoryStick,
@@ -31,6 +48,8 @@ import {
   Network,
   LayoutDashboard,
   Info,
+  Trash2,
+  BrushCleaning,
 } from "lucide-react";
 
 /**
@@ -39,6 +58,86 @@ import {
 export function DockerHostPage() {
   const { data: dockerStatus } = useDockerStatus();
   const { data: hostInfo, isLoading } = useDockerHostInfo();
+  const { user } = useAuth();
+  const toast = useToast();
+  const deleteNetworkMutation = useDeleteDockerNetwork();
+  const [pendingNetwork, setPendingNetwork] = useState<NetworkInfo | null>(null);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupProgress, setCleanupProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+
+  const isAdmin = user?.role === "admin";
+
+  const networks = useMemo(() => {
+    const list = [...(hostInfo?.networks ?? [])];
+    return list.sort((a, b) => {
+      const builtinDelta = Number(a.is_builtin ?? false) - Number(b.is_builtin ?? false);
+      if (builtinDelta !== 0) return builtinDelta;
+      const usedDelta =
+        Number((a.container_count ?? 0) > 0) - Number((b.container_count ?? 0) > 0);
+      if (usedDelta !== 0) return usedDelta;
+      return a.name.localeCompare(b.name);
+    });
+  }, [hostInfo?.networks]);
+
+  const unusedNetworks = useMemo(
+    () =>
+      networks.filter(
+        (net) => (net.container_count ?? 0) === 0 && !net.is_builtin
+      ),
+    [networks]
+  );
+
+  const unusedCount = unusedNetworks.length;
+
+  const cleaningUp = cleanupProgress !== null;
+
+  const handleConfirmDelete = () => {
+    if (!pendingNetwork) return;
+    const name = pendingNetwork.name;
+    deleteNetworkMutation.mutate(pendingNetwork.id, {
+      onSuccess: () => {
+        toast.success(`已删除网络 ${name}`);
+        setPendingNetwork(null);
+      },
+      onError: (error) => {
+        const message =
+          (error as { displayMessage?: string }).displayMessage ||
+          `删除网络 ${name} 失败`;
+        toast.error(message);
+        setPendingNetwork(null);
+      },
+    });
+  };
+
+  const handleCleanup = async () => {
+    if (!isAdmin || unusedNetworks.length === 0) return;
+    const targets = unusedNetworks;
+    let deleted = 0;
+    const failures: string[] = [];
+    setCleanupProgress({ done: 0, total: targets.length });
+    for (const net of targets) {
+      try {
+        await deleteNetworkMutation.mutateAsync(net.id);
+        deleted += 1;
+      } catch (error) {
+        const message = (error as { displayMessage?: string }).displayMessage;
+        failures.push(message ? `${net.name}：${message}` : net.name);
+      }
+      setCleanupProgress({ done: deleted + failures.length, total: targets.length });
+    }
+    setCleanupProgress(null);
+    setCleanupOpen(false);
+    if (failures.length === 0) {
+      toast.success(`已清理 ${deleted} 个未使用网络`);
+    } else if (deleted === 0) {
+      toast.error(`清理失败：${failures[0]}`);
+    } else {
+      toast.error(`已清理 ${deleted} 个网络，${failures.length} 个失败：${failures[0]}`);
+    }
+  };
 
   // 加载中状态（优先判断，避免闪烁）
   if (isLoading) {
@@ -238,41 +337,188 @@ export function DockerHostPage() {
 
       {/* Docker 网络列表 */}
       <Card className="rounded-xl">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base flex items-center gap-2">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
             <Network className="h-4 w-4 text-muted-foreground" />
             Docker 网络
+            <Badge
+              variant="secondary"
+              className="h-5 px-1.5 text-[11px] font-medium tabular-nums"
+            >
+              {networks.length}
+            </Badge>
           </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            {unusedCount > 0
+              ? `${unusedCount} 个网络未关联容器，可直接删除`
+              : "所有自定义网络都在使用中"}
+          </p>
+          <CardAction className="self-center">
+            <Button
+              variant="outline"
+              disabled={!isAdmin || unusedCount === 0 || cleaningUp}
+              title={
+                !isAdmin
+                  ? "需要管理员权限"
+                  : unusedCount === 0
+                    ? "没有可清理的网络"
+                    : `清理 ${unusedCount} 个未使用网络`
+              }
+              onClick={() => setCleanupOpen(true)}
+            >
+              <BrushCleaning />
+              一键清理
+            </Button>
+          </CardAction>
         </CardHeader>
-        <CardContent>
-          {hostInfo.networks.length === 0 ? (
-            <p className="text-sm text-muted-foreground">暂无网络。</p>
+        <CardContent className="pt-0">
+          {networks.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              暂无网络。
+            </p>
           ) : (
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead className="text-xs">名称</TableHead>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="text-xs">网络</TableHead>
                   <TableHead className="text-xs">驱动</TableHead>
-                  <TableHead className="text-xs">作用域</TableHead>
-                  <TableHead className="text-xs">ID</TableHead>
+                  <TableHead className="text-xs">关联应用</TableHead>
+                  <TableHead className="w-16 text-right text-xs">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {hostInfo.networks.map((net) => (
-                  <TableRow key={net.id}>
-                    <TableCell className="text-sm font-medium">{net.name}</TableCell>
-                    <TableCell className="text-sm">{net.driver}</TableCell>
-                    <TableCell className="text-sm">{net.scope}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground font-mono">
-                      {net.id}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {networks.map((net) => {
+                  const count = net.container_count ?? 0;
+                  const names = net.container_names ?? [];
+                  const deletable = isAdmin && !net.is_builtin && count === 0;
+                  const disabledReason = net.is_builtin
+                    ? "Docker 预定义网络不可删除"
+                    : count > 0
+                      ? `仍有 ${count} 个应用在使用该网络`
+                      : !isAdmin
+                        ? "需要管理员权限"
+                        : undefined;
+                  return (
+                    <TableRow key={net.id}>
+                      <TableCell>
+                        <div className="text-sm font-medium">{net.name}</div>
+                        <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+                          {net.id}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-[11px] font-normal text-muted-foreground"
+                          >
+                            {net.driver}
+                          </Badge>
+                          {net.is_builtin && (
+                            <span className="text-[11px] text-muted-foreground/70">
+                              预定义
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {count > 0 ? (
+                          names.length > 0 ? (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {names.slice(0, 3).map((name) => (
+                                <span
+                                  key={name}
+                                  title={name}
+                                  className="max-w-[11rem] truncate rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-foreground"
+                                >
+                                  {name}
+                                </span>
+                              ))}
+                              {count > 3 && (
+                                <span
+                                  title={names.join("、")}
+                                  className="rounded-md border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+                                >
+                                  +{count - 3}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-xs tabular-nums text-foreground"
+                              title={names.join("、")}
+                            >
+                              <Box className="size-3 text-muted-foreground" />
+                              {count} 个应用
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            未使用
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={!deletable}
+                          title={disabledReason ?? `删除网络 ${net.name}`}
+                          aria-label={`删除网络 ${net.name}`}
+                          onClick={() => setPendingNetwork(net)}
+                          className="text-muted-foreground hover:text-destructive disabled:opacity-30"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={!!pendingNetwork}
+        onOpenChange={(open) => {
+          if (!open && deleteNetworkMutation.isPending) return;
+          if (!open) setPendingNetwork(null);
+        }}
+        title="删除 Docker 网络"
+        description={
+          pendingNetwork
+            ? `确定删除网络 ${pendingNetwork.name}？该网络没有关联容器，删除后无法恢复。`
+            : undefined
+        }
+        confirmText="删除"
+        cancelText="取消"
+        onConfirm={handleConfirmDelete}
+        destructive
+        isPending={deleteNetworkMutation.isPending}
+      />
+
+      <ConfirmDialog
+        open={cleanupOpen}
+        onOpenChange={(open) => {
+          if (!open && cleaningUp) return;
+          if (!open) setCleanupOpen(false);
+        }}
+        title="清理未使用网络"
+        description={
+          cleanupProgress
+            ? `正在清理 ${cleanupProgress.done}/${cleanupProgress.total}…`
+            : `将删除 ${unusedCount} 个未关联容器的自定义网络：${unusedNetworks
+                .map((net) => net.name)
+                .join("、")}。删除后无法恢复。`
+        }
+        confirmText={cleaningUp ? "清理中…" : `删除 ${unusedCount} 个`}
+        cancelText="取消"
+        onConfirm={handleCleanup}
+        destructive
+        isPending={cleaningUp}
+      />
     </div>
   );
 }

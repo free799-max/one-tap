@@ -177,7 +177,10 @@ export function ContainerListSection({
                 )}
               </div>
               {selectedIds.size > 0 && (
-                <Badge variant="outline" className="text-xs h-7 shrink-0">
+                <Badge
+                  variant="outline"
+                  className="text-xs h-7 shrink-0 border-primary/30 bg-primary/10 text-primary"
+                >
                   已选 {selectedIds.size} 个
                 </Badge>
               )}
@@ -252,17 +255,17 @@ export function ContainerListSection({
               {searchQuery ? "未找到匹配的容器" : "暂无容器"}
             </p>
           ) : (
-            <div className="border rounded-xl overflow-hidden px-3">
+            <div className="border rounded-xl overflow-hidden">
               <Table className="table-fixed min-w-[952px]">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-48">名称</TableHead>
+                    <TableHead className="w-48 pl-4">名称</TableHead>
                     <TableHead className="w-24">ID</TableHead>
                     <TableHead className="w-32">状态</TableHead>
                     <TableHead className="w-56">镜像</TableHead>
                     <TableHead className="w-40">端口映射</TableHead>
                     <TableHead className="w-28">创建时间</TableHead>
-                    <TableHead className="w-16 px-0">
+                    <TableHead className="w-20 px-0 pr-4">
                       <div className="flex items-center justify-end h-5">
                         <span className="w-16 text-center leading-none">操作</span>
                       </div>
@@ -270,12 +273,16 @@ export function ContainerListSection({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredContainers.map((c, index) => (
+                  {filteredContainers.map((c, index) => {
+                    const selected = selectedIds.has(c.id);
+                    return (
                     <TableRow
                       key={c.id}
-                      data-state={selectedIds.has(c.id) ? "selected" : undefined}
+                      aria-selected={selected}
                       className={`cursor-pointer transition-colors ${
-                        selectedIds.has(c.id) ? "bg-muted" : "hover:bg-muted/40"
+                        selected
+                          ? "bg-primary/15 hover:bg-primary/20"
+                          : "hover:bg-muted/40"
                       }`}
                       onMouseDown={(e) => {
                         if (e.shiftKey) e.preventDefault();
@@ -286,7 +293,12 @@ export function ContainerListSection({
                         toggleSelect(c.id, index, e.shiftKey);
                       }}
                     >
-                      <TableCell className="font-medium text-sm truncate" title={c.name}>{c.name}</TableCell>
+                      <TableCell
+                        className="font-medium text-sm truncate pl-4"
+                        title={c.name}
+                      >
+                        {c.name}
+                      </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{c.id}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1.5">
@@ -309,7 +321,7 @@ export function ContainerListSection({
                       <TableCell className="text-muted-foreground text-sm">
                         {formatDate(c.created)}
                       </TableCell>
-                      <TableCell className="text-right p-0 align-middle h-10">
+                      <TableCell className="text-right p-0 pr-4 align-middle h-10">
                         <div className="flex items-center justify-end gap-0.5 h-full">
                           <ActionButton
                             icon={FileText}
@@ -338,7 +350,8 @@ export function ContainerListSection({
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

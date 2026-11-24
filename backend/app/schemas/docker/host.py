@@ -81,6 +81,11 @@ class NetworkInfo(BaseModel):
     name: str
     driver: str
     scope: str
+    # 关联容器数与其名称，用于判断网络是否可删除
+    container_count: int = 0
+    container_names: list[str] = []
+    # 预定义网络（bridge/host/none）不可删除
+    is_builtin: bool = False
 
 
 class HostInfo(BaseModel):

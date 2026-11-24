@@ -21,6 +21,10 @@ from app.models.user import User
 from app.schemas.docker import (
     ComposeActionRequest,
     ComposeEditRequest,
+    ComposeImportCandidatesOut,
+    ComposeImportErrorOut,
+    ComposeImportRequest,
+    ComposeImportResultOut,
     ComposeProjectCreate,
     ComposeProjectOut,
     ComposeProjectUpdate,
@@ -30,7 +34,7 @@ from app.schemas.docker import (
     ContainerInfo,
 )
 from app.schemas.orchestration.deploy_task import ComposeDeployResponse
-from app.services.compose import compose_manager
+from app.services.compose import compose_import, compose_manager
 from app.services.docker import docker_manager
 from app.services.orchestration.deploy_task_service import deploy_task_manager
 from app.services.system.host_path_aliases import host_path_aliases
@@ -267,6 +271,96 @@ async def create_compose_project(
         project_id=0,
         action="create_deploy",
     )
+
+
+@router.get(
+    "/compose/import/candidates",
+    response_model=ComposeImportCandidatesOut,
+)
+async def list_import_candidates(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """扫描尚未接管的外部 Compose 项目与独立容器。"""
+    try:
+        return await compose_import.scan_candidates(db)
+    except Exception as e:
+        logger.exception("扫描外部项目失败")
+        raise APIException(f"扫描外部项目失败: {e}", 500)
+
+
+@router.post("/compose/import", response_model=ComposeImportResultOut)
+async def import_external_objects(
+    data: ComposeImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """把选中的外部 Compose 项目 / 独立容器就地导入为受管应用。"""
+    result = ComposeImportResultOut()
+
+    for project_id in data.project_ids:
+        project = await db.get(DockerComposeProject, project_id)
+        if project is None:
+            result.errors.append(
+                ComposeImportErrorOut(name=str(project_id), message="项目不存在")
+            )
+            continue
+        project_name = project.project_name
+        try:
+            await compose_import.import_project(
+                db, project, user_id=current_user.id
+            )
+        except ValueError as e:
+            await db.rollback()
+            result.errors.append(
+                ComposeImportErrorOut(name=project_name, message=str(e))
+            )
+        except Exception as e:
+            await db.rollback()
+            logger.exception("导入外部项目失败: %s", project_name)
+            result.errors.append(
+                ComposeImportErrorOut(name=project_name, message=str(e))
+            )
+        else:
+            result.imported_projects.append(project_name)
+
+    if data.container_ids:
+        containers = await compose_import.list_live_containers()
+        by_id = {
+            str(container.get("id")): container for container in containers
+        }
+        by_name = {
+            str(container.get("name")): container for container in containers
+        }
+        for container_id in data.container_ids:
+            container = by_id.get(container_id) or by_name.get(container_id)
+            if container is None:
+                result.errors.append(
+                    ComposeImportErrorOut(
+                        name=container_id, message="容器不存在或已停止"
+                    )
+                )
+                continue
+            container_name = str(container.get("name"))
+            try:
+                await compose_import.import_container(
+                    db, container, user_id=current_user.id
+                )
+            except ValueError as e:
+                await db.rollback()
+                result.errors.append(
+                    ComposeImportErrorOut(name=container_name, message=str(e))
+                )
+            except Exception as e:
+                await db.rollback()
+                logger.exception("导入独立容器失败: %s", container_name)
+                result.errors.append(
+                    ComposeImportErrorOut(name=container_name, message=str(e))
+                )
+            else:
+                result.imported_containers.append(container_name)
+
+    return result
 
 
 @router.get("/compose/{project_id}", response_model=ComposeProjectOut)

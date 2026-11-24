@@ -273,7 +273,6 @@ export function StackCard({
               size="icon-xs"
               variant="ghost"
               className="h-6 w-6 p-0 text-muted-foreground hover:text-primary disabled:opacity-40"
-              disabled={!composeAvailable}
               title={composeAvailable ? "更多操作" : unavailableReason}
             >
               <MoreHorizontal className="size-4" />
@@ -289,7 +288,6 @@ export function StackCard({
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => onDelete(project)}
-              disabled={!composeAvailable}
               className="text-red-600 focus:text-red-600"
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" />

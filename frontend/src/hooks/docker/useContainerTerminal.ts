@@ -24,7 +24,11 @@ export function useContainerTerminal(
   } = {}
 ) {
   const { shell = "/bin/sh", workdir, user } = options;
-  const terminalRef = useRef<HTMLDivElement>(null);
+  // 用回调 ref 跟踪挂载点：弹窗内容挂载完成后再建立连接，避免打开终端后还要手动点“连接”
+  const [terminalEl, setTerminalEl] = useState<HTMLDivElement | null>(null);
+  const terminalRef = useCallback((node: HTMLDivElement | null) => {
+    setTerminalEl(node);
+  }, []);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -33,7 +37,7 @@ export function useContainerTerminal(
   const [connectKey, setConnectKey] = useState(0);
 
   useEffect(() => {
-    if (!containerId || !terminalRef.current) return;
+    if (!containerId || !terminalEl) return;
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -46,7 +50,7 @@ export function useContainerTerminal(
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.open(terminalRef.current);
+    terminal.open(terminalEl);
     fitAddon.fit();
     terminal.focus();
 
@@ -124,7 +128,7 @@ export function useContainerTerminal(
       fitAddonRef.current = null;
       wsRef.current = null;
     };
-  }, [containerId, shell, workdir, user, connectKey]);
+  }, [containerId, terminalEl, shell, workdir, user, connectKey]);
 
   const focusTerminal = useCallback(() => {
     terminalInstanceRef.current?.focus();
@@ -150,7 +154,15 @@ export function useContainerTerminal(
   }, []);
 
   const connect = useCallback(() => {
-    wsRef.current?.close();
+    const ws = wsRef.current;
+    // 已连接或正在连接时不重复建立 WebSocket
+    if (
+      ws &&
+      (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+    ws?.close();
     setConnectKey((k) => k + 1);
   }, []);
 

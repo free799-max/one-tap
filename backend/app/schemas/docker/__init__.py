@@ -54,6 +54,12 @@ from app.schemas.docker.registry import (
 from app.schemas.docker.compose import (
     ComposeActionRequest,
     ComposeEditRequest,
+    ComposeImportCandidatesOut,
+    ComposeImportContainerOut,
+    ComposeImportErrorOut,
+    ComposeImportProjectOut,
+    ComposeImportRequest,
+    ComposeImportResultOut,
     ComposeLogQuery,
     ComposeProjectCreate,
     ComposeProjectOut,
@@ -118,4 +124,10 @@ __all__ = [
     "ComposeProjectOut",
     "ComposeActionRequest",
     "ComposeLogQuery",
+    "ComposeImportProjectOut",
+    "ComposeImportContainerOut",
+    "ComposeImportCandidatesOut",
+    "ComposeImportRequest",
+    "ComposeImportErrorOut",
+    "ComposeImportResultOut",
 ]

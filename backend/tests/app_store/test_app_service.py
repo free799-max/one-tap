@@ -1,6 +1,6 @@
 """应用商店服务端口顺序分配单元测试。"""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,44 @@ from app.services.system.port_allocator import (
     _parse_proc_net_tcp,
     get_used_ports,
 )
+
+
+class TestPreviewComposeNetwork:
+    @pytest.mark.asyncio
+    async def test_preview_uses_default_network_allocator(self):
+        from app.services.app_store.app_service import AppService
+        from app.services.compose import compose_manager
+
+        service = AppService()
+        db = MagicMock()
+        db_app = MagicMock()
+        rendered = "services:\n  app:\n    image: demo:latest\n"
+        allocated = (
+            "services:\n  app:\n    image: demo:latest\n"
+            "networks:\n  default:\n    driver: bridge\n"
+            "    ipam:\n      config:\n        - subnet: 10.250.0.0/28\n"
+        )
+        with (
+            patch.object(service, "get_app", new_callable=AsyncMock, return_value=db_app),
+            patch.object(service, "_get_resolver", new_callable=AsyncMock, return_value=None),
+            patch.object(
+                service,
+                "_validate_and_prepare",
+                new_callable=AsyncMock,
+                return_value=("demo", []),
+            ),
+            patch.object(service, "_render_app", return_value=rendered),
+            patch.object(
+                compose_manager,
+                "allocate_default_network",
+                new_callable=AsyncMock,
+                return_value=(allocated, "10.250.0.0/28"),
+            ) as allocate,
+        ):
+            result = await service.preview(db, "demo", "demo", {})
+
+        assert result == {"yaml": allocated, "error": None}
+        allocate.assert_awaited_once_with(db, rendered, reserve=False)
 
 
 class TestExtractAppPorts:

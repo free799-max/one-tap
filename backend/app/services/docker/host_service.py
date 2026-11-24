@@ -81,6 +81,45 @@ def _disk_usage(path: str):
 class HostService(common.BaseDockerService):
     """宿主机信息服务，获取 Docker 引擎与主机资源概况。"""
 
+    def _network_usage(self) -> dict[str, list[str]]:
+        """按网络名汇总关联容器名。"""
+        if not self._client:
+            return {}
+        usage: dict[str, list[str]] = {}
+        try:
+            for container in self._client.containers.list(all=True):
+                attached = (
+                    container.attrs.get("NetworkSettings") or {}
+                ).get("Networks") or {}
+                for network_name in attached:
+                    usage.setdefault(network_name, []).append(container.name)
+        except Exception:
+            common.logger.exception("统计网络关联容器失败")
+        return usage
+
+    def remove_network(self, network_id: str) -> None:
+        """删除未被容器使用且非预定义的自定义网络。"""
+        if not self._client:
+            raise RuntimeError("Docker 不可用")
+        try:
+            network = self._client.networks.get(network_id)
+        except common.docker.errors.NotFound:
+            raise ValueError("网络不存在") from None
+
+        if network.name in {"bridge", "host", "none"}:
+            raise ValueError("Docker 预定义网络不可删除")
+
+        attached = sorted(self._network_usage().get(network.name, []))
+        if attached:
+            raise ValueError(
+                f"网络仍被 {len(attached)} 个容器使用：{'、'.join(attached)}"
+            )
+
+        try:
+            network.remove()
+        except common.docker.errors.APIError as exc:
+            raise ValueError(f"删除网络失败：{exc.explanation or exc}") from exc
+
     def list_directories(
         self,
         path: str,
@@ -155,12 +194,17 @@ class HostService(common.BaseDockerService):
                 load_average = []
 
             networks = []
+            usage = self._network_usage()
             for net in self._client.networks.list():
+                names = sorted(usage.get(net.name, []))
                 networks.append({
                     "id": net.id[:12],
                     "name": net.name,
                     "driver": net.attrs.get("Driver", "bridge"),
                     "scope": net.attrs.get("Scope", "local"),
+                    "container_count": len(names),
+                    "container_names": names,
+                    "is_builtin": net.name in {"bridge", "host", "none"},
                 })
 
             return {

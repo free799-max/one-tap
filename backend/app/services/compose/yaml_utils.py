@@ -28,6 +28,103 @@ def validate_yaml(content: str) -> None:
         raise ValueError(f"YAML 格式错误: {e}") from e
 
 
+def _uses_default_network(service) -> bool:
+    if not isinstance(service, dict) or service.get("network_mode"):
+        return False
+    networks = service.get("networks")
+    if networks is None:
+        return True
+    return isinstance(networks, (list, dict)) and "default" in networks
+
+
+def default_network_needs_subnet(content: str) -> bool:
+    """判断 Compose 逻辑 default 网络是否需要分配子网。"""
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    services = data.get("services")
+    if not isinstance(services, dict) or not any(
+        _uses_default_network(service) for service in services.values()
+    ):
+        return False
+
+    networks = data.get("networks")
+    if networks is None:
+        return True
+    if not isinstance(networks, dict):
+        return False
+    default = networks.get("default")
+    if default is None:
+        return True
+    if not isinstance(default, dict) or default.get("external"):
+        return False
+    if default.get("driver") not in (None, "bridge"):
+        return False
+    ipam = default.get("ipam")
+    if not isinstance(ipam, dict):
+        return True
+    config = ipam.get("config")
+    if not isinstance(config, list):
+        return True
+    return not any(
+        isinstance(item, dict) and item.get("subnet") for item in config
+    )
+
+
+def set_default_network_subnet(content: str, subnet: str) -> str:
+    """为 Compose 逻辑 default 网络写入显式子网。"""
+    if not default_network_needs_subnet(content):
+        return content
+    data = yaml.safe_load(content)
+    networks = data.get("networks")
+    if networks is None:
+        networks = {}
+        data["networks"] = networks
+    default = networks.get("default")
+    if default is None:
+        default = {}
+        networks["default"] = default
+    default.setdefault("driver", "bridge")
+    ipam = default.get("ipam")
+    if ipam is None:
+        ipam = {}
+        default["ipam"] = ipam
+    if not isinstance(ipam, dict):
+        return content
+    config = ipam.get("config")
+    if config is None:
+        config = []
+        ipam["config"] = config
+    if not isinstance(config, list):
+        return content
+    config.append({"subnet": subnet})
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+
+
+def extract_compose_subnets(content: str) -> set[str]:
+    """提取 Compose 顶层网络中显式配置的子网。"""
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return set()
+    if not isinstance(data, dict) or not isinstance(data.get("networks"), dict):
+        return set()
+    subnets: set[str] = set()
+    for network in data["networks"].values():
+        if not isinstance(network, dict) or not isinstance(network.get("ipam"), dict):
+            continue
+        config = network["ipam"].get("config")
+        if not isinstance(config, list):
+            continue
+        for item in config:
+            if isinstance(item, dict) and item.get("subnet"):
+                subnets.add(str(item["subnet"]))
+    return subnets
+
+
 def inject_labels(content: str, project_name: str) -> str:
     """在 YAML 中为每个服务注入 Compose 项目归属标签。"""
     data = yaml.safe_load(content) or {}

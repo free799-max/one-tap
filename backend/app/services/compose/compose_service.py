@@ -28,12 +28,23 @@ from app.services.compose.log_utils import (
     summarize_compose_error,
 )
 from app.services.compose.permissions import extract_bind_sources, parse_puid_pgid
+from app.services.compose.network_allocator import (
+    find_available_subnet,
+    get_docker_subnets,
+    get_reserved_subnets,
+    normalize_subnets,
+    release_subnet,
+    reserve_subnet,
+)
 from app.services.docker.mirror_pull import _docker, _format_pull_block, pull_with_mirror
 from app.services.manage_client import manage_base_urls
 from app.services.system.registry_mirror_service import get_acceleration_map
 from app.services.compose.yaml_utils import (
+    default_network_needs_subnet,
+    extract_compose_subnets,
     inject_labels,
     rewrite_ports,
+    set_default_network_subnet,
     validate_project_name,
     validate_yaml,
 )
@@ -168,6 +179,39 @@ class ComposeService:
         if project_id not in self._locks:
             self._locks[project_id] = asyncio.Lock()
         return self._locks[project_id]
+
+    async def _get_used_network_subnets(self, db) -> set:
+        """汇总 Docker、已保存项目及并发预约使用的子网。"""
+        from sqlalchemy import select
+
+        docker_subnets = await asyncio.to_thread(get_docker_subnets)
+        result = await db.execute(
+            select(DockerComposeVersion.content).where(
+                DockerComposeVersion.is_current.is_(True)
+            )
+        )
+        configured: set[str] = set()
+        for content in result.scalars().all():
+            configured.update(extract_compose_subnets(content))
+        return (
+            docker_subnets
+            | normalize_subnets(configured)
+            | get_reserved_subnets()
+        )
+
+    async def allocate_default_network(
+        self, db, content: str, reserve: bool = True
+    ) -> tuple[str, str | None]:
+        """为需要创建的 Compose 默认网络分配一个空闲 /28。"""
+        if not default_network_needs_subnet(content):
+            return content, None
+        used = await self._get_used_network_subnets(db)
+        subnet = find_available_subnet(used)
+        allocated = str(subnet)
+        content = set_default_network_subnet(content, allocated)
+        if reserve:
+            reserve_subnet(allocated)
+        return content, allocated
 
     async def _auto_allocate_ports(self, db, content: str) -> tuple[str, list[int]]:
         """按系统设置的起始端口，将 compose 内容中的宿主端口顺序分配为空闲端口。
@@ -766,14 +810,15 @@ class ComposeService:
         """
         validate_project_name(project_name)
         validate_yaml(content)
+        content, reserved_subnet = await self.allocate_default_network(db, content)
 
         # 服务端口顺序分配：从起始端口开始重写宿主端口，跳过已占用端口。
         # 分配的端口先预留，部署结束（成功或失败）后统一释放
         reserved_ports: list[int] = []
-        if allocate_ports:
-            content, reserved_ports = await self._auto_allocate_ports(db, content)
-
         try:
+            if allocate_ports:
+                content, reserved_ports = await self._auto_allocate_ports(db, content)
+
             return await self._create_project_inner(
                 db,
                 project_name=project_name,
@@ -784,6 +829,7 @@ class ComposeService:
             )
         finally:
             release_ports(reserved_ports)
+            release_subnet(reserved_subnet)
 
     async def _create_project_inner(
         self,

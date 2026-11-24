@@ -218,6 +218,12 @@ export interface NetworkInfo {
   name: string;
   driver: string;
   scope: string;
+  /** 关联容器数量 */
+  container_count?: number;
+  /** 关联容器名称，用于悬停查看 */
+  container_names?: string[];
+  /** 预定义网络（bridge/host/none）不可删除 */
+  is_builtin?: boolean;
 }
 
 /** Docker 宿主机综合信息 */
@@ -239,6 +245,11 @@ export interface HostInfo {
 /** 查询 Docker 宿主机综合信息 */
 export function getDockerHostInfo() {
   return api.get<HostInfo>("/docker/host/info").then((r) => r.data);
+}
+
+/** 删除未被容器使用的自定义 Docker 网络 */
+export function deleteDockerNetwork(id: string) {
+  return api.delete(`/docker/host/networks/${encodeURIComponent(id)}`);
 }
 
 /* ===================== 镜像 ===================== */

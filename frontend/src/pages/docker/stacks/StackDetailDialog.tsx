@@ -4,7 +4,8 @@
  * 展示项目基本信息、当前版本、Stack 服务状态。
  */
 
-import { Loader2, RefreshCw, Play, Square, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { Loader2, RefreshCw, Play, Square, RotateCcw, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +31,7 @@ import {
   useComposeProjectContainers,
 } from "@/hooks/useCompose";
 import { useContainerAction } from "@/hooks/useDocker";
+import { ContainerTerminalDialog } from "../containers/ContainerTerminalDialog";
 import CodeMirror from "@uiw/react-codemirror";
 import { yaml } from "@codemirror/lang-yaml";
 
@@ -99,6 +101,10 @@ export function StackDetailDialog({
     refetch: refetchContainers,
   } = useComposeProjectContainers(projectId);
   const containerAction = useContainerAction();
+  const [terminalTarget, setTerminalTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   const handleContainerAction = (id: string, action: "start" | "stop" | "restart") => {
     // 容器操作只使容器列表缓存失效，这里同时刷新 Stack 状态与归属容器，
@@ -159,7 +165,7 @@ export function StackDetailDialog({
                     : "-"}
                 </InfoItem>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                 <InfoItem
                   label={
                     project.host_config_files ? "Compose 文件（宿主机）" : "Compose 文件"
@@ -250,8 +256,8 @@ export function StackDetailDialog({
                       <TableRow>
                         <TableHead className="text-xs w-[30%]">名称</TableHead>
                         <TableHead className="text-xs w-[18%]">状态</TableHead>
-                        <TableHead className="text-xs w-[42%]">镜像</TableHead>
-                        <TableHead className="text-xs w-[10%]">操作</TableHead>
+                        <TableHead className="text-xs w-[38%]">镜像</TableHead>
+                        <TableHead className="text-xs w-[14%]">操作</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -280,7 +286,7 @@ export function StackDetailDialog({
                                   disabled={containerAction.isPending || !canControlContainer(c.status)}
                                   title="启动"
                                 >
-                                  <Play className="size-3.5" />
+                                  <Play className="size-4" />
                                 </Button>
                               )}
                               {c.status === "running" && (
@@ -292,7 +298,7 @@ export function StackDetailDialog({
                                   disabled={containerAction.isPending}
                                   title="停止"
                                 >
-                                  <Square className="size-3.5" />
+                                  <Square className="size-4" />
                                 </Button>
                               )}
                               <Button
@@ -303,7 +309,18 @@ export function StackDetailDialog({
                                 disabled={containerAction.isPending || c.status !== "running"}
                                 title="重启"
                               >
-                                <RotateCcw className="size-3.5" />
+                                <RotateCcw className="size-4" />
+                              </Button>
+                              <Button
+                                size="icon-xs"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-muted-foreground hover:text-primary"
+                                onClick={() =>
+                                  setTerminalTarget({ id: c.id, name: c.name })
+                                }
+                                title="进入终端"
+                              >
+                                <Terminal className="size-4" />
                               </Button>
                             </div>
                           </TableCell>
@@ -345,6 +362,15 @@ export function StackDetailDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <ContainerTerminalDialog
+        open={!!terminalTarget}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setTerminalTarget(null);
+        }}
+        containerId={terminalTarget?.id ?? null}
+        containerName={terminalTarget?.name ?? null}
+      />
     </Dialog>
   );
 }

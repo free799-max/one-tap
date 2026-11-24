@@ -7,6 +7,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
   BookOpen,
+  PackagePlus,
   RefreshCw,
   User,
   LogOut,
@@ -27,9 +28,10 @@ import {
 interface TopBarProps {
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  onImport: () => void;
 }
 
-export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
+export function TopBar({ sidebarCollapsed, onToggleSidebar, onImport }: TopBarProps) {
   const { user, logout } = useAuth();
   const { activeTaskIds, isPanelOpen, openPanel } = useDeployTasks();
   const catalogSync = useCatalogSync();
@@ -66,6 +68,25 @@ export function TopBar({ sidebarCollapsed, onToggleSidebar }: TopBarProps) {
 
       {/* 右侧：同步 + 通知 + 部署任务入口 + 用户菜单 */}
       <div className="flex items-center gap-1">
+        {user?.role === "admin" && (
+          <Tooltip>
+            <TooltipTrigger
+              delay={150}
+              render={
+                <button
+                  onClick={onImport}
+                  aria-label="导入已有应用"
+                  className="h-8 w-8 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                >
+                  <PackagePlus className="h-4 w-4" />
+                </button>
+              }
+            />
+            <TooltipContent side="bottom" align="center">
+              导入已有应用
+            </TooltipContent>
+          </Tooltip>
+        )}
         {user?.role === "admin" && (
           <Tooltip>
             <TooltipTrigger

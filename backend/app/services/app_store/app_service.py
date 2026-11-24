@@ -470,7 +470,7 @@ class AppService:
         tag: str | None = None,
     ) -> list[App]:
         """列出应用商店应用，支持分类和标签筛选。"""
-        stmt = select(App)
+        stmt = select(App).where(App.is_listed.is_(True))
         if category:
             stmt = stmt.where(App.category == category)
         stmt = stmt.order_by(App.category, App.display_name)
@@ -537,13 +537,17 @@ class AppService:
         except APIException as e:
             return {"yaml": None, "error": e.message}
 
+        rendered = self._render_app(
+            db_app=db_app,
+            config=config,
+            project_name=project_name,
+            resolver=resolver,
+        )
+        rendered, _ = await compose_manager.allocate_default_network(
+            db, rendered, reserve=False
+        )
         return {
-            "yaml": self._render_app(
-                db_app=db_app,
-                config=config,
-                project_name=project_name,
-                resolver=resolver,
-            ),
+            "yaml": rendered,
             "error": None,
         }
 

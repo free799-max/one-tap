@@ -96,3 +96,62 @@ class ComposeLogQuery(BaseModel):
 
     tail: int = 100
     services: list[str] | None = None
+
+
+class ComposeImportProjectOut(BaseModel):
+    """待导入的外部 Compose 项目。"""
+
+    project_id: int
+    project_name: str
+    config_files: list[str]
+    host_config_files: list[str]
+    working_dir: str | None = None
+    host_working_dir: str | None = None
+    required_dirs: list[str]
+    missing_dirs: list[str]
+    ready: bool
+    reason: str | None = None
+    container_count: int
+    running_count: int
+    images: list[str]
+    ports: list[str]
+
+
+class ComposeImportContainerOut(BaseModel):
+    """待导入的独立容器。"""
+
+    container_id: str
+    container_name: str
+    image: str | None = None
+    status: str
+    state: str
+    ports: str
+
+
+class ComposeImportCandidatesOut(BaseModel):
+    """外部对象扫描结果。"""
+
+    projects: list[ComposeImportProjectOut]
+    containers: list[ComposeImportContainerOut]
+
+
+class ComposeImportRequest(BaseModel):
+    """执行导入的请求。"""
+
+    project_ids: list[int] = []
+    container_ids: list[str] = []
+
+
+class ComposeImportErrorOut(BaseModel):
+    """单个导入对象的失败信息。"""
+
+    name: str
+    message: str
+
+
+class ComposeImportResultOut(BaseModel):
+    """导入结果。"""
+
+    imported_projects: list[str] = []
+    imported_containers: list[str] = []
+    errors: list[ComposeImportErrorOut] = []

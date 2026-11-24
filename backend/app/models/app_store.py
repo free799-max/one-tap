@@ -54,6 +54,10 @@ class App(Base):
     # 应用是否含内置收费（付费软件或付费功能）
     is_paid: Mapped[bool] = mapped_column(Boolean, default=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 是否在应用市场展示；导入外部项目生成的占位应用不展示
+    is_listed: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

@@ -174,3 +174,61 @@ export function getComposeProjectContainers(projectId: number) {
     .get<ContainerInfo[]>(`/docker/compose/${projectId}/containers`)
     .then((r) => r.data);
 }
+
+/** 待导入的外部 Compose 项目 */
+export interface ComposeImportProject {
+  project_id: number;
+  project_name: string;
+  config_files: string[];
+  host_config_files: string[];
+  working_dir: string | null;
+  host_working_dir: string | null;
+  required_dirs: string[];
+  missing_dirs: string[];
+  ready: boolean;
+  reason: string | null;
+  container_count: number;
+  running_count: number;
+  images: string[];
+  ports: string[];
+}
+
+/** 待导入的独立容器 */
+export interface ComposeImportContainer {
+  container_id: string;
+  container_name: string;
+  image: string | null;
+  status: string;
+  state: string;
+  ports: string;
+}
+
+/** 外部对象扫描结果 */
+export interface ComposeImportCandidates {
+  projects: ComposeImportProject[];
+  containers: ComposeImportContainer[];
+}
+
+/** 导入结果 */
+export interface ComposeImportResult {
+  imported_projects: string[];
+  imported_containers: string[];
+  errors: { name: string; message: string }[];
+}
+
+/** 扫描尚未接管的外部项目与容器 */
+export function listComposeImportCandidates() {
+  return api
+    .get<ComposeImportCandidates>("/docker/compose/import/candidates")
+    .then((r) => r.data);
+}
+
+/** 就地导入外部项目 / 容器 */
+export function importComposeObjects(data: {
+  project_ids: number[];
+  container_ids: string[];
+}) {
+  return api
+    .post<ComposeImportResult>("/docker/compose/import", data)
+    .then((r) => r.data);
+}

@@ -29,6 +29,7 @@ import { StackDetailDialog } from "@/pages/docker/stacks/StackDetailDialog";
 import { StackLogsDialog } from "@/pages/docker/stacks/StackLogsDialog";
 import { StackVersionDialog } from "@/pages/docker/stacks/StackVersionDialog";
 import { StackEditorDialog } from "@/pages/docker/stacks/StackEditorDialog";
+import { ContainerTerminalDialog } from "@/pages/docker/containers/ContainerTerminalDialog";
 import {
   ArrowUpCircle,
   ExternalLink,
@@ -40,6 +41,7 @@ import {
   RefreshCw,
   Square,
   SquarePen,
+  Terminal,
 } from "lucide-react";
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
@@ -141,6 +143,7 @@ export function AppDetailDialog({
   const composeAction = useComposeAction();
   const containerAction = useContainerAction();
   const [logsOpen, setLogsOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [stackDetailOpen, setStackDetailOpen] = useState(false);
   const [composeEditorOpen, setComposeEditorOpen] = useState(false);
@@ -435,6 +438,16 @@ export function AppDetailDialog({
                     <ScrollText />
                     日志
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 leading-none"
+                    disabled={!data.container_id || !isRunning}
+                    onClick={() => setTerminalOpen(true)}
+                  >
+                    <Terminal />
+                    终端
+                  </Button>
                   {data.project_id != null && (
                     <>
                       <Button
@@ -604,6 +617,12 @@ export function AppDetailDialog({
       statusText={status?.label ?? null}
       open={logsOpen}
       onOpenChange={setLogsOpen}
+    />
+    <ContainerTerminalDialog
+      open={terminalOpen}
+      onOpenChange={setTerminalOpen}
+      containerId={data?.container_id ?? null}
+      containerName={data?.container_name ?? null}
     />
     <StackVersionDialog
       projectId={data?.project_id ?? null}

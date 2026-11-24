@@ -26,6 +26,11 @@ class DockerComposeProject(Base):
     )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 项目来源：managed 由 OneTap 创建 / imported 由外部项目导入 /
+    # external 由容器标签自动发现但尚未接管
+    source: Mapped[str] = mapped_column(
+        String(20), default="managed", server_default="managed", nullable=False
+    )
     config_files: Mapped[str | None] = mapped_column(Text, nullable=True)
     working_dir: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())

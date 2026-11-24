@@ -66,9 +66,9 @@ export function ContainerTerminalDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-5xl max-h-[90vh] overflow-hidden flex flex-col p-0 gap-0">
-        <DialogHeader className="px-4 py-3 border-b shrink-0">
-          <DialogTitle className="text-base font-semibold flex items-center gap-2">
+      <DialogContent className="sm:max-w-5xl max-h-[90vh] overflow-hidden flex flex-col p-0 gap-0 [&_[data-slot='dialog-close']]:top-3">
+        <DialogHeader className="flex-row flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 pr-14 border-b shrink-0">
+          <DialogTitle className="text-base font-semibold flex items-center gap-2 flex-wrap">
             <Terminal className="h-4 w-4 text-muted-foreground" />
             终端
             {containerName && (
@@ -77,72 +77,72 @@ export function ContainerTerminalDialog({
               </span>
             )}
           </DialogTitle>
-        </DialogHeader>
 
-        <div className="flex items-center justify-between gap-2 px-4 py-2 border-b shrink-0 bg-muted/30">
-          <div className="flex items-center gap-3">
-            <select
-              value={shell}
-              onChange={(e) => setShell(e.target.value)}
-              className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-              disabled={connected}
-            >
-              {SHELL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <div className="flex items-center gap-1.5 text-xs">
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  connected ? "bg-green-500" : "bg-red-500"
-                }`}
-              />
-              <span className="text-muted-foreground">
-                {connected ? "已连接" : "未连接"}
-              </span>
-            </div>
-            {error && (
-              <div className="flex items-center gap-1 text-xs text-red-500">
-                <AlertCircle className="h-3.5 w-3.5" />
-                {error}
+          <div className="flex flex-1 flex-wrap items-center gap-3">
+            <div className="flex items-center gap-3">
+              <select
+                value={shell}
+                onChange={(e) => setShell(e.target.value)}
+                className="h-7 rounded-md border bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                disabled={connected}
+              >
+                {SHELL_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1.5 text-xs">
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    connected ? "bg-green-500" : "bg-red-500"
+                  }`}
+                />
+                <span className="text-muted-foreground">
+                  {connected ? "已连接" : "未连接"}
+                </span>
               </div>
-            )}
-          </div>
+              {error && (
+                <div className="flex items-center gap-1 text-xs text-red-500">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  {error}
+                </div>
+              )}
+            </div>
 
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={clearTerminal}
-            >
-              <Trash2 className="h-3.5 w-3.5 mr-1" />
-              清空
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={connect}
-              disabled={connected}
-            >
-              <RotateCcw className="h-3.5 w-3.5 mr-1" />
-              连接
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              onClick={disconnect}
-              disabled={!connected}
-            >
-              <X className="h-3.5 w-3.5 mr-1" />
-              断开
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={clearTerminal}
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                清空
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={connect}
+                disabled={connected}
+              >
+                <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                连接
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={disconnect}
+                disabled={!connected}
+              >
+                <X className="h-3.5 w-3.5 mr-1" />
+                断开
+              </Button>
+            </div>
           </div>
-        </div>
+        </DialogHeader>
 
         <div
           className="flex-1 min-h-[400px] bg-black p-2 overflow-hidden"

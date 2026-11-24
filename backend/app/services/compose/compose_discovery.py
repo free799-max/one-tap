@@ -77,6 +77,7 @@ class ComposeDiscoveryService:
             project = DockerComposeProject(
                 project_name=project_name,
                 description=None,
+                source="external",
                 config_files=json.dumps(config_files, ensure_ascii=False) if config_files else None,
                 working_dir=working_dir or None,
             )

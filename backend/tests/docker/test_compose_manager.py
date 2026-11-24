@@ -1,17 +1,145 @@
 import asyncio
+import ipaddress
 
 import pytest
+import yaml
 from unittest.mock import MagicMock, patch, AsyncMock
 from pathlib import Path
 
 from app.services.compose import ComposeService as ComposeManager
+from app.services.compose.network_allocator import (
+    find_available_subnet,
+    get_reserved_subnets,
+    release_subnet,
+    reserve_subnet,
+)
 from app.services.compose.permissions import parse_puid_pgid
+from app.services.compose.yaml_utils import (
+    default_network_needs_subnet,
+    extract_compose_subnets,
+    set_default_network_subnet,
+)
 from app.models.docker import DockerComposeProject, DockerComposeVersion
+
+
+def test_set_default_network_subnet_preserves_services_ports_and_host():
+    content = """services:
+  web:
+    image: nginx:latest
+    ports:
+      - "8080:80"
+  local:
+    image: busybox:latest
+    network_mode: host
+"""
+
+    transformed = set_default_network_subnet(content, "10.250.0.0/28")
+    data = yaml.safe_load(transformed)
+
+    assert data["networks"]["default"] == {
+        "driver": "bridge",
+        "ipam": {"config": [{"subnet": "10.250.0.0/28"}]},
+    }
+    assert "networks" not in data["services"]["web"]
+    assert data["services"]["web"]["ports"] == ["8080:80"]
+    assert data["services"]["local"]["network_mode"] == "host"
+    assert extract_compose_subnets(transformed) == {"10.250.0.0/28"}
+    assert not default_network_needs_subnet(transformed)
+    assert set_default_network_subnet(transformed, "10.250.0.16/28") == transformed
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        """services:
+  local:
+    image: busybox:latest
+    network_mode: host
+""",
+        """services:
+  app:
+    image: busybox:latest
+    networks:
+      - custom
+networks:
+  custom:
+    driver: bridge
+""",
+        """services:
+  app:
+    image: busybox:latest
+networks:
+  default:
+    external: true
+    name: existing
+""",
+        """services:
+  app:
+    image: busybox:latest
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/28
+""",
+    ],
+)
+def test_set_default_network_subnet_leaves_explicit_projects_unchanged(content):
+    assert not default_network_needs_subnet(content)
+    assert set_default_network_subnet(content, "10.250.0.0/28") == content
+
+
+def test_find_available_subnet_skips_overlap_and_tracks_reservations():
+    pool = ipaddress.ip_network("10.250.0.0/24")
+    used = {ipaddress.ip_network("10.250.0.0/28")}
+
+    subnet = find_available_subnet(used, pools=(pool,))
+
+    assert subnet == ipaddress.ip_network("10.250.0.16/28")
+    reserve_subnet(str(subnet))
+    try:
+        assert subnet in get_reserved_subnets()
+    finally:
+        release_subnet(str(subnet))
+    assert subnet not in get_reserved_subnets()
 
 
 @pytest.fixture
 def compose_manager():
-    return ComposeManager()
+    manager = ComposeManager()
+    manager._get_used_network_subnets = AsyncMock(return_value=set())
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_used_network_subnets_merge_docker_database_and_reservations():
+    manager = ComposeManager()
+    stored_content = set_default_network_subnet(
+        "services:\n  app:\n    image: demo:latest\n",
+        "10.250.0.0/28",
+    )
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [stored_content]
+    db = AsyncMock()
+    db.execute.return_value = result
+
+    with (
+        patch(
+            "app.services.compose.compose_service.get_docker_subnets",
+            return_value={ipaddress.ip_network("172.17.0.0/16")},
+        ),
+        patch(
+            "app.services.compose.compose_service.get_reserved_subnets",
+            return_value={ipaddress.ip_network("192.168.1.0/28")},
+        ),
+    ):
+        used = await manager._get_used_network_subnets(db)
+
+    assert used == {
+        ipaddress.ip_network("172.17.0.0/16"),
+        ipaddress.ip_network("192.168.1.0/28"),
+        ipaddress.ip_network("10.250.0.0/28"),
+    }
 
 
 @pytest.mark.asyncio
@@ -138,6 +266,14 @@ async def test_create_project_auto_deploy(compose_manager, tmp_path):
     assert isinstance(version_args[0], DockerComposeVersion)
     assert version_args[0].version_number == 1
     assert version_args[0].is_current is True
+    saved = yaml.safe_load(version_args[0].content)
+    written = yaml.safe_load(
+        (tmp_path / "test-stack" / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    for data in (saved, written):
+        subnet = data["networks"]["default"]["ipam"]["config"][0]["subnet"]
+        assert ipaddress.ip_network(subnet).prefixlen == 28
+        assert "networks" not in data["services"]["web"]
 
     up_calls = [call for call in mock_run.call_args_list if call.args[1] == "up"]
     assert len(up_calls) == 1

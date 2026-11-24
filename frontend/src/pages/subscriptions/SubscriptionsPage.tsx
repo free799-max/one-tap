@@ -351,7 +351,7 @@ function SubscriptionCard({ record }: { record: SubscriptionRecord }) {
     .join(" · ");
 
   return (
-    <div className="flex min-w-0 gap-3 rounded-xl border border-border/70 bg-card p-3 shadow-sm">
+    <div className="flex min-w-0 gap-3 rounded-xl border border-border/70 bg-card px-3 py-3.5 shadow-sm">
       <div className="h-[120px] w-[84px] shrink-0 self-center overflow-hidden rounded-md bg-muted">
         {record.poster && !posterFailed ? (
           <img
@@ -537,7 +537,7 @@ export function SubscriptionsPage() {
   return (
     <>
       <div className="rounded-xl border border-border/70 bg-card p-4 shadow-[var(--shadow-card)] sm:p-5">
-        <div className="space-y-4 sm:space-y-5">
+        <div className="space-y-4">
         <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-2">
             <form

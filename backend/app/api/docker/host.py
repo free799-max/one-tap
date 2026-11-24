@@ -1,6 +1,6 @@
 """Docker 宿主机信息相关 API。"""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.custom_route import CustomAPIRoute
@@ -80,6 +80,23 @@ async def delete_host_directory(
     root_paths = await get_browse_roots(db)
     docker_manager.delete_directory(data.path, root_paths=root_paths)
     return {"success": True}
+
+
+@router.delete("/host/networks/{network_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_host_network(
+    network_id: str,
+    current_user: User = Depends(require_admin),
+):
+    """删除未被容器使用的自定义 Docker 网络。"""
+    if not await docker_manager.run_sync(docker_manager.check_available):
+        raise APIException("Docker 不可用", 503)
+    try:
+        await docker_manager.run_sync(
+            docker_manager.remove_network, network_id
+        )
+    except ValueError as exc:
+        raise APIException(str(exc), 400) from exc
+    return None
 
 
 @router.get("/host/info", response_model=HostInfo)
